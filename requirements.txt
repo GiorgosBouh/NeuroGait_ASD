@@ -1,0 +1,427 @@
+# requirements.txt
+# Core web framework
+streamlit>=1.28.0
+
+# Data processing and analysis
+pandas>=1.5.0
+numpy>=1.21.0
+
+# Computer vision and pose estimation
+opencv-python>=4.8.0
+mediapipe>=0.10.0
+
+# Machine learning
+scikit-learn>=1.3.0
+xgboost>=1.7.0
+imbalanced-learn>=0.11.0
+
+# Visualization
+matplotlib>=3.7.0
+seaborn>=0.12.0
+plotly>=5.15.0
+
+# Neo4j database
+neo4j>=5.12.0
+
+# Network analysis
+networkx>=3.1
+
+# Utilities
+requests>=2.31.0
+python-dateutil>=2.8.0
+
+# For production deployment (optional)
+gunicorn>=21.0.0
+psutil>=5.9.0
+
+# Development and testing (optional)
+pytest>=7.4.0
+black>=23.7.0
+flake8>=6.0.0
+
+---
+
+# config.py
+"""Configuration settings for NeuroGait ASD system"""
+
+import os
+from dataclasses import dataclass
+from typing import Dict, Any
+
+@dataclass
+class Neo4jConfig:
+    """Neo4j database configuration"""
+    uri: str = "bolt://localhost:7687"
+    user: str = "neo4j"
+    password: str = "your_password_here"
+    database: str = "neo4j"
+
+@dataclass
+class MLConfig:
+    """Machine learning model configuration"""
+    random_forest_params: Dict[str, Any] = None
+    xgboost_params: Dict[str, Any] = None
+    isolation_forest_params: Dict[str, Any] = None
+    
+    def __post_init__(self):
+        if self.random_forest_params is None:
+            self.random_forest_params = {
+                'n_estimators': 100,
+                'max_depth': None,
+                'min_samples_split': 2,
+                'min_samples_leaf': 1,
+                'random_state': 42
+            }
+        
+        if self.xgboost_params is None:
+            self.xgboost_params = {
+                'max_depth': 6,
+                'learning_rate': 0.1,
+                'n_estimators': 100,
+                'random_state': 42
+            }
+        
+        if self.isolation_forest_params is None:
+            self.isolation_forest_params = {
+                'contamination': 0.1,
+                'random_state': 42
+            }
+
+@dataclass
+class MediaPipeConfig:
+    """MediaPipe pose estimation configuration"""
+    model_complexity: int = 2
+    min_detection_confidence: float = 0.5
+    min_tracking_confidence: float = 0.5
+    enable_segmentation: bool = False
+    static_image_mode: bool = False
+
+@dataclass
+class SystemConfig:
+    """Main system configuration"""
+    neo4j: Neo4jConfig = None
+    ml: MLConfig = None
+    mediapipe: MediaPipeConfig = None
+    
+    # File upload settings
+    max_video_size_mb: int = 500
+    allowed_video_formats: list = None
+    temp_upload_dir: str = "temp_uploads"
+    
+    # Logging settings
+    log_level: str = "INFO"
+    log_file: str = "neurogait_asd.log"
+    
+    def __post_init__(self):
+        if self.neo4j is None:
+            self.neo4j = Neo4jConfig()
+        if self.ml is None:
+            self.ml = MLConfig()
+        if self.mediapipe is None:
+            self.mediapipe = MediaPipeConfig()
+        if self.allowed_video_formats is None:
+            self.allowed_video_formats = ['mp4', 'avi', 'mov', 'mkv', 'wmv']
+
+# Load configuration from environment variables
+def load_config_from_env() -> SystemConfig:
+    """Load configuration from environment variables"""
+    config = SystemConfig()
+    
+    # Neo4j configuration
+    config.neo4j.uri = os.getenv('NEO4J_URI', config.neo4j.uri)
+    config.neo4j.user = os.getenv('NEO4J_USER', config.neo4j.user)
+    config.neo4j.password = os.getenv('NEO4J_PASSWORD', config.neo4j.password)
+    config.neo4j.database = os.getenv('NEO4J_DATABASE', config.neo4j.database)
+    
+    # System settings
+    config.max_video_size_mb = int(os.getenv('MAX_VIDEO_SIZE_MB', config.max_video_size_mb))
+    config.log_level = os.getenv('LOG_LEVEL', config.log_level)
+    
+    return config
+
+---
+
+# docker-compose.yml
+version: '3.8'
+
+services:
+  neo4j:
+    image: neo4j:5.12-community
+    container_name: neurogait_neo4j
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      - NEO4J_AUTH=neo4j/neurogait_password
+      - NEO4J_PLUGINS=["apoc"]
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*
+      - NEO4J_dbms_memory_heap_initial__size=1G
+      - NEO4J_dbms_memory_heap_max__size=2G
+      - NEO4J_dbms_memory_pagecache_size=1G
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+      - neo4j_import:/var/lib/neo4j/import
+      - neo4j_plugins:/plugins
+    restart: unless-stopped
+    networks:
+      - neurogait_network
+
+  streamlit:
+    build: .
+    container_name: neurogait_streamlit
+    ports:
+      - "8501:8501"
+    environment:
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=neurogait_password
+    volumes:
+      - ./temp_uploads:/app/temp_uploads
+      - ./logs:/app/logs
+    depends_on:
+      - neo4j
+    restart: unless-stopped
+    networks:
+      - neurogait_network
+
+volumes:
+  neo4j_data:
+  neo4j_logs:
+  neo4j_import:
+  neo4j_plugins:
+
+networks:
+  neurogait_network:
+    driver: bridge
+
+---
+
+# Dockerfile
+FROM python:3.9-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 \
+    libglib2.0-0 \
+    libgtk-3-0 \
+    libavcodec-dev \
+    libavformat-dev \
+    libswscale-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements and install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY . .
+
+# Create necessary directories
+RUN mkdir -p temp_uploads logs
+
+# Expose port
+EXPOSE 8501
+
+# Health check
+HEALTHCHECK CMD curl --fail http://localhost:8501/_stcore/health
+
+# Run the application
+CMD ["streamlit", "run", "neurogait_asd_app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+
+---
+
+# .env.example
+# Neo4j Configuration
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=your_secure_password_here
+NEO4J_DATABASE=neo4j
+
+# System Configuration
+MAX_VIDEO_SIZE_MB=500
+LOG_LEVEL=INFO
+TEMP_UPLOAD_DIR=temp_uploads
+
+# Optional: Production settings
+STREAMLIT_SERVER_PORT=8501
+STREAMLIT_SERVER_ADDRESS=0.0.0.0
+
+---
+
+# setup.sh
+#!/bin/bash
+
+echo "🧠 NeuroGait ASD System Setup"
+echo "=============================="
+
+# Check if running on Ubuntu/Debian
+if ! command -v apt-get &> /dev/null; then
+    echo "❌ This script is designed for Ubuntu/Debian systems"
+    exit 1
+fi
+
+# Update system
+echo "📦 Updating system packages..."
+sudo apt-get update && sudo apt-get upgrade -y
+
+# Install Python and pip if not available
+echo "🐍 Installing Python dependencies..."
+sudo apt-get install -y python3 python3-pip python3-venv
+
+# Install Java for Neo4j
+echo "☕ Installing Java..."
+sudo apt-get install -y openjdk-11-jdk
+
+# Add Neo4j repository and install
+echo "🗄️ Installing Neo4j Community Edition..."
+wget -O - https://debian.neo4j.com/neotechnology.gpg.key | sudo apt-key add -
+echo 'deb https://debian.neo4j.com stable latest' | sudo tee -a /etc/apt/sources.list.d/neo4j.list
+sudo apt-get update
+sudo apt-get install -y neo4j
+
+# Configure Neo4j
+echo "⚙️ Configuring Neo4j..."
+sudo systemctl enable neo4j
+
+# Create Neo4j configuration backup
+sudo cp /etc/neo4j/neo4j.conf /etc/neo4j/neo4j.conf.backup
+
+# Configure Neo4j for network access
+sudo sed -i 's/#dbms.default_listen_address=0.0.0.0/dbms.default_listen_address=0.0.0.0/' /etc/neo4j/neo4j.conf
+sudo sed -i 's/#dbms.connector.bolt.listen_address=:7687/dbms.connector.bolt.listen_address=:7687/' /etc/neo4j/neo4j.conf
+sudo sed -i 's/#dbms.connector.http.listen_address=:7474/dbms.connector.http.listen_address=:7474/' /etc/neo4j/neo4j.conf
+
+# Set Neo4j memory settings
+echo "dbms.memory.heap.initial_size=1G" | sudo tee -a /etc/neo4j/neo4j.conf
+echo "dbms.memory.heap.max_size=2G" | sudo tee -a /etc/neo4j/neo4j.conf
+echo "dbms.memory.pagecache.size=1G" | sudo tee -a /etc/neo4j/neo4j.conf
+
+# Start Neo4j
+echo "🚀 Starting Neo4j..."
+sudo systemctl start neo4j
+
+# Wait for Neo4j to start
+echo "⏳ Waiting for Neo4j to start..."
+sleep 10
+
+# Set initial password
+echo "🔐 Setting Neo4j password..."
+echo "Please enter a secure password for Neo4j:"
+sudo neo4j-admin dbms set-initial-password
+
+# Create Python virtual environment
+echo "🌐 Creating Python virtual environment..."
+python3 -m venv neurogait_env
+source neurogait_env/bin/activate
+
+# Install Python requirements
+echo "📚 Installing Python packages..."
+pip install --upgrade pip
+pip install -r requirements.txt
+
+# Create necessary directories
+echo "📁 Creating directories..."
+mkdir -p temp_uploads logs data
+
+# Set permissions
+chmod 755 temp_uploads logs data
+
+# Create systemd service for the application (optional)
+echo "📋 Creating systemd service..."
+cat > neurogait-asd.service << EOF
+[Unit]
+Description=NeuroGait ASD Analysis System
+After=neo4j.service
+Requires=neo4j.service
+
+[Service]
+Type=simple
+User=$USER
+WorkingDirectory=$PWD
+Environment=PATH=$PWD/neurogait_env/bin
+ExecStart=$PWD/neurogait_env/bin/streamlit run neurogait_asd_app.py --server.port=8501 --server.address=0.0.0.0
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo mv neurogait-asd.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable neurogait-asd.service
+
+# Configure firewall
+echo "🔥 Configuring firewall..."
+sudo ufw allow 7474  # Neo4j HTTP
+sudo ufw allow 7687  # Neo4j Bolt
+sudo ufw allow 8501  # Streamlit
+
+echo "✅ Setup completed successfully!"
+echo ""
+echo "📋 Next steps:"
+echo "1. Copy .env.example to .env and configure your settings"
+echo "2. Start the application: sudo systemctl start neurogait-asd"
+echo "3. Access Neo4j browser: http://localhost:7474"
+echo "4. Access NeuroGait ASD app: http://localhost:8501"
+echo ""
+echo "🔐 Neo4j credentials:"
+echo "   Username: neo4j"
+echo "   Password: [the password you set]"
+echo ""
+echo "📚 For more information, see the README.md file"
+
+---
+
+# run_development.sh
+#!/bin/bash
+
+echo "🧠 Starting NeuroGait ASD Development Environment"
+echo "==============================================="
+
+# Check if virtual environment exists
+if [ ! -d "neurogait_env" ]; then
+    echo "📦 Creating Python virtual environment..."
+    python3 -m venv neurogait_env
+fi
+
+# Activate virtual environment
+echo "🌐 Activating virtual environment..."
+source neurogait_env/bin/activate
+
+# Install/update requirements
+echo "📚 Installing/updating requirements..."
+pip install --upgrade pip
+pip install -r requirements.txt
+
+# Check if Neo4j is running
+if ! systemctl is-active --quiet neo4j; then
+    echo "🗄️ Starting Neo4j..."
+    sudo systemctl start neo4j
+    sleep 5
+fi
+
+# Create necessary directories
+mkdir -p temp_uploads logs data
+
+# Load environment variables
+if [ -f .env ]; then
+    echo "⚙️ Loading environment variables..."
+    export $(cat .env | xargs)
+fi
+
+# Start Streamlit application
+echo "🚀 Starting NeuroGait ASD application..."
+echo "📱 Application will be available at: http://localhost:8501"
+echo "🗄️ Neo4j browser available at: http://localhost:7474"
+echo ""
+echo "Press Ctrl+C to stop the application"
+echo ""
+
+streamlit run neurogait_asd_app.py --server.port=8501 --server.address=localhost
