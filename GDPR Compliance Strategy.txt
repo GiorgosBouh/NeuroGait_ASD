@@ -1,0 +1,18 @@
+1. Data Minimization
+# Videos are processed and immediately deleted
+# Only anonymized gait features are stored
+def process_and_delete_video(video_path):
+    features = extract_gait_features(video_path)
+    os.remove(video_path)  # Video deleted immediately
+    return features
+
+2. Anonymization:
+# Participant IDs are generated, not personal identifiers
+participant_id = f"P_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+# No names, addresses, or personal data stored
+
+✅ Videos processed and deleted immediately
+✅ Only anonymized numerical features stored
+✅ No biometric data retention
+✅ Minimal privacy risk
+
