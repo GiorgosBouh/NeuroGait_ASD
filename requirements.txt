@@ -1,44 +1,20 @@
-# First, let's backup the original file
-mv requirements.txt requirements_original.txt
-
-# Create a clean requirements.txt with only the dependencies
-cat > requirements.txt << 'EOF'
-# Core web framework
 streamlit>=1.28.0
-
-# Data processing and analysis
 pandas>=1.5.0
 numpy>=1.21.0
-
-# Computer vision and pose estimation
 opencv-python>=4.8.0
 mediapipe>=0.10.0
-
-# Machine learning
 scikit-learn>=1.3.0
 xgboost>=1.7.0
 imbalanced-learn>=0.11.0
-
-# Visualization
 matplotlib>=3.7.0
 seaborn>=0.12.0
 plotly>=5.15.0
-
-# Neo4j database
 neo4j>=5.12.0
-
-# Network analysis
 networkx>=3.1
-
-# Utilities
 requests>=2.31.0
 python-dateutil>=2.8.0
-
-# For production deployment (optional)
 gunicorn>=21.0.0
 psutil>=5.9.0
-
-# Development and testing (optional)
 pytest>=7.4.0
 black>=23.7.0
 flake8>=6.0.0
