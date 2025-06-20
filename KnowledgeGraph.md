@@ -42,7 +42,7 @@ Choose one option:
 **Option A: Neo4j Desktop**
 - Download from https://neo4j.com/download/
 - Create new project → Add local DBMS
-- Set password to `neurogait2025`
+- Set password to `palatiou`
 - Start the database
 
 **Option B: Docker**
@@ -50,7 +50,7 @@ Choose one option:
 docker run --name neo4j-neurogait \
   -p7474:7474 -p7687:7687 \
   -v $PWD/neo4j:/data \
-  --env NEO4J_AUTH=neo4j/neurogait2025 \
+  --env NEO4J_AUTH=neo4j/palatiou \
   neo4j:latest
 ```
 
@@ -118,7 +118,7 @@ NeuroGait_ASD/
 # Neo4j Configuration
 NEO4J_URI=bolt://localhost:7687
 NEO4J_USER=neo4j
-NEO4J_PASSWORD=neurogait2025
+NEO4J_PASSWORD=palatiou
 
 # Optional: OpenAI for future LLM integration
 OPENAI_API_KEY=your_api_key_here
@@ -127,7 +127,7 @@ OPENAI_API_KEY=your_api_key_here
 ### Neo4j Browser Access
 - URL: http://localhost:7474
 - Username: neo4j
-- Password: neurogait2025
+- Password: palatiou
 
 ## 📊 Example Queries
 
