@@ -45,7 +45,10 @@ class NeuroGaitKnowledgeGraph:
         """Initialize the knowledge graph builder"""
         self.neo4j_uri = neo4j_uri or os.getenv('NEO4J_URI', 'bolt://localhost:7687')
         self.neo4j_user = neo4j_user or os.getenv('NEO4J_USER', 'neo4j')
-        self.neo4j_password = neo4j_password or os.getenv('NEO4J_PASSWORD', 'password')
+        self.neo4j_password = neo4j_password or os.getenv('NEO4J_PASSWORD')
+        
+        if not self.neo4j_password:
+            raise ValueError("Neo4j password not found. Please set NEO4J_PASSWORD in your .env file")
         
         self.driver = None
         self.data = None
@@ -594,23 +597,20 @@ class NeuroGaitKnowledgeGraph:
 
 def main():
     """Main function to build the knowledge graph"""
-    # Configuration
-    EXCEL_FILE = "Final dataset.xlsx"  # Your data file
-    SAMPLE_SIZE = 100  # Use None for full dataset, or set a number for testing
+    # Configuration - Update this path to match your file location
+    EXCEL_FILE = "Final dataset.xlsx"  # Your data file 
+    SAMPLE_SIZE = None  # Use None for full dataset, or set a number for testing (e.g., 100)
     
-    # Check if file exists in current directory, otherwise try the full path
+    print(f"📁 Looking for data file: {EXCEL_FILE}")
+    
+    # Check if file exists
     if not os.path.exists(EXCEL_FILE):
-        EXCEL_FILE = "GiorgosBouh/NeuroGait_ASD/Final dataset.xlsx"
-        if not os.path.exists(EXCEL_FILE):
-            # Try relative path from home directory
-            EXCEL_FILE = os.path.expanduser("~/NeuroGait_ASD/Final dataset.xlsx")
-            if not os.path.exists(EXCEL_FILE):
-                print(f"❌ Error: Could not find Excel file. Please ensure 'Final dataset.xlsx' is in:")
-                print(f"   1. Current directory: {os.getcwd()}")
-                print(f"   2. Or at: ~/NeuroGait_ASD/Final dataset.xlsx")
-                return
+        print(f"❌ Error: Could not find Excel file '{EXCEL_FILE}'")
+        print(f"📍 Current directory: {os.getcwd()}")
+        print(f"💡 Make sure 'Final dataset.xlsx' is in the same directory as this script")
+        return False
     
-    print(f"📁 Using data file: {EXCEL_FILE}")
+    print(f"✅ Found data file: {EXCEL_FILE}")
     
     # Create knowledge graph builder
     kg_builder = NeuroGaitKnowledgeGraph()
