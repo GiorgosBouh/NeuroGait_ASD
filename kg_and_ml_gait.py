@@ -1,552 +1,639 @@
+#!/usr/bin/env python3
 """
-COMPLETE DATA LEAKAGE-FREE IMPLEMENTATION
-ASD vs Neurotypical Classification using Knowledge Graph Embeddings
+NeuroGait ASD Knowledge Graph Builder
+=====================================
 
-This implementation ensures NO data leakage by:
-1. Building graph without target information
-2. Generating embeddings from graph structure only  
-3. Proper train/test splitting AFTER embedding generation
-4. Multiple target variable options
+This script builds a comprehensive knowledge graph from gait analysis data
+for autism spectrum disorder (ASD) research using Neo4j.
+
+Author: AI Assistant
+Date: 2025
+Repository: https://github.com/GiorgosBouh/NeuroGait_ASD.git
 """
 
 import pandas as pd
 import numpy as np
-import networkx as nx
-from sklearn.model_selection import train_test_split, StratifiedKFold
-from sklearn.preprocessing import StandardScaler, LabelEncoder
-from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
-from sklearn.linear_model import LogisticRegression
-from sklearn.svm import SVC
-from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score
-from node2vec import Node2Vec
+import re
+from neo4j import GraphDatabase
 import logging
-import warnings
-warnings.filterwarnings('ignore')
+from typing import Dict, List, Tuple, Any
+import os
+from dotenv import load_dotenv
+import networkx as nx
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Load environment variables
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-class LeakageFreeASDClassifier:
+class NeuroGaitKnowledgeGraph:
     """
-    Complete implementation ensuring no data leakage
+    Knowledge Graph Builder for NeuroGait ASD Dataset
+    
+    Creates a comprehensive Neo4j knowledge graph capturing:
+    - Body part hierarchies and relationships
+    - Biomechanical measurements and statistics
+    - Gait parameters and temporal features
+    - Subject classifications and patterns
     """
     
-    def __init__(self, embedding_dim: int = 128, random_state: int = 42):
-        self.embedding_dim = embedding_dim
-        self.random_state = random_state
-        self.graph = nx.Graph()
-        self.embeddings = {}
-        self.scaler = StandardScaler()
-        self.label_encoder = LabelEncoder()
+    def __init__(self, neo4j_uri: str = None, neo4j_user: str = None, neo4j_password: str = None):
+        """Initialize the knowledge graph builder"""
+        self.neo4j_uri = neo4j_uri or os.getenv('NEO4J_URI', 'bolt://localhost:7687')
+        self.neo4j_user = neo4j_user or os.getenv('NEO4J_USER', 'neo4j')
+        self.neo4j_password = neo4j_password or os.getenv('NEO4J_PASSWORD', 'password')
         
-        # Available target variables (user can choose)
-        self.target_options = {
-            'binary_classification': {
-                'description': 'ASD vs Neurotypical',
-                'target_column': 'label',
-                'values': ['ASD', 'Neurotypical']
-            },
-            'asd_severity': {
-                'description': 'ASD severity levels',  
-                'target_column': 'asd_severity',
-                'values': ['Severe', 'Moderate', 'Mild', 'Compensated']
-            },
-            'movement_profile': {
-                'description': 'Movement variability profile',
-                'target_column': 'movement_profile', 
-                'values': ['High_Variability', 'Medium_Variability', 'Low_Variability']
-            },
-            'hand_asymmetry': {
-                'description': 'Hand positioning asymmetry',
-                'target_column': 'hand_asymmetry_class',
-                'values': ['Asymmetric', 'Symmetric']
-            }
+        self.driver = None
+        self.data = None
+        self.feature_schema = {}
+        
+        # Body part hierarchy and relationships
+        self.body_parts = {
+            'Head': {'parent': 'Upper_Body', 'type': 'head'},
+            'Neck': {'parent': 'Upper_Body', 'type': 'neck'},
+            'ShoulderLeft': {'parent': 'Upper_Body', 'type': 'shoulder', 'side': 'left'},
+            'ShoulderRight': {'parent': 'Upper_Body', 'type': 'shoulder', 'side': 'right'},
+            'ElbowLeft': {'parent': 'Upper_Body', 'type': 'elbow', 'side': 'left'},
+            'ElbowRight': {'parent': 'Upper_Body', 'type': 'elbow', 'side': 'right'},
+            'WristLeft': {'parent': 'Upper_Body', 'type': 'wrist', 'side': 'left'},
+            'WristRight': {'parent': 'Upper_Body', 'type': 'wrist', 'side': 'right'},
+            'HandLeft': {'parent': 'Upper_Body', 'type': 'hand', 'side': 'left'},
+            'HandRight': {'parent': 'Upper_Body', 'type': 'hand', 'side': 'right'},
+            'HandTipLeft': {'parent': 'Upper_Body', 'type': 'hand_tip', 'side': 'left'},
+            'HandTipRightA': {'parent': 'Upper_Body', 'type': 'hand_tip', 'side': 'right'},
+            'ThumbLeft': {'parent': 'Upper_Body', 'type': 'thumb', 'side': 'left'},
+            'ThumbRight': {'parent': 'Upper_Body', 'type': 'thumb', 'side': 'right'},
+            'SpineBase': {'parent': 'Core', 'type': 'spine'},
+            'SpineShoulder': {'parent': 'Core', 'type': 'spine'},
+            'Midspain': {'parent': 'Core', 'type': 'center'},  # Note: keeping original spelling
+            'HipLeft': {'parent': 'Lower_Body', 'type': 'hip', 'side': 'left'},
+            'HipRight': {'parent': 'Lower_Body', 'type': 'hip', 'side': 'right'},
+            'KneeLeft': {'parent': 'Lower_Body', 'type': 'knee', 'side': 'left'},
+            'KneeRight': {'parent': 'Lower_Body', 'type': 'knee', 'side': 'right'},
+            'AnkleLeft': {'parent': 'Lower_Body', 'type': 'ankle', 'side': 'left'},
+            'AnkleRight': {'parent': 'Lower_Body', 'type': 'ankle', 'side': 'right'},
+            'FootLeft': {'parent': 'Lower_Body', 'type': 'foot', 'side': 'left'},
+            'FootRight': {'parent': 'Lower_Body', 'type': 'foot', 'side': 'right'}
         }
         
-    def load_and_prepare_data(self, asd_file: str, neurotypical_file: str) -> pd.DataFrame:
-        """
-        Load datasets and prepare for leakage-free processing
-        """
-        logger.info("Loading datasets...")
+        # Measurement types
+        self.measurement_types = ['mean', 'variance', 'std']
+        self.coordinate_dimensions = ['x', 'y', 'z']
         
-        # Load ASD dataset
-        asd_df = pd.read_excel(asd_file)
-        asd_df['label'] = 'ASD'
-        logger.info(f"ASD dataset: {len(asd_df)} samples")
-        
-        # Load neurotypical dataset  
-        neurotypical_df = pd.read_excel(neurotypical_file)
-        neurotypical_df['label'] = 'Neurotypical'
-        logger.info(f"Neurotypical dataset: {len(neurotypical_df)} samples")
-        
-        # Combine datasets
-        combined_df = pd.concat([asd_df, neurotypical_df], ignore_index=True)
-        logger.info(f"Combined dataset: {len(combined_df)} samples")
-        
-        # Create additional target variables (still derived from non-leakage features)
-        combined_df = self._create_target_variables(combined_df)
-        
-        return combined_df
+    def connect_to_neo4j(self):
+        """Establish connection to Neo4j database"""
+        try:
+            self.driver = GraphDatabase.driver(
+                self.neo4j_uri, 
+                auth=(self.neo4j_user, self.neo4j_password)
+            )
+            logger.info(f"Connected to Neo4j at {self.neo4j_uri}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to connect to Neo4j: {e}")
+            return False
     
-    def _create_target_variables(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Create additional target variables for different classification tasks
-        IMPORTANT: These use only movement patterns, not original labels during graph construction
-        """
-        logger.info("Creating additional target variables...")
-        
-        # 1. Hand asymmetry classification (based on positioning)
-        df['hand_asymmetry_binary'] = (df['HaTiLPos'] != df['HaTiRPos']).astype(int)
-        df['hand_asymmetry_class'] = df['hand_asymmetry_binary'].map({1: 'Asymmetric', 0: 'Symmetric'})
-        
-        # 2. Movement variability profile (based on variance features)
-        variance_cols = [col for col in df.columns if 'variance-' in col and 'Hand' in col]
-        if variance_cols:
-            df['movement_variability_score'] = df[variance_cols].mean(axis=1)
-            movement_q1 = df['movement_variability_score'].quantile(0.33)
-            movement_q2 = df['movement_variability_score'].quantile(0.67)
+    def close_connection(self):
+        """Close Neo4j connection"""
+        if self.driver:
+            self.driver.close()
+            logger.info("Neo4j connection closed")
+    
+    def load_data(self, file_path: str):
+        """Load and analyze the gait analysis dataset"""
+        try:
+            logger.info(f"Loading data from {file_path}")
+            self.data = pd.read_excel(file_path)
+            logger.info(f"Loaded dataset with {len(self.data)} samples and {len(self.data.columns)} features")
             
-            df['movement_profile'] = pd.cut(df['movement_variability_score'],
-                                          bins=[0, movement_q1, movement_q2, np.inf],
-                                          labels=['Low_Variability', 'Medium_Variability', 'High_Variability'])
-        
-        # 3. ASD severity levels (based on multiple movement indicators)
-        # This will be created after graph embeddings to avoid leakage
-        df['asd_severity'] = 'Unknown'  # Placeholder
-        
-        return df
+            # Analyze feature structure
+            self._analyze_feature_structure()
+            return True
+        except Exception as e:
+            logger.error(f"Failed to load data: {e}")
+            return False
     
-    def build_leakage_free_graph(self, df: pd.DataFrame) -> nx.Graph:
-        """
-        Build knowledge graph WITHOUT using any target information
-        This is the key to preventing data leakage
-        """
-        logger.info("Building leakage-free knowledge graph...")
+    def _analyze_feature_structure(self):
+        """Analyze the structure of features in the dataset"""
+        logger.info("Analyzing feature structure...")
         
-        # CRITICAL: Remove ALL target-related columns
-        leakage_columns = ['label', 'class', 'diagnosis', 'asd_severity', 'hand_asymmetry_class', 
-                          'movement_profile', 'hand_asymmetry_binary', 'movement_variability_score']
-        
-        feature_columns = [col for col in df.columns if col not in leakage_columns]
-        
-        # Use only movement features for graph construction
-        movement_df = df[feature_columns].copy()
-        
-        logger.info(f"Using {len(feature_columns)} movement features (NO target information)")
-        
-        # Create graph nodes and edges based on movement patterns only
-        G = nx.Graph()
-        
-        # 1. Add participant nodes (without labels!)
-        for idx in range(len(movement_df)):
-            participant_id = f"participant_{idx}"
-            G.add_node(participant_id, 
-                      node_type='participant',
-                      age_group=self._get_age_group(df.iloc[idx].get('age', 0)) if 'age' in df.columns else 'unknown')
-        
-        # 2. Add feature nodes
-        for feature in feature_columns:
-            if feature in movement_df.columns:
-                values = movement_df[feature].dropna()
-                if len(values) > 0:
-                    G.add_node(f"feature_{feature}",
-                              node_type='movement_feature',
-                              feature_name=feature,
-                              mean_value=float(values.mean()),
-                              std_value=float(values.std()))
-        
-        # 3. Add body part nodes (derived from feature names)
-        body_parts = self._extract_body_parts(feature_columns)
-        for body_part in body_parts:
-            G.add_node(f"bodypart_{body_part}",
-                      node_type='body_part',
-                      part_name=body_part)
-        
-        # 4. Add measurement type nodes
-        measurement_types = ['spatial', 'variability', 'temporal', 'range_of_motion']
-        for mtype in measurement_types:
-            G.add_node(f"measurement_{mtype}",
-                      node_type='measurement_type',
-                      type_name=mtype)
-        
-        # 5. Create edges based on movement patterns (NO target info used)
-        self._add_graph_edges(G, movement_df, feature_columns)
-        
-        self.graph = G
-        logger.info(f"Graph created: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
-        
-        return G
-    
-    def _get_age_group(self, age: float) -> str:
-        """Categorize age without using target information"""
-        if pd.isna(age):
-            return 'unknown'
-        elif age < 5:
-            return 'early_childhood'
-        elif age < 12:
-            return 'childhood'
-        elif age < 18:
-            return 'adolescent'
-        else:
-            return 'adult'
-    
-    def _extract_body_parts(self, feature_columns: list) -> list:
-        """Extract body parts from feature names"""
-        body_parts = set()
-        for col in feature_columns:
-            for part in ['Head', 'Hand', 'Wrist', 'Shoulder', 'Elbow', 'Hip', 'Knee', 'Ankle', 'Foot']:
-                if part in col:
-                    body_parts.add(part)
-        return list(body_parts)
-    
-    def _add_graph_edges(self, G: nx.Graph, movement_df: pd.DataFrame, feature_columns: list):
-        """Add edges to graph based on movement patterns"""
-        
-        # 1. Connect participants to features based on their measurements
-        for idx, row in movement_df.iterrows():
-            participant_id = f"participant_{idx}"
-            
-            for feature in feature_columns:
-                if feature in row and not pd.isna(row[feature]):
-                    feature_node = f"feature_{feature}"
-                    if G.has_node(feature_node):
-                        # Add edge with measurement value
-                        G.add_edge(participant_id, feature_node,
-                                  edge_type='has_measurement',
-                                  measurement_value=float(row[feature]))
-        
-        # 2. Connect features to body parts
-        body_parts = self._extract_body_parts(feature_columns)
-        for feature in feature_columns:
-            feature_node = f"feature_{feature}"
-            for body_part in body_parts:
-                if body_part in feature:
-                    bodypart_node = f"bodypart_{body_part}"
-                    if G.has_node(feature_node) and G.has_node(bodypart_node):
-                        G.add_edge(feature_node, bodypart_node,
-                                  edge_type='affects_bodypart')
-        
-        # 3. Connect features to measurement types
-        measurement_mappings = {
-            'spatial': [col for col in feature_columns if 'mean-' in col],
-            'variability': [col for col in feature_columns if any(x in col for x in ['variance-', 'std-'])],
-            'temporal': [col for col in feature_columns if col in ['GaCT', 'StaT', 'SwiT']],
-            'range_of_motion': [col for col in feature_columns if col.startswith('Rom')]
+        # Categorize features
+        self.feature_schema = {
+            'body_measurements': [],
+            'distance_features': [],
+            'range_of_motion': [],
+            'temporal_gait': [],
+            'other': [],
+            'target': 'class'
         }
         
-        for mtype, features in measurement_mappings.items():
-            mtype_node = f"measurement_{mtype}"
-            for feature in features:
-                feature_node = f"feature_{feature}"
-                if G.has_node(feature_node) and G.has_node(mtype_node):
-                    G.add_edge(feature_node, mtype_node,
-                              edge_type='measurement_type')
-        
-        # 4. Add correlation edges between highly correlated features
-        correlation_matrix = movement_df[feature_columns].corr()
-        for i, feature1 in enumerate(feature_columns):
-            for j, feature2 in enumerate(feature_columns):
-                if i < j and feature1 in correlation_matrix.columns and feature2 in correlation_matrix.columns:
-                    correlation = correlation_matrix.loc[feature1, feature2]
-                    if abs(correlation) > 0.8:  # High correlation threshold
-                        feature1_node = f"feature_{feature1}"
-                        feature2_node = f"feature_{feature2}"
-                        if G.has_node(feature1_node) and G.has_node(feature2_node):
-                            G.add_edge(feature1_node, feature2_node,
-                                      edge_type='correlation',
-                                      correlation_value=float(correlation))
-    
-    def generate_embeddings(self, walk_length: int = 30, num_walks: int = 200) -> dict:
-        """
-        Generate Node2Vec embeddings from the leakage-free graph
-        """
-        logger.info("Generating Node2Vec embeddings...")
-        
-        if self.graph.number_of_nodes() == 0:
-            raise ValueError("Graph is empty. Please build graph first.")
-        
-        # Generate Node2Vec embeddings
-        node2vec = Node2Vec(self.graph,
-                           dimensions=self.embedding_dim,
-                           walk_length=walk_length,
-                           num_walks=num_walks,
-                           workers=4,
-                           p=1,
-                           q=1,
-                           seed=self.random_state)
-        
-        # Train the model
-        model = node2vec.fit(window=10, min_count=1, batch_words=4)
-        
-        # Extract embeddings for all nodes
-        embeddings = {}
-        for node in self.graph.nodes():
-            try:
-                embeddings[node] = model.wv[str(node)]
-            except KeyError:
-                # Handle nodes not in vocabulary with random embedding
-                embeddings[node] = np.random.normal(0, 0.1, self.embedding_dim)
-        
-        self.embeddings = embeddings
-        logger.info(f"Generated embeddings for {len(embeddings)} nodes")
-        
-        return embeddings
-    
-    def extract_participant_features(self) -> tuple:
-        """
-        Extract embeddings for participant nodes only
-        Returns embeddings matrix and participant indices
-        """
-        participant_embeddings = []
-        participant_indices = []
-        
-        for node_id, embedding in self.embeddings.items():
-            if node_id.startswith('participant_'):
-                # Extract participant index
-                try:
-                    participant_idx = int(node_id.split('_')[1])
-                    participant_embeddings.append(embedding)
-                    participant_indices.append(participant_idx)
-                except ValueError:
-                    logger.warning(f"Could not extract index from {node_id}")
-        
-        # Sort by participant index to maintain order
-        sorted_data = sorted(zip(participant_indices, participant_embeddings))
-        participant_indices, participant_embeddings = zip(*sorted_data)
-        
-        X = np.array(participant_embeddings)
-        indices = list(participant_indices)
-        
-        logger.info(f"Extracted features for {len(indices)} participants: {X.shape}")
-        
-        return X, indices
-    
-    def train_classifiers(self, df: pd.DataFrame, target_type: str = 'binary_classification',
-                         test_size: float = 0.3) -> dict:
-        """
-        Train classifiers using graph embeddings
-        
-        Args:
-            df: Original dataframe with labels
-            target_type: Type of target variable to use
-            test_size: Proportion of data for testing
-        """
-        logger.info(f"Training classifiers for {target_type}...")
-        
-        if target_type not in self.target_options:
-            raise ValueError(f"Target type must be one of: {list(self.target_options.keys())}")
-        
-        # Get participant embeddings
-        X, participant_indices = self.extract_participant_features()
-        
-        # Map participant indices to target labels
-        target_info = self.target_options[target_type]
-        target_column = target_info['target_column']
-        
-        y = []
-        valid_X = []
-        
-        for i, participant_idx in enumerate(participant_indices):
-            if participant_idx < len(df):
-                if target_column in df.columns:
-                    label = df.iloc[participant_idx][target_column]
-                    if not pd.isna(label):
-                        y.append(label)
-                        valid_X.append(X[i])
-        
-        if len(valid_X) == 0:
-            raise ValueError(f"No valid data found for target {target_column}")
-        
-        X = np.array(valid_X)
-        y = np.array(y)
-        
-        logger.info(f"Training data: {X.shape[0]} samples, {X.shape[1]} features")
-        logger.info(f"Target distribution: {np.unique(y, return_counts=True)}")
-        
-        # Encode labels
-        y_encoded = self.label_encoder.fit_transform(y)
-        
-        # CRITICAL: Split data AFTER embedding generation (no leakage)
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y_encoded, test_size=test_size, random_state=self.random_state, 
-            stratify=y_encoded
-        )
-        
-        # Scale features
-        X_train_scaled = self.scaler.fit_transform(X_train)
-        X_test_scaled = self.scaler.transform(X_test)
-        
-        # Define models
-        models = {
-            'logistic_regression': LogisticRegression(random_state=self.random_state, max_iter=1000),
-            'random_forest': RandomForestClassifier(n_estimators=200, random_state=self.random_state),
-            'gradient_boost': GradientBoostingClassifier(n_estimators=150, random_state=self.random_state),
-            'svm': SVC(probability=True, random_state=self.random_state)
-        }
-        
-        # Train and evaluate models
-        results = {}
-        
-        for model_name, model in models.items():
-            logger.info(f"Training {model_name}...")
-            
-            # Train model
-            model.fit(X_train_scaled, y_train)
-            
-            # Predictions
-            y_pred = model.predict(X_test_scaled)
-            y_pred_proba = model.predict_proba(X_test_scaled)[:, 1] if hasattr(model, 'predict_proba') and len(np.unique(y_encoded)) == 2 else None
-            
-            # Calculate metrics
-            accuracy = (y_pred == y_test).mean()
-            
-            # Confusion matrix
-            cm = confusion_matrix(y_test, y_pred)
-            
-            # For binary classification
-            if len(np.unique(y_encoded)) == 2:
-                tn, fp, fn, tp = cm.ravel()
-                sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0
-                specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
-                auc_score = roc_auc_score(y_test, y_pred_proba) if y_pred_proba is not None else None
+        for col in self.data.columns:
+            if col == 'class':
+                continue
+            elif col.startswith('Rom'):
+                self.feature_schema['range_of_motion'].append(col)
+            elif any(part in col for part in ['MaxStLe', 'MaxStWi', 'StrLe', 'GaCT', 'StaT', 'SwiT', 'Velocity']):
+                self.feature_schema['temporal_gait'].append(col)
+            elif any(col.startswith(f'{stat}-') for stat in self.measurement_types):
+                self.feature_schema['body_measurements'].append(col)
+            elif any(body_part in col for body_part in self.body_parts.keys()):
+                if col not in self.feature_schema['body_measurements']:
+                    self.feature_schema['distance_features'].append(col)
             else:
-                sensitivity = specificity = auc_score = None
-                tp = tn = fp = fn = None
+                self.feature_schema['other'].append(col)
+        
+        logger.info(f"Feature analysis complete:")
+        for category, features in self.feature_schema.items():
+            if isinstance(features, list):
+                logger.info(f"  {category}: {len(features)} features")
+    
+    def clear_database(self):
+        """Clear the Neo4j database"""
+        with self.driver.session() as session:
+            session.run("MATCH (n) DETACH DELETE n")
+            logger.info("Database cleared")
+    
+    def create_schema(self):
+        """Create the knowledge graph schema"""
+        logger.info("Creating knowledge graph schema...")
+        
+        with self.driver.session() as session:
+            # Create constraints and indexes
+            constraints = [
+                "CREATE CONSTRAINT IF NOT EXISTS FOR (bp:BodyPart) REQUIRE bp.name IS UNIQUE",
+                "CREATE CONSTRAINT IF NOT EXISTS FOR (mt:MeasurementType) REQUIRE mt.name IS UNIQUE",
+                "CREATE CONSTRAINT IF NOT EXISTS FOR (cd:CoordinateDimension) REQUIRE cd.name IS UNIQUE",
+                "CREATE CONSTRAINT IF NOT EXISTS FOR (s:Subject) REQUIRE s.id IS UNIQUE",
+                "CREATE CONSTRAINT IF NOT EXISTS FOR (c:Classification) REQUIRE c.label IS UNIQUE",
+                "CREATE CONSTRAINT IF NOT EXISTS FOR (gp:GaitParameter) REQUIRE gp.name IS UNIQUE",
+                "CREATE INDEX IF NOT EXISTS FOR (bp:BodyPart) ON (bp.type)",
+                "CREATE INDEX IF NOT EXISTS FOR (s:Subject) ON (s.classification)"
+            ]
             
-            # Cross-validation
-            cv_scores = []
-            skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=self.random_state)
-            for train_idx, val_idx in skf.split(X_train_scaled, y_train):
-                model_cv = type(model)(**model.get_params())
-                model_cv.fit(X_train_scaled[train_idx], y_train[train_idx])
-                val_pred = model_cv.predict(X_train_scaled[val_idx])
-                cv_scores.append((val_pred == y_train[val_idx]).mean())
+            for constraint in constraints:
+                session.run(constraint)
+        
+        logger.info("Schema created successfully")
+    
+    def create_body_part_hierarchy(self):
+        """Create body part nodes and hierarchical relationships"""
+        logger.info("Creating body part hierarchy...")
+        
+        with self.driver.session() as session:
+            # Create main body regions
+            regions = ['Upper_Body', 'Core', 'Lower_Body']
+            for region in regions:
+                session.run(
+                    "MERGE (r:BodyRegion {name: $name, type: 'region'})",
+                    name=region
+                )
             
-            results[model_name] = {
-                'model': model,
-                'accuracy': accuracy,
-                'sensitivity': sensitivity,
-                'specificity': specificity,
-                'auc_score': auc_score,
-                'cv_accuracy': np.mean(cv_scores),
-                'cv_std': np.std(cv_scores),
-                'confusion_matrix': cm,
-                'classification_report': classification_report(y_test, y_pred, 
-                                                             target_names=self.label_encoder.classes_),
-                'test_predictions': y_pred,
-                'test_probabilities': y_pred_proba,
-                'test_labels': y_test
+            # Create body parts and connect to regions
+            for part_name, properties in self.body_parts.items():
+                session.run("""
+                    MERGE (bp:BodyPart {name: $name, type: $type, side: $side})
+                    WITH bp
+                    MATCH (r:BodyRegion {name: $parent})
+                    MERGE (bp)-[:BELONGS_TO]->(r)
+                """, 
+                name=part_name,
+                type=properties['type'],
+                side=properties.get('side', 'center'),
+                parent=properties['parent']
+                )
+            
+            # Create measurement types
+            for measurement in self.measurement_types:
+                session.run(
+                    "MERGE (mt:MeasurementType {name: $name, category: 'statistical'})",
+                    name=measurement
+                )
+            
+            # Create coordinate dimensions
+            for dimension in self.coordinate_dimensions:
+                session.run(
+                    "MERGE (cd:CoordinateDimension {name: $name, category: 'spatial'})",
+                    name=dimension
+                )
+            
+            # Create classifications
+            for classification in ['A', 'T']:
+                label = 'ASD' if classification == 'A' else 'Typical'
+                session.run(
+                    "MERGE (c:Classification {label: $label, code: $code})",
+                    label=label, code=classification
+                )
+        
+        logger.info("Body part hierarchy created")
+    
+    def create_measurement_relationships(self):
+        """Create relationships between body parts, measurements, and dimensions"""
+        logger.info("Creating measurement relationships...")
+        
+        with self.driver.session() as session:
+            # Connect body parts to measurement types and dimensions
+            for feature in self.feature_schema['body_measurements']:
+                parts = self._parse_body_measurement_feature(feature)
+                if parts:
+                    measurement_type, dimension, body_part = parts
+                    
+                    session.run("""
+                        MATCH (bp:BodyPart {name: $body_part})
+                        MATCH (mt:MeasurementType {name: $measurement_type})
+                        MATCH (cd:CoordinateDimension {name: $dimension})
+                        MERGE (bp)-[:HAS_MEASUREMENT]->(mt)
+                        MERGE (mt)-[:IN_DIMENSION]->(cd)
+                        MERGE (bp)-[rel:MEASURED_IN]->(cd)
+                        SET rel.measurement_type = $measurement_type
+                    """,
+                    body_part=body_part,
+                    measurement_type=measurement_type,
+                    dimension=dimension
+                    )
+        
+        logger.info("Measurement relationships created")
+    
+    def _parse_body_measurement_feature(self, feature: str) -> Tuple[str, str, str]:
+        """Parse body measurement feature name to extract components"""
+        # Pattern: mean-x-BodyPart, variance-y-BodyPart, std-z-BodyPart
+        pattern = r'(mean|variance|std)-(x|y|z)-(.+)'
+        match = re.match(pattern, feature)
+        
+        if match:
+            measurement_type, dimension, body_part = match.groups()
+            return measurement_type, dimension, body_part
+        
+        return None
+    
+    def create_gait_parameters(self):
+        """Create gait parameter nodes"""
+        logger.info("Creating gait parameters...")
+        
+        gait_params = {
+            'MaxStLe': {'name': 'Maximum Step Length', 'category': 'spatial'},
+            'MaxStWi': {'name': 'Maximum Step Width', 'category': 'spatial'},
+            'StrLe': {'name': 'Stride Length', 'category': 'spatial'},
+            'GaCT': {'name': 'Gait Cycle Time', 'category': 'temporal'},
+            'StaT': {'name': 'Stance Time', 'category': 'temporal'},
+            'SwiT': {'name': 'Swing Time', 'category': 'temporal'},
+            'Velocity': {'name': 'Gait Velocity', 'category': 'kinematic'}
+        }
+        
+        with self.driver.session() as session:
+            for param_code, properties in gait_params.items():
+                session.run("""
+                    MERGE (gp:GaitParameter {
+                        code: $code,
+                        name: $name,
+                        category: $category
+                    })
+                """,
+                code=param_code,
+                name=properties['name'],
+                category=properties['category']
+                )
+        
+        logger.info("Gait parameters created")
+    
+    def populate_subject_data(self, sample_size: int = None):
+        """Populate the graph with subject data"""
+        logger.info("Populating subject data...")
+        
+        # Use sample for testing if specified
+        if sample_size:
+            data_subset = self.data.sample(n=min(sample_size, len(self.data)))
+        else:
+            data_subset = self.data
+        
+        with self.driver.session() as session:
+            for idx, row in data_subset.iterrows():
+                # Create subject node
+                classification = row['class']
+                session.run("""
+                    MERGE (s:Subject {
+                        id: $subject_id,
+                        classification_code: $classification
+                    })
+                    WITH s
+                    MATCH (c:Classification {code: $classification})
+                    MERGE (s)-[:CLASSIFIED_AS]->(c)
+                """,
+                subject_id=f"subject_{idx}",
+                classification=classification
+                )
+                
+                # Add body measurements
+                self._add_subject_measurements(session, idx, row)
+                
+                # Add gait parameters
+                self._add_subject_gait_parameters(session, idx, row)
+        
+        logger.info(f"Subject data populated for {len(data_subset)} subjects")
+    
+    def _add_subject_measurements(self, session, subject_id: int, row: pd.Series):
+        """Add measurement values for a subject"""
+        for feature in self.feature_schema['body_measurements']:
+            parts = self._parse_body_measurement_feature(feature)
+            if parts and feature in row.index:
+                measurement_type, dimension, body_part = parts
+                value = row[feature]
+                
+                if pd.notna(value):
+                    session.run("""
+                        MATCH (s:Subject {id: $subject_id})
+                        MATCH (bp:BodyPart {name: $body_part})
+                        MATCH (mt:MeasurementType {name: $measurement_type})
+                        MATCH (cd:CoordinateDimension {name: $dimension})
+                        MERGE (s)-[rel:HAS_VALUE]->(bp)
+                        SET rel.measurement_type = $measurement_type,
+                            rel.dimension = $dimension,
+                            rel.value = $value
+                    """,
+                    subject_id=f"subject_{subject_id}",
+                    body_part=body_part,
+                    measurement_type=measurement_type,
+                    dimension=dimension,
+                    value=float(value)
+                    )
+    
+    def _add_subject_gait_parameters(self, session, subject_id: int, row: pd.Series):
+        """Add gait parameter values for a subject"""
+        gait_features = ['MaxStLe', 'MaxStWi', 'StrLe', 'GaCT', 'StaT', 'SwiT', 'Velocity']
+        
+        for feature in gait_features:
+            if feature in row.index and pd.notna(row[feature]):
+                session.run("""
+                    MATCH (s:Subject {id: $subject_id})
+                    MATCH (gp:GaitParameter {code: $feature})
+                    MERGE (s)-[rel:HAS_GAIT_VALUE]->(gp)
+                    SET rel.value = $value
+                """,
+                subject_id=f"subject_{subject_id}",
+                feature=feature,
+                value=float(row[feature])
+                )
+    
+    def create_anatomical_connections(self):
+        """Create anatomical connections between body parts"""
+        logger.info("Creating anatomical connections...")
+        
+        # Define anatomical connections (parent-child relationships in kinematic chain)
+        connections = [
+            ('Head', 'Neck'),
+            ('Neck', 'SpineShoulder'),
+            ('SpineShoulder', 'ShoulderLeft'),
+            ('SpineShoulder', 'ShoulderRight'),
+            ('ShoulderLeft', 'ElbowLeft'),
+            ('ShoulderRight', 'ElbowRight'),
+            ('ElbowLeft', 'WristLeft'),
+            ('ElbowRight', 'WristRight'),
+            ('WristLeft', 'HandLeft'),
+            ('WristRight', 'HandRight'),
+            ('HandLeft', 'ThumbLeft'),
+            ('HandRight', 'ThumbRight'),
+            ('SpineShoulder', 'SpineBase'),
+            ('SpineBase', 'HipLeft'),
+            ('SpineBase', 'HipRight'),
+            ('HipLeft', 'KneeLeft'),
+            ('HipRight', 'KneeRight'),
+            ('KneeLeft', 'AnkleLeft'),
+            ('KneeRight', 'AnkleRight'),
+            ('AnkleLeft', 'FootLeft'),
+            ('AnkleRight', 'FootRight')
+        ]
+        
+        with self.driver.session() as session:
+            for parent, child in connections:
+                if parent in self.body_parts and child in self.body_parts:
+                    session.run("""
+                        MATCH (parent:BodyPart {name: $parent})
+                        MATCH (child:BodyPart {name: $child})
+                        MERGE (parent)-[:CONNECTS_TO]->(child)
+                        MERGE (child)-[:CONNECTED_FROM]->(parent)
+                    """,
+                    parent=parent,
+                    child=child
+                    )
+        
+        logger.info("Anatomical connections created")
+    
+    def analyze_classification_patterns(self):
+        """Analyze patterns between ASD and typical classifications"""
+        logger.info("Analyzing classification patterns...")
+        
+        with self.driver.session() as session:
+            # Calculate average measurements by classification
+            result = session.run("""
+                MATCH (s:Subject)-[rel:HAS_VALUE]->(bp:BodyPart)
+                MATCH (s)-[:CLASSIFIED_AS]->(c:Classification)
+                RETURN c.label as classification,
+                       bp.name as body_part,
+                       rel.measurement_type as measurement_type,
+                       rel.dimension as dimension,
+                       avg(rel.value) as avg_value,
+                       count(rel.value) as count
+                ORDER BY classification, body_part, measurement_type, dimension
+            """)
+            
+            patterns = []
+            for record in result:
+                patterns.append({
+                    'classification': record['classification'],
+                    'body_part': record['body_part'],
+                    'measurement_type': record['measurement_type'],
+                    'dimension': record['dimension'],
+                    'avg_value': record['avg_value'],
+                    'count': record['count']
+                })
+            
+            return patterns
+    
+    def export_network_visualization(self, output_file: str = 'neurogait_network.png'):
+        """Export a network visualization of the knowledge graph"""
+        logger.info("Creating network visualization...")
+        
+        with self.driver.session() as session:
+            # Get nodes and relationships for visualization
+            result = session.run("""
+                MATCH (n)
+                OPTIONAL MATCH (n)-[r]->(m)
+                RETURN n, r, m
+            """)
+            
+            # Create NetworkX graph
+            G = nx.Graph()
+            
+            for record in result:
+                node1 = record['n']
+                rel = record['r']
+                node2 = record['m']
+                
+                # Add nodes
+                if node1:
+                    labels = list(node1.labels)
+                    node_id = f"{labels[0]}:{node1.get('name', node1.get('id', 'unknown'))}"
+                    G.add_node(node_id, type=labels[0] if labels else 'unknown')
+                
+                if node2 and rel:
+                    labels = list(node2.labels)
+                    node_id2 = f"{labels[0]}:{node2.get('name', node2.get('id', 'unknown'))}"
+                    G.add_node(node_id2, type=labels[0] if labels else 'unknown')
+                    G.add_edge(node_id, node_id2, relationship=rel.type)
+            
+            # Create visualization
+            plt.figure(figsize=(20, 16))
+            
+            # Define colors for different node types
+            node_colors = {
+                'BodyPart': '#FF6B6B',
+                'BodyRegion': '#4ECDC4',
+                'MeasurementType': '#45B7D1',
+                'CoordinateDimension': '#FFA07A',
+                'Classification': '#98D8C8',
+                'GaitParameter': '#F7DC6F',
+                'Subject': '#BB8FCE'
             }
             
-            logger.info(f"{model_name} - Accuracy: {accuracy:.3f}, CV: {np.mean(cv_scores):.3f}±{np.std(cv_scores):.3f}")
+            # Set node colors
+            colors = [node_colors.get(G.nodes[node].get('type', 'unknown'), '#CCCCCC') for node in G.nodes()]
+            
+            # Use spring layout for better visualization
+            pos = nx.spring_layout(G, k=1, iterations=50)
+            
+            # Draw the graph
+            nx.draw(G, pos, 
+                   node_color=colors,
+                   node_size=300,
+                   font_size=8,
+                   font_weight='bold',
+                   with_labels=True,
+                   edge_color='gray',
+                   alpha=0.7)
+            
+            plt.title("NeuroGait ASD Knowledge Graph Structure", fontsize=16, fontweight='bold')
+            plt.axis('off')
+            plt.tight_layout()
+            plt.savefig(output_file, dpi=300, bbox_inches='tight')
+            plt.show()
+            
+            logger.info(f"Network visualization saved to {output_file}")
+    
+    def get_statistics(self):
+        """Get knowledge graph statistics"""
+        with self.driver.session() as session:
+            stats = {}
+            
+            # Count nodes by type
+            result = session.run("""
+                MATCH (n)
+                RETURN labels(n)[0] as node_type, count(n) as count
+                ORDER BY count DESC
+            """)
+            stats['nodes'] = {record['node_type']: record['count'] for record in result}
+            
+            # Count relationships by type
+            result = session.run("""
+                MATCH ()-[r]->()
+                RETURN type(r) as rel_type, count(r) as count
+                ORDER BY count DESC
+            """)
+            stats['relationships'] = {record['rel_type']: record['count'] for record in result}
+            
+            # Classification distribution
+            result = session.run("""
+                MATCH (s:Subject)-[:CLASSIFIED_AS]->(c:Classification)
+                RETURN c.label as classification, count(s) as count
+            """)
+            stats['classifications'] = {record['classification']: record['count'] for record in result}
+            
+            return stats
+    
+    def build_complete_graph(self, excel_file: str, sample_size: int = None):
+        """Build the complete knowledge graph from the Excel file"""
+        logger.info("Starting complete knowledge graph build...")
         
-        return results
-    
-    def get_available_targets(self) -> dict:
-        """Return available target variables for classification"""
-        return self.target_options
-    
-    def predict_new_participant(self, new_data: dict, model_name: str, target_type: str) -> dict:
-        """
-        Predict for a new participant using trained model
-        """
-        # This would require adding the new participant to the graph and regenerating embeddings
-        # For brevity, returning placeholder
-        return {
-            'prediction': 'ASD',
-            'probability': 0.85,
-            'confidence': 'High'
-        }
-
-def run_complete_leakage_free_analysis(asd_file: str, neurotypical_file: str):
-    """
-    Complete analysis pipeline ensuring no data leakage
-    """
-    
-    print("=" * 60)
-    print("LEAKAGE-FREE ASD CLASSIFICATION PIPELINE")
-    print("=" * 60)
-    
-    # Initialize classifier
-    classifier = LeakageFreeASDClassifier(embedding_dim=128, random_state=42)
-    
-    # 1. Load and prepare data
-    print("\n1. Loading and preparing data...")
-    df = classifier.load_and_prepare_data(asd_file, neurotypical_file)
-    
-    # 2. Build leakage-free graph
-    print("\n2. Building knowledge graph (NO target information used)...")
-    graph = classifier.build_leakage_free_graph(df)
-    
-    # 3. Generate embeddings
-    print("\n3. Generating graph embeddings...")
-    embeddings = classifier.generate_embeddings()
-    
-    # 4. Show available target options
-    print("\n4. Available target variables:")
-    targets = classifier.get_available_targets()
-    for target_key, target_info in targets.items():
-        print(f"   - {target_key}: {target_info['description']}")
-    
-    # 5. Train classifiers for different targets
-    print("\n5. Training classifiers...")
-    
-    all_results = {}
-    
-    # Binary classification (main target)
-    print("\n   Training for ASD vs Neurotypical classification...")
-    binary_results = classifier.train_classifiers(df, 'binary_classification')
-    all_results['binary_classification'] = binary_results
-    
-    # Hand asymmetry classification
-    print("\n   Training for hand asymmetry classification...")
-    hand_results = classifier.train_classifiers(df, 'hand_asymmetry')
-    all_results['hand_asymmetry'] = hand_results
-    
-    # Movement profile classification
-    print("\n   Training for movement profile classification...")
-    movement_results = classifier.train_classifiers(df, 'movement_profile')
-    all_results['movement_profile'] = movement_results
-    
-    # 6. Summary results
-    print("\n" + "=" * 60)
-    print("FINAL RESULTS SUMMARY")
-    print("=" * 60)
-    
-    for target_type, results in all_results.items():
-        print(f"\n{target_type.upper()}:")
-        best_model = max(results.keys(), key=lambda k: results[k]['accuracy'])
-        best_result = results[best_model]
+        # Connect to database
+        if not self.connect_to_neo4j():
+            return False
         
-        print(f"   Best Model: {best_model}")
-        print(f"   Accuracy: {best_result['accuracy']:.3f}")
-        if best_result['sensitivity'] is not None:
-            print(f"   Sensitivity: {best_result['sensitivity']:.3f}")
-            print(f"   Specificity: {best_result['specificity']:.3f}")
-        if best_result['auc_score'] is not None:
-            print(f"   AUC Score: {best_result['auc_score']:.3f}")
-        print(f"   CV Accuracy: {best_result['cv_accuracy']:.3f} ± {best_result['cv_std']:.3f}")
-    
-    print("\n" + "=" * 60)
-    print("✅ ANALYSIS COMPLETE - NO DATA LEAKAGE DETECTED")
-    print("=" * 60)
-    
-    return classifier, all_results
+        try:
+            # Load data
+            if not self.load_data(excel_file):
+                return False
+            
+            # Build graph
+            self.clear_database()
+            self.create_schema()
+            self.create_body_part_hierarchy()
+            self.create_measurement_relationships()
+            self.create_gait_parameters()
+            self.create_anatomical_connections()
+            self.populate_subject_data(sample_size)
+            
+            # Get statistics
+            stats = self.get_statistics()
+            logger.info("Knowledge Graph Statistics:")
+            for category, items in stats.items():
+                logger.info(f"  {category}:")
+                for item, count in items.items():
+                    logger.info(f"    {item}: {count}")
+            
+            logger.info("Knowledge graph build completed successfully!")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error building knowledge graph: {e}")
+            return False
+        finally:
+            self.close_connection()
 
-# Example usage
+
+def main():
+    """Main function to build the knowledge graph"""
+    # Configuration
+    EXCEL_FILE = "Final dataset.xlsx"  # Your data file
+    SAMPLE_SIZE = 100  # Use None for full dataset, or set a number for testing
+    
+    # Check if file exists in current directory, otherwise try the full path
+    if not os.path.exists(EXCEL_FILE):
+        EXCEL_FILE = "GiorgosBouh/NeuroGait_ASD/Final dataset.xlsx"
+        if not os.path.exists(EXCEL_FILE):
+            # Try relative path from home directory
+            EXCEL_FILE = os.path.expanduser("~/NeuroGait_ASD/Final dataset.xlsx")
+            if not os.path.exists(EXCEL_FILE):
+                print(f"❌ Error: Could not find Excel file. Please ensure 'Final dataset.xlsx' is in:")
+                print(f"   1. Current directory: {os.getcwd()}")
+                print(f"   2. Or at: ~/NeuroGait_ASD/Final dataset.xlsx")
+                return
+    
+    print(f"📁 Using data file: {EXCEL_FILE}")
+    
+    # Create knowledge graph builder
+    kg_builder = NeuroGaitKnowledgeGraph()
+    
+    # Build the complete knowledge graph
+    success = kg_builder.build_complete_graph(EXCEL_FILE, sample_size=SAMPLE_SIZE)
+    
+    if success:
+        print("\n" + "="*60)
+        print("✅ NEUROGAIT KNOWLEDGE GRAPH BUILD COMPLETED!")
+        print("="*60)
+        print("\nNext steps:")
+        print("1. Access your Neo4j browser at: http://localhost:7474")
+        print("2. Use the browser to explore the graph visually")
+        print("3. Run Cypher queries to analyze the data")
+        print("\nExample queries:")
+        print("- MATCH (n) RETURN count(n)  // Count all nodes")
+        print("- MATCH (s:Subject)-[:CLASSIFIED_AS]->(c:Classification) RETURN c.label, count(s)")
+        print("- MATCH (bp:BodyPart)-[:BELONGS_TO]->(br:BodyRegion) RETURN br.name, count(bp)")
+        print("="*60)
+    else:
+        print("\n❌ Knowledge graph build failed. Check the logs for details.")
+
+
 if __name__ == "__main__":
-    # File paths
-    asd_file = "Final dataset for cases with ASD.xlsx"
-    neurotypical_file = "Final dataset for typical cases.xlsx"
-    
-    # Run complete analysis
-    classifier, results = run_complete_leakage_free_analysis(asd_file, neurotypical_file)
-    
-    print("\n🎯 Key Features of this Implementation:")
-    print("   ✅ No target labels used in graph construction")
-    print("   ✅ Embeddings generated from movement patterns only")
-    print("   ✅ Proper train/test split AFTER embedding generation")
-    print("   ✅ Multiple target variable options")
-    print("   ✅ Cross-validation for robust evaluation")
-    print("   ✅ Comprehensive metrics and reporting")
+    main()
