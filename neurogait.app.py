@@ -512,7 +512,7 @@ def show_home_page():
         """)
     
     with col2:
-        st.image("https://via.placeholder.com/300x400/4CAF50/white?text=NeuroGait+ASD", 
+        st.image("https://github.com/GiorgosBouh/NeuroGait_ASD/blob/84c4d3d5d1c2b8636c3948d12759518b1e077b08/logo.png", 
                 caption="NeuroGait ASD System")
         
         # System status
