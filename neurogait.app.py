@@ -21,27 +21,18 @@ import base64
 from typing import Dict, List, Tuple, Optional
 import pickle
 import requests
+import shap
+from openpyxl import load_workbook
 
 # Machine Learning imports
 from sklearn.ensemble import RandomForestClassifier, IsolationForest
 from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.preprocessing import StandardScaler, LabelEncoder
-from sklearn.metrics import (
-    classification_report, confusion_matrix, roc_auc_score, roc_curve,
-    precision_score, recall_score, f1_score, accuracy_score,
-    precision_recall_curve, average_precision_score
-)
+from sklearn.metrics import (classification_report, confusion_matrix, roc_auc_score, 
+                           roc_curve, accuracy_score, precision_score, recall_score, f1_score)
 import xgboost as xgb
 from sklearn.decomposition import PCA
 from imblearn.over_sampling import SMOTE
-
-# Additional imports for enhanced functionality
-import shap
-import openpyxl
-from sklearn.model_selection import StratifiedKFold
-from sklearn.calibration import calibration_curve
-import warnings
-warnings.filterwarnings('ignore')
 
 # Configuration
 st.set_page_config(
@@ -101,292 +92,6 @@ class Neo4jConnection:
                 logger.info(f"Schema query executed: {query[:50]}...")
             except Exception as e:
                 logger.error(f"Error executing schema query: {e}")
-
-class ExcelDataProcessor:
-    """Enhanced Excel data processing with comprehensive feature extraction"""
-    
-    def __init__(self):
-        self.processed_data = None
-        self.feature_columns = []
-        
-    def load_excel_data(self, file_path_or_buffer) -> pd.DataFrame:
-        """Load and process Excel data"""
-        try:
-            # Read Excel file
-            if isinstance(file_path_or_buffer, str):
-                df = pd.read_excel(file_path_or_buffer)
-            else:
-                df = pd.read_excel(file_path_or_buffer)
-            
-            # Clean column names
-            df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_')
-            
-            # Basic data cleaning
-            df = df.dropna(thresh=len(df.columns) * 0.5)  # Drop rows with >50% missing values
-            
-            self.processed_data = df
-            self._identify_feature_columns()
-            
-            return df
-            
-        except Exception as e:
-            st.error(f"Error loading Excel data: {e}")
-            return pd.DataFrame()
-    
-    def _identify_feature_columns(self):
-        """Automatically identify feature columns"""
-        if self.processed_data is not None:
-            # Exclude ID and label columns
-            exclude_cols = ['participant_id', 'id', 'diagnosis', 'label', 'target']
-            self.feature_columns = [col for col in self.processed_data.columns 
-                                  if col not in exclude_cols and 
-                                  self.processed_data[col].dtype in ['int64', 'float64']]
-    
-    def get_features_and_labels(self) -> Tuple[pd.DataFrame, pd.Series]:
-        """Extract features and labels from processed data"""
-        if self.processed_data is None:
-            return pd.DataFrame(), pd.Series()
-        
-        # Get features
-        X = self.processed_data[self.feature_columns]
-        
-        # Get labels (try different column names)
-        label_cols = ['diagnosis', 'label', 'target', 'asd', 'class']
-        y = None
-        
-        for col in label_cols:
-            if col in self.processed_data.columns:
-                y = self.processed_data[col]
-                break
-        
-        if y is None:
-            st.error("No label column found. Please ensure your data has one of: diagnosis, label, target, asd, class")
-            return X, pd.Series()
-        
-        # Convert labels to binary if needed
-        if y.dtype == 'object':
-            y = y.map({'ASD': 1, 'Control': 0, 'asd': 1, 'control': 0, 
-                      'positive': 1, 'negative': 0, 'yes': 1, 'no': 0})
-        
-        return X, y
-
-class EnhancedMLAnalyzer:
-    """Enhanced Machine Learning analyzer with comprehensive metrics and SHAP"""
-    
-    def __init__(self):
-        self.rf_model = RandomForestClassifier(n_estimators=100, random_state=42)
-        self.xgb_model = xgb.XGBClassifier(random_state=42, eval_metric='logloss')
-        self.isolation_forest = IsolationForest(contamination=0.1, random_state=42)
-        self.scaler = StandardScaler()
-        self.feature_names = []
-        self.is_trained = False
-        self.X_train = None
-        self.X_test = None
-        self.y_train = None
-        self.y_test = None
-        self.shap_explainer = None
-        self.shap_values = None
-        
-    def prepare_training_data(self, X: pd.DataFrame, y: pd.Series) -> Tuple[np.ndarray, np.ndarray]:
-        """Prepare features for training with enhanced preprocessing"""
-        if X.empty or y.empty:
-            return np.array([]), np.array([])
-        
-        # Handle missing values
-        X_clean = X.fillna(X.median())
-        
-        # Remove constant features
-        X_clean = X_clean.loc[:, X_clean.var() != 0]
-        
-        self.feature_names = list(X_clean.columns)
-        
-        # Convert to numpy arrays
-        X_array = X_clean.values
-        y_array = y.values
-        
-        # Remove any remaining NaN values
-        mask = ~(np.isnan(X_array).any(axis=1) | np.isnan(y_array))
-        X_array = X_array[mask]
-        y_array = y_array[mask]
-        
-        return X_array, y_array
-    
-    def train_models(self, X: np.ndarray, y: np.ndarray):
-        """Train all models with enhanced validation"""
-        if len(X) == 0:
-            logger.error("No training data provided")
-            return
-        
-        # Split data
-        self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(
-            X, y, test_size=0.3, random_state=42, stratify=y
-        )
-        
-        # Scale features
-        self.X_train_scaled = self.scaler.fit_transform(self.X_train)
-        self.X_test_scaled = self.scaler.transform(self.X_test)
-        
-        # Handle class imbalance with SMOTE
-        if len(np.unique(self.y_train)) > 1:
-            smote = SMOTE(random_state=42)
-            X_balanced, y_balanced = smote.fit_resample(self.X_train_scaled, self.y_train)
-        else:
-            X_balanced, y_balanced = self.X_train_scaled, self.y_train
-        
-        # Train supervised models
-        self.rf_model.fit(X_balanced, y_balanced)
-        self.xgb_model.fit(X_balanced, y_balanced)
-        
-        # Train anomaly detection
-        self.isolation_forest.fit(self.X_train_scaled)
-        
-        # Initialize SHAP explainer
-        try:
-            self.shap_explainer = shap.TreeExplainer(self.rf_model)
-            self.shap_values = self.shap_explainer.shap_values(self.X_test_scaled)
-            if isinstance(self.shap_values, list):
-                self.shap_values = self.shap_values[1]  # Take positive class for binary classification
-        except Exception as e:
-            logger.warning(f"SHAP initialization failed: {e}")
-            self.shap_explainer = None
-        
-        self.is_trained = True
-        logger.info("Models trained successfully")
-    
-    def predict(self, features: Dict) -> Dict:
-        """Make predictions on new data"""
-        if not self.is_trained:
-            return {"error": "Models not trained yet"}
-        
-        # Prepare features
-        feature_vector = []
-        for feature_name in self.feature_names:
-            feature_vector.append(features.get(feature_name, 0))
-        
-        X = np.array(feature_vector).reshape(1, -1)
-        X_scaled = self.scaler.transform(X)
-        
-        # Get predictions
-        rf_pred = self.rf_model.predict(X_scaled)[0]
-        rf_proba = self.rf_model.predict_proba(X_scaled)[0]
-        
-        xgb_pred = self.xgb_model.predict(X_scaled)[0]
-        xgb_proba = self.xgb_model.predict_proba(X_scaled)[0]
-        
-        # Anomaly detection
-        anomaly_score = self.isolation_forest.decision_function(X_scaled)[0]
-        is_anomaly = self.isolation_forest.predict(X_scaled)[0] == -1
-        
-        return {
-            'rf_prediction': int(rf_pred),
-            'rf_confidence': float(max(rf_proba)),
-            'xgb_prediction': int(xgb_pred),
-            'xgb_confidence': float(max(xgb_proba)),
-            'anomaly_score': float(anomaly_score),
-            'is_anomaly': bool(is_anomaly),
-            'ensemble_prediction': int((rf_pred + xgb_pred) / 2 > 0.5)
-        }
-    
-    def get_comprehensive_metrics(self) -> Dict:
-        """Calculate comprehensive performance metrics"""
-        if not self.is_trained or self.X_test is None:
-            return {}
-        
-        metrics = {}
-        
-        # Get predictions for test set
-        rf_pred = self.rf_model.predict(self.X_test_scaled)
-        rf_proba = self.rf_model.predict_proba(self.X_test_scaled)[:, 1]
-        
-        xgb_pred = self.xgb_model.predict(self.X_test_scaled)
-        xgb_proba = self.xgb_model.predict_proba(self.X_test_scaled)[:, 1]
-        
-        # Calculate metrics for each model
-        for model_name, y_pred, y_proba in [('rf', rf_pred, rf_proba), ('xgb', xgb_pred, xgb_proba)]:
-            metrics[f'{model_name}_accuracy'] = accuracy_score(self.y_test, y_pred)
-            metrics[f'{model_name}_precision'] = precision_score(self.y_test, y_pred, zero_division=0)
-            metrics[f'{model_name}_recall'] = recall_score(self.y_test, y_pred, zero_division=0)
-            metrics[f'{model_name}_f1'] = f1_score(self.y_test, y_pred, zero_division=0)
-            
-            if len(np.unique(self.y_test)) > 1:
-                metrics[f'{model_name}_auc'] = roc_auc_score(self.y_test, y_proba)
-                metrics[f'{model_name}_avg_precision'] = average_precision_score(self.y_test, y_proba)
-        
-        # Ensemble metrics
-        ensemble_pred = ((rf_pred + xgb_pred) / 2 > 0.5).astype(int)
-        ensemble_proba = (rf_proba + xgb_proba) / 2
-        
-        metrics['ensemble_accuracy'] = accuracy_score(self.y_test, ensemble_pred)
-        metrics['ensemble_precision'] = precision_score(self.y_test, ensemble_pred, zero_division=0)
-        metrics['ensemble_recall'] = recall_score(self.y_test, ensemble_pred, zero_division=0)
-        metrics['ensemble_f1'] = f1_score(self.y_test, ensemble_pred, zero_division=0)
-        
-        if len(np.unique(self.y_test)) > 1:
-            metrics['ensemble_auc'] = roc_auc_score(self.y_test, ensemble_proba)
-            metrics['ensemble_avg_precision'] = average_precision_score(self.y_test, ensemble_proba)
-        
-        return metrics
-    
-    def get_feature_importance(self) -> Dict:
-        """Get feature importance from trained models"""
-        if not self.is_trained:
-            return {}
-        
-        rf_importance = dict(zip(self.feature_names, self.rf_model.feature_importances_))
-        xgb_importance = dict(zip(self.feature_names, self.xgb_model.feature_importances_))
-        
-        return {
-            'random_forest': rf_importance,
-            'xgboost': xgb_importance
-        }
-    
-    def get_confusion_matrices(self) -> Dict:
-        """Get confusion matrices for all models"""
-        if not self.is_trained or self.X_test is None:
-            return {}
-        
-        rf_pred = self.rf_model.predict(self.X_test_scaled)
-        xgb_pred = self.xgb_model.predict(self.X_test_scaled)
-        ensemble_pred = ((rf_pred + xgb_pred) / 2 > 0.5).astype(int)
-        
-        return {
-            'rf_cm': confusion_matrix(self.y_test, rf_pred),
-            'xgb_cm': confusion_matrix(self.y_test, xgb_pred),
-            'ensemble_cm': confusion_matrix(self.y_test, ensemble_pred)
-        }
-    
-    def get_roc_data(self) -> Dict:
-        """Get ROC curve data for all models"""
-        if not self.is_trained or self.X_test is None:
-            return {}
-        
-        rf_proba = self.rf_model.predict_proba(self.X_test_scaled)[:, 1]
-        xgb_proba = self.xgb_model.predict_proba(self.X_test_scaled)[:, 1]
-        ensemble_proba = (rf_proba + xgb_proba) / 2
-        
-        roc_data = {}
-        
-        for model_name, y_proba in [('rf', rf_proba), ('xgb', xgb_proba), ('ensemble', ensemble_proba)]:
-            fpr, tpr, _ = roc_curve(self.y_test, y_proba)
-            auc = roc_auc_score(self.y_test, y_proba)
-            roc_data[model_name] = {'fpr': fpr, 'tpr': tpr, 'auc': auc}
-        
-        return roc_data
-    
-    def get_shap_values(self) -> Dict:
-        """Get SHAP values and importance"""
-        if self.shap_explainer is None or self.shap_values is None:
-            return {}
-        
-        # Feature importance from SHAP
-        shap_importance = np.abs(self.shap_values).mean(0)
-        shap_feature_importance = dict(zip(self.feature_names, shap_importance))
-        
-        return {
-            'shap_values': self.shap_values,
-            'feature_importance': shap_feature_importance,
-            'test_data': self.X_test_scaled
-        }
 
 class GaitAnalyzer:
     """Advanced Gait Analysis using MediaPipe"""
@@ -463,7 +168,7 @@ class GaitAnalyzer:
         
         features['step_length_mean'] = step_lengths.mean()
         features['step_length_std'] = step_lengths.std()
-        features['step_length_cv'] = features['step_length_std'] / features['step_length_mean']
+        features['step_length_cv'] = features['step_length_std'] / features['step_length_mean'] if features['step_length_mean'] > 0 else 0
         
         # Calculate cadence (steps per unit time)
         total_time = df['timestamp'].max() - df['timestamp'].min()
@@ -515,12 +220,12 @@ class GaitAnalyzer:
         
         features['stride_width_mean'] = stride_widths.mean()
         features['stride_width_std'] = stride_widths.std()
-        features['stride_width_cv'] = features['stride_width_std'] / features['stride_width_mean']
+        features['stride_width_cv'] = features['stride_width_std'] / features['stride_width_mean'] if features['stride_width_mean'] > 0 else 0
         
         # Asymmetry measures
         left_step_var = df[f'landmark_{joint_indices["left_foot"]}_x'].diff().std()
         right_step_var = df[f'landmark_{joint_indices["right_foot"]}_x'].diff().std()
-        features['step_asymmetry'] = abs(left_step_var - right_step_var) / (left_step_var + right_step_var)
+        features['step_asymmetry'] = abs(left_step_var - right_step_var) / (left_step_var + right_step_var) if (left_step_var + right_step_var) > 0 else 0
         
         # Ground reaction force indicators (estimated from vertical displacement)
         left_ankle_y = df[f'landmark_{joint_indices["left_ankle"]}_y']
@@ -528,6 +233,11 @@ class GaitAnalyzer:
         
         features['left_grf_variance'] = left_ankle_y.diff().var()
         features['right_grf_variance'] = right_ankle_y.diff().var()
+        
+        # Replace NaN values with 0
+        for key, value in features.items():
+            if pd.isna(value):
+                features[key] = 0.0
         
         return features
 
@@ -585,7 +295,7 @@ class KnowledgeGraphManager:
             self.neo4j.execute_query(query, {
                 'session_id': session_id,
                 'feature_name': feature_name,
-                'feature_value': float(feature_value) if not np.isnan(feature_value) else 0.0
+                'feature_value': float(feature_value) if not np.isnan(float(feature_value)) else 0.0
             })
     
     def store_prediction_result(self, prediction_data: Dict, session_id: str):
@@ -627,6 +337,12 @@ class KnowledgeGraphManager:
                 -[:HAS_PREDICTION]->(r:PredictionResult {prediction: 1})
                 RETURN count(p) as asd_positive_cases
             """,
+            "asd cases": "MATCH (p:Participant {diagnosis: 'ASD'}) RETURN count(p) as asd_cases",
+            "control cases": "MATCH (p:Participant {diagnosis: 'Control'}) RETURN count(p) as control_cases",
+            "total features": """
+                MATCH (s:GaitSession)-[:HAS_FEATURE]->(f:GaitFeature)
+                RETURN count(DISTINCT f.feature_type) as total_features
+            """,
             "average step length": """
                 MATCH (s:GaitSession)-[:HAS_FEATURE]->(f:GaitFeature {feature_type: 'step_length_mean'})
                 RETURN avg(f.value) as avg_step_length
@@ -635,6 +351,10 @@ class KnowledgeGraphManager:
                 MATCH (p:Participant)
                 RETURN p.age as age, count(p) as count
                 ORDER BY p.age
+            """,
+            "diagnosis distribution": """
+                MATCH (p:Participant)
+                RETURN p.diagnosis as diagnosis, count(p) as count
             """
         }
         
@@ -645,17 +365,145 @@ class KnowledgeGraphManager:
         
         return [{"error": "Query not recognized. Please try a simpler query."}]
 
+class MLAnalyzer:
+    """Machine Learning analysis for ASD prediction"""
+    
+    def __init__(self):
+        self.rf_model = RandomForestClassifier(n_estimators=100, random_state=42)
+        self.xgb_model = xgb.XGBClassifier(random_state=42)
+        self.isolation_forest = IsolationForest(contamination=0.1, random_state=42)
+        self.scaler = StandardScaler()
+        self.feature_names = []
+        self.is_trained = False
+        
+    def prepare_training_data(self, features_list: List[Dict], labels: List[int]) -> Tuple[np.ndarray, np.ndarray]:
+        """Prepare features for training"""
+        if not features_list:
+            return np.array([]), np.array([])
+            
+        # Convert to DataFrame and handle missing values
+        df = pd.DataFrame(features_list)
+        df = df.fillna(df.mean())
+        
+        self.feature_names = list(df.columns)
+        X = df.values
+        y = np.array(labels)
+        
+        return X, y
+    
+    def train_models(self, X: np.ndarray, y: np.ndarray):
+        """Train all models"""
+        if len(X) == 0:
+            logger.error("No training data provided")
+            return
+            
+        # Scale features
+        X_scaled = self.scaler.fit_transform(X)
+        
+        # Handle class imbalance with SMOTE
+        if len(np.unique(y)) > 1:
+            smote = SMOTE(random_state=42)
+            X_balanced, y_balanced = smote.fit_resample(X_scaled, y)
+        else:
+            X_balanced, y_balanced = X_scaled, y
+        
+        # Train supervised models
+        self.rf_model.fit(X_balanced, y_balanced)
+        self.xgb_model.fit(X_balanced, y_balanced)
+        
+        # Train anomaly detection
+        self.isolation_forest.fit(X_scaled)
+        
+        self.is_trained = True
+        logger.info("Models trained successfully")
+    
+    def predict(self, features: Dict) -> Dict:
+        """Make predictions on new data"""
+        if not self.is_trained:
+            return {"error": "Models not trained yet"}
+            
+        # Prepare features
+        feature_vector = []
+        for feature_name in self.feature_names:
+            feature_vector.append(features.get(feature_name, 0))
+        
+        X = np.array(feature_vector).reshape(1, -1)
+        X_scaled = self.scaler.transform(X)
+        
+        # Get predictions
+        rf_pred = self.rf_model.predict(X_scaled)[0]
+        rf_proba = self.rf_model.predict_proba(X_scaled)[0]
+        
+        xgb_pred = self.xgb_model.predict(X_scaled)[0]
+        xgb_proba = self.xgb_model.predict_proba(X_scaled)[0]
+        
+        # Anomaly detection
+        anomaly_score = self.isolation_forest.decision_function(X_scaled)[0]
+        is_anomaly = self.isolation_forest.predict(X_scaled)[0] == -1
+        
+        return {
+            'rf_prediction': int(rf_pred),
+            'rf_confidence': float(max(rf_proba)),
+            'xgb_prediction': int(xgb_pred),
+            'xgb_confidence': float(max(xgb_proba)),
+            'anomaly_score': float(anomaly_score),
+            'is_anomaly': bool(is_anomaly),
+            'ensemble_prediction': int((rf_pred + xgb_pred) / 2 > 0.5)
+        }
+    
+    def get_feature_importance(self) -> Dict:
+        """Get feature importance from trained models"""
+        if not self.is_trained:
+            return {}
+            
+        rf_importance = dict(zip(self.feature_names, self.rf_model.feature_importances_))
+        xgb_importance = dict(zip(self.feature_names, self.xgb_model.feature_importances_))
+        
+        return {
+            'random_forest': rf_importance,
+            'xgboost': xgb_importance
+        }
+    
+    def get_shap_explanations(self, features: Dict) -> Dict:
+        """Generate SHAP explanations"""
+        if not self.is_trained:
+            return {"error": "Models not trained"}
+        
+        try:
+            # Prepare data
+            feature_vector = []
+            for feature_name in self.feature_names:
+                feature_vector.append(features.get(feature_name, 0))
+            
+            X = np.array(feature_vector).reshape(1, -1)
+            X_scaled = self.scaler.transform(X)
+            
+            # SHAP for Random Forest
+            explainer_rf = shap.TreeExplainer(self.rf_model)
+            shap_values_rf = explainer_rf.shap_values(X_scaled)
+            
+            # SHAP for XGBoost
+            explainer_xgb = shap.TreeExplainer(self.xgb_model)
+            shap_values_xgb = explainer_xgb.shap_values(X_scaled)
+            
+            return {
+                'rf_shap_values': shap_values_rf[1][0] if len(shap_values_rf) > 1 else shap_values_rf[0],
+                'xgb_shap_values': shap_values_xgb[0] if len(shap_values_xgb.shape) > 1 else shap_values_xgb,
+                'feature_names': self.feature_names
+            }
+        except Exception as e:
+            logger.error(f"Error generating SHAP explanations: {e}")
+            return {"error": str(e)}
+
 # Initialize session state
 if 'neo4j_connection' not in st.session_state:
     st.session_state.neo4j_connection = None
 if 'kg_manager' not in st.session_state:
     st.session_state.kg_manager = None
 if 'ml_analyzer' not in st.session_state:
-    st.session_state.ml_analyzer = EnhancedMLAnalyzer()
+    st.session_state.ml_analyzer = MLAnalyzer()
 if 'gait_analyzer' not in st.session_state:
     st.session_state.gait_analyzer = GaitAnalyzer()
-if 'excel_processor' not in st.session_state:
-    st.session_state.excel_processor = ExcelDataProcessor()
 
 def main():
     """Main Streamlit application"""
@@ -667,7 +515,7 @@ def main():
     st.sidebar.title("Navigation")
     page = st.sidebar.selectbox(
         "Choose a page:",
-        ["🏠 Home", "🔧 Setup", "📊 Data Upload", "📈 Excel Analysis", "🎯 Analysis", "📉 Visualization", "🔍 Query Interface", "📋 Reports"]
+        ["🏠 Home", "🔧 Setup", "📊 Data Upload", "🎯 Analysis", "📈 Visualization", "🔍 Query Interface", "📋 Reports"]
     )
     
     if page == "🏠 Home":
@@ -676,11 +524,9 @@ def main():
         show_setup_page()
     elif page == "📊 Data Upload":
         show_data_upload_page()
-    elif page == "📈 Excel Analysis":
-        show_excel_analysis_page()
     elif page == "🎯 Analysis":
         show_analysis_page()
-    elif page == "📉 Visualization":
+    elif page == "📈 Visualization":
         show_visualization_page()
     elif page == "🔍 Query Interface":
         show_query_interface_page()
@@ -700,25 +546,34 @@ def show_home_page():
         
         ### Key Features:
         - **🎥 Video Gait Analysis**: Extract pose landmarks from walking videos
-        - **📈 Excel Data Analysis**: Process and analyze Excel datasets with comprehensive metrics
+        - **📊 XLSX/CSV Batch Processing**: Process large datasets with 1000+ features
         - **🧠 Knowledge Graph Storage**: Store and relate complex gait data using Neo4j
         - **🤖 Machine Learning**: Multi-model approach for ASD prediction
-        - **📊 Advanced Metrics**: Precision, Recall, F1-Score, ROC curves, and more
-        - **🔍 SHAP Analysis**: Explainable AI with feature importance visualization
-        - **📊 Interactive Visualizations**: Comprehensive data exploration tools
+        - **📈 Interactive Visualizations**: Comprehensive data exploration tools
         - **💬 Natural Language Queries**: Ask questions about your data in plain English
         - **📱 Real-time Processing**: Immediate analysis and feedback
+        - **🔍 SHAP Explanations**: Interpretable AI predictions
+        - **📋 Complete Performance Metrics**: Accuracy, Precision, Recall, F1, ROC-AUC
+        
+        ### Supported Data Formats:
+        - **Video files**: MP4, AVI, MOV (MediaPipe pose extraction)
+        - **Excel files**: .xlsx/.xls with gait features
+        - **CSV files**: Comma-separated gait features
+        - **Target variables**: 'class' (A/T) or 'diagnosis' (ASD/Control)
         
         ### System Architecture:
-        1. **Data Collection**: Upload video files or Excel datasets
-        2. **Feature Extraction**: Advanced pose estimation and feature engineering
+        1. **Data Collection**: Upload video files or batch data (XLSX/CSV)
+        2. **Feature Extraction**: Advanced pose estimation or direct feature processing
         3. **Knowledge Graph**: Semantic storage and relationship modeling
-        4. **ML Analysis**: Ensemble models with comprehensive evaluation metrics
-        5. **Explainable AI**: SHAP-based feature importance and model interpretation
-        6. **Visualization**: Interactive dashboards and detailed reports
+        4. **ML Analysis**: Ensemble models for prediction and anomaly detection
+        5. **Visualization**: Interactive dashboards and reports
+        6. **Explainability**: SHAP-based feature importance and explanations
         """)
     
     with col2:
+        st.image("logo.png", 
+                caption="NeuroGait ASD System")
+        
         # System status
         st.subheader("System Status")
         
@@ -730,9 +585,12 @@ def show_home_page():
         ml_status = "✅ Trained" if st.session_state.ml_analyzer.is_trained else "❌ Not Trained"
         st.write(f"**ML Models**: {ml_status}")
         
-        # Check SHAP availability
-        shap_status = "✅ Available" if st.session_state.ml_analyzer.shap_explainer else "❌ Not Available"
-        st.write(f"**SHAP Explainer**: {shap_status}")
+        # Dataset info
+        if hasattr(st.session_state, 'training_features') and st.session_state.training_features:
+            feature_count = len(st.session_state.training_features[0]) if st.session_state.training_features else 0
+            sample_count = len(st.session_state.training_features)
+            st.write(f"**Features Loaded**: {feature_count}")
+            st.write(f"**Samples**: {sample_count}")
         
         # Quick stats if available
         if st.session_state.kg_manager:
@@ -852,389 +710,6 @@ def show_setup_page():
             st.session_state.ml_analyzer.isolation_forest.set_params(contamination=contamination)
             
             st.success("✅ ML configuration updated!")
-
-def show_excel_analysis_page():
-    """Display Excel data analysis page with comprehensive metrics and SHAP"""
-    st.header("📈 Excel Data Analysis")
-    st.markdown("Upload Excel files for comprehensive ASD analysis with advanced metrics and explainable AI")
-    
-    # File Upload
-    uploaded_file = st.file_uploader(
-        "Upload Excel file with gait features",
-        type=['xlsx', 'xls'],
-        help="Upload an Excel file containing gait features and diagnosis labels"
-    )
-    
-    if uploaded_file is not None:
-        try:
-            # Load and process Excel data
-            with st.spinner("Loading Excel data..."):
-                df = st.session_state.excel_processor.load_excel_data(uploaded_file)
-                
-            if not df.empty:
-                st.success(f"✅ Successfully loaded {len(df)} records with {len(df.columns)} columns")
-                
-                # Data Preview
-                st.subheader("📊 Data Preview")
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.write("**Dataset Information:**")
-                    st.write(f"- Rows: {len(df)}")
-                    st.write(f"- Columns: {len(df.columns)}")
-                    st.write(f"- Feature columns: {len(st.session_state.excel_processor.feature_columns)}")
-                
-                with col2:
-                    st.write("**Missing Values:**")
-                    missing_data = df.isnull().sum()
-                    if missing_data.sum() > 0:
-                        st.write(missing_data[missing_data > 0])
-                    else:
-                        st.write("No missing values found")
-                
-                # Show data preview
-                st.dataframe(df.head(10))
-                
-                # Data Analysis Section
-                if st.button("🚀 Start Comprehensive Analysis"):
-                    # Get features and labels
-                    X, y = st.session_state.excel_processor.get_features_and_labels()
-                    
-                    if not X.empty and not y.empty:
-                        with st.spinner("Training models and calculating metrics..."):
-                            # Prepare data
-                            X_prepared, y_prepared = st.session_state.ml_analyzer.prepare_training_data(X, y)
-                            
-                            if len(X_prepared) > 0:
-                                # Train models
-                                st.session_state.ml_analyzer.train_models(X_prepared, y_prepared)
-                                
-                                # Display results
-                                show_comprehensive_results()
-                            else:
-                                st.error("❌ Unable to prepare training data")
-                    else:
-                        st.error("❌ Unable to extract features and labels from the data")
-        
-        except Exception as e:
-            st.error(f"❌ Error processing Excel file: {e}")
-    
-    # Sample data format
-    with st.expander("📋 Excel Data Format Guide"):
-        st.markdown("""
-        ### Required Excel Format
-        
-        Your Excel file should contain the following columns:
-        
-        **Required Columns:**
-        - `diagnosis` or `label`: Target variable ('ASD', 'Control', 1, 0)
-        - Gait feature columns (numerical values)
-        
-        **Example Feature Columns:**
-        - step_length_mean, step_length_std
-        - cadence, stride_width_mean
-        - left_ankle_angle_mean, right_ankle_angle_mean
-        - step_asymmetry, grf_variance
-        
-        **Optional Columns:**
-        - participant_id: Unique identifier
-        - age, gender: Demographic information
-        
-        ### Sample Data Structure:
-        ```
-        participant_id | age | gender | step_length_mean | cadence | diagnosis
-        P001          | 25  | Male   | 0.65            | 1.2     | ASD
-        P002          | 30  | Female | 0.72            | 1.1     | Control
-        ...
-        ```
-        """)
-
-def show_comprehensive_results():
-    """Display comprehensive analysis results with metrics and SHAP"""
-    
-    # Get comprehensive metrics
-    metrics = st.session_state.ml_analyzer.get_comprehensive_metrics()
-    confusion_matrices = st.session_state.ml_analyzer.get_confusion_matrices()
-    roc_data = st.session_state.ml_analyzer.get_roc_data()
-    shap_data = st.session_state.ml_analyzer.get_shap_values()
-    
-    # Main metrics dashboard
-    st.subheader("🎯 Model Performance Metrics")
-    
-    # Create metrics comparison table
-    metrics_df = pd.DataFrame({
-        'Random Forest': [
-            metrics.get('rf_accuracy', 0),
-            metrics.get('rf_precision', 0),
-            metrics.get('rf_recall', 0),
-            metrics.get('rf_f1', 0),
-            metrics.get('rf_auc', 0)
-        ],
-        'XGBoost': [
-            metrics.get('xgb_accuracy', 0),
-            metrics.get('xgb_precision', 0),
-            metrics.get('xgb_recall', 0),
-            metrics.get('xgb_f1', 0),
-            metrics.get('xgb_auc', 0)
-        ],
-        'Ensemble': [
-            metrics.get('ensemble_accuracy', 0),
-            metrics.get('ensemble_precision', 0),
-            metrics.get('ensemble_recall', 0),
-            metrics.get('ensemble_f1', 0),
-            metrics.get('ensemble_auc', 0)
-        ]
-    }, index=['Accuracy', 'Precision', 'Recall', 'F1-Score', 'AUC'])
-    
-    # Display metrics table
-    st.dataframe(metrics_df.round(4))
-    
-    # Visual metrics comparison
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # Metrics comparison chart
-        fig = go.Figure()
-        for column in metrics_df.columns:
-            fig.add_trace(go.Scatterpolar(
-                r=metrics_df[column].values,
-                theta=metrics_df.index,
-                fill='toself',
-                name=column
-            ))
-        
-        fig.update_layout(
-            polar=dict(
-                radialaxis=dict(
-                    visible=True,
-                    range=[0, 1]
-                )
-            ),
-            title="Model Performance Comparison",
-            showlegend=True
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    
-    with col2:
-        # Individual metric bars
-        melted_metrics = metrics_df.reset_index().melt(id_vars='index')
-        fig = px.bar(melted_metrics, x='index', y='value', color='variable',
-                    title="Detailed Metrics Comparison",
-                    labels={'index': 'Metric', 'value': 'Score', 'variable': 'Model'})
-        st.plotly_chart(fig, use_container_width=True)
-    
-    # ROC Curves
-    if roc_data:
-        st.subheader("📈 ROC Curves Analysis")
-        
-        fig = go.Figure()
-        
-        for model_name, data in roc_data.items():
-            fig.add_trace(go.Scatter(
-                x=data['fpr'], y=data['tpr'],
-                mode='lines',
-                name=f"{model_name.upper()} (AUC = {data['auc']:.3f})"
-            ))
-        
-        # Add diagonal line
-        fig.add_trace(go.Scatter(
-            x=[0, 1], y=[0, 1],
-            mode='lines',
-            name='Random Classifier',
-            line=dict(dash='dash', color='gray')
-        ))
-        
-        fig.update_layout(
-            title="ROC Curves Comparison",
-            xaxis_title="False Positive Rate",
-            yaxis_title="True Positive Rate",
-            xaxis=dict(range=[0, 1]),
-            yaxis=dict(range=[0, 1])
-        )
-        
-        st.plotly_chart(fig, use_container_width=True)
-    
-    # Confusion Matrices
-    if confusion_matrices:
-        st.subheader("🔍 Confusion Matrices")
-        
-        col1, col2, col3 = st.columns(3)
-        
-        for i, (model_name, cm) in enumerate(confusion_matrices.items()):
-            with [col1, col2, col3][i]:
-                fig = px.imshow(cm, 
-                              labels=dict(x="Predicted", y="Actual"),
-                              x=['Control', 'ASD'],
-                              y=['Control', 'ASD'],
-                              title=f"{model_name.upper()} Confusion Matrix",
-                              color_continuous_scale="Blues",
-                              text_auto=True)
-                st.plotly_chart(fig, use_container_width=True)
-    
-    # SHAP Analysis
-    if shap_data and 'shap_values' in shap_data:
-        st.subheader("🔍 SHAP Analysis - Explainable AI")
-        
-        # Feature importance from SHAP
-        shap_importance = shap_data['feature_importance']
-        
-        if shap_importance:
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                # SHAP feature importance
-                importance_df = pd.DataFrame(
-                    list(shap_importance.items()),
-                    columns=['Feature', 'SHAP Importance']
-                ).sort_values('SHAP Importance', ascending=False).head(15)
-                
-                fig = px.bar(importance_df, 
-                           x='SHAP Importance', 
-                           y='Feature',
-                           orientation='h',
-                           title="SHAP Feature Importance")
-                fig.update_layout(yaxis={'categoryorder': 'total ascending'})
-                st.plotly_chart(fig, use_container_width=True)
-            
-            with col2:
-                # Traditional feature importance comparison
-                traditional_importance = st.session_state.ml_analyzer.get_feature_importance()
-                
-                if traditional_importance and 'random_forest' in traditional_importance:
-                    rf_importance = traditional_importance['random_forest']
-                    
-                    # Compare SHAP vs traditional importance
-                    comparison_data = []
-                    common_features = set(shap_importance.keys()) & set(rf_importance.keys())
-                    
-                    for feature in list(common_features)[:10]:  # Top 10 common features
-                        comparison_data.append({
-                            'Feature': feature,
-                            'SHAP Importance': shap_importance[feature],
-                            'RF Importance': rf_importance[feature]
-                        })
-                    
-                    if comparison_data:
-                        comp_df = pd.DataFrame(comparison_data)
-                        
-                        fig = go.Figure()
-                        fig.add_trace(go.Scatter(
-                            x=comp_df['RF Importance'],
-                            y=comp_df['SHAP Importance'],
-                            mode='markers+text',
-                            text=comp_df['Feature'],
-                            textposition='top center',
-                            marker=dict(size=10),
-                            name='Features'
-                        ))
-                        
-                        fig.update_layout(
-                            title="SHAP vs Traditional Feature Importance",
-                            xaxis_title="Random Forest Importance",
-                            yaxis_title="SHAP Importance"
-                        )
-                        st.plotly_chart(fig, use_container_width=True)
-        
-        # SHAP Summary Plot
-        try:
-            st.subheader("📊 SHAP Summary Visualization")
-            
-            # Create SHAP summary plot
-            shap_values = shap_data['shap_values']
-            test_data = shap_data['test_data']
-            
-            if len(shap_values.shape) == 2:  # For classification
-                # Create a matplotlib figure for SHAP summary plot
-                fig, ax = plt.subplots(figsize=(10, 8))
-                
-                # SHAP summary plot
-                shap.summary_plot(
-                    shap_values, 
-                    test_data, 
-                    feature_names=st.session_state.ml_analyzer.feature_names,
-                    plot_type="dot",
-                    show=False
-                )
-                
-                st.pyplot(fig)
-                plt.close()
-                
-                # SHAP waterfall plot for first prediction
-                if len(shap_values) > 0:
-                    st.subheader("🌊 SHAP Waterfall Plot (Sample Prediction)")
-                    
-                    fig, ax = plt.subplots(figsize=(10, 6))
-                    
-                    # Create explanation object
-                    explanation = shap.Explanation(
-                        values=shap_values[0],
-                        base_values=st.session_state.ml_analyzer.shap_explainer.expected_value,
-                        data=test_data[0],
-                        feature_names=st.session_state.ml_analyzer.feature_names
-                    )
-                    
-                    shap.waterfall_plot(explanation, show=False)
-                    st.pyplot(fig)
-                    plt.close()
-        
-        except Exception as e:
-            st.warning(f"Could not generate SHAP plots: {e}")
-    
-    # Cross-validation results
-    st.subheader("🔄 Cross-Validation Analysis")
-    
-    if hasattr(st.session_state.ml_analyzer, 'X_train') and st.session_state.ml_analyzer.X_train is not None:
-        try:
-            # Perform stratified k-fold cross-validation
-            skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-            
-            cv_results = {}
-            for model_name, model in [('Random Forest', st.session_state.ml_analyzer.rf_model),
-                                    ('XGBoost', st.session_state.ml_analyzer.xgb_model)]:
-                
-                cv_scores = cross_val_score(
-                    model, 
-                    st.session_state.ml_analyzer.X_train_scaled, 
-                    st.session_state.ml_analyzer.y_train,
-                    cv=skf, 
-                    scoring='f1'
-                )
-                
-                cv_results[model_name] = {
-                    'mean': cv_scores.mean(),
-                    'std': cv_scores.std(),
-                    'scores': cv_scores
-                }
-            
-            # Display CV results
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                cv_df = pd.DataFrame({
-                    'Model': list(cv_results.keys()),
-                    'Mean F1': [results['mean'] for results in cv_results.values()],
-                    'Std F1': [results['std'] for results in cv_results.values()]
-                })
-                
-                fig = px.bar(cv_df, x='Model', y='Mean F1', 
-                           error_y='Std F1',
-                           title="Cross-Validation F1 Scores")
-                st.plotly_chart(fig, use_container_width=True)
-            
-            with col2:
-                # Box plot of CV scores
-                cv_plot_data = []
-                for model_name, results in cv_results.items():
-                    for score in results['scores']:
-                        cv_plot_data.append({'Model': model_name, 'F1 Score': score})
-                
-                cv_plot_df = pd.DataFrame(cv_plot_data)
-                fig = px.box(cv_plot_df, x='Model', y='F1 Score',
-                           title="Cross-Validation Score Distribution")
-                st.plotly_chart(fig, use_container_width=True)
-        
-        except Exception as e:
-            st.warning(f"Could not perform cross-validation: {e}")
 
 def show_data_upload_page():
     """Display the data upload and processing page"""
@@ -1363,18 +838,30 @@ def show_data_upload_page():
     elif uploaded_file is not None:
         st.warning("⚠️ Please register a participant first before uploading video.")
     
-    # Batch Data Upload
-    with st.expander("📁 Batch Data Upload"):
+    # Enhanced Batch Data Upload with XLSX support
+    st.subheader("📁 Batch Data Upload")
+    
+    # File format selection
+    upload_format = st.selectbox("Select file format:", ["CSV", "XLSX"])
+    
+    if upload_format == "CSV":
         st.markdown("""
         ### CSV Format for Batch Upload
         Upload a CSV file with pre-calculated gait features for multiple participants.
         
         **Required Columns:**
-        - participant_id, age, gender, diagnosis
-        - step_length_mean, step_length_std, cadence
-        - left_shoulder_angle_mean, right_shoulder_angle_mean
-        - stride_width_mean, stride_width_std
-        - step_asymmetry, left_grf_variance, right_grf_variance
+        - **Target Variable**: `class` (with values: 'A' for ASD, 'T' for Typical) OR `diagnosis` (with values: 'ASD', 'Control')
+        - **Feature columns**: Numerical gait features
+        
+        **Optional Columns:**
+        - participant_id, age, gender (auto-generated if missing)
+        
+        **Example Format:**
+        ```csv
+        feature1,feature2,feature3,...,class
+        0.65,1.2,0.8,...,A
+        0.72,1.1,0.9,...,T
+        ```
         """)
         
         csv_file = st.file_uploader("Upload CSV with gait features", type=['csv'])
@@ -1386,15 +873,306 @@ def show_data_upload_page():
                 
                 if st.button("Process CSV Data"):
                     processed_count = 0
-                    for _, row in df.iterrows():
-                        # Process each row similar to individual upload
-                        # Implementation would go here
-                        processed_count += 1
+                    features_list = []
+                    labels = []
                     
-                    st.success(f"✅ Processed {processed_count} records from CSV")
+                    # Map target variable for your specific dataset
+                    if 'class' in df.columns:
+                        df['diagnosis'] = df['class'].map({'A': 'ASD', 'T': 'Control'})
+                        st.info("✅ Mapped 'class' column: A→ASD, T→Control")
+                    
+                    # Add missing demographic columns if not present
+                    if 'participant_id' not in df.columns:
+                        df['participant_id'] = [f"P_{i:04d}" for i in range(1, len(df) + 1)]
+                        st.info("✅ Generated participant IDs")
+                    
+                    if 'age' not in df.columns:
+                        df['age'] = 25  # Default age
+                        st.info("✅ Added default age (25)")
+                    
+                    if 'gender' not in df.columns:
+                        df['gender'] = 'Unknown'  # Default gender
+                        st.info("✅ Added default gender")
+                    
+                    # Verify diagnosis column
+                    if 'diagnosis' not in df.columns:
+                        st.error("❌ No valid target variable found! Expected 'class' or 'diagnosis' column.")
+                        return
+                    
+                    for _, row in df.iterrows():
+                        # Store participant in Neo4j
+                        participant_data = {
+                            'participant_id': str(row['participant_id']),
+                            'age': int(row['age']) if pd.notna(row['age']) else 25,
+                            'gender': str(row['gender']) if pd.notna(row['gender']) else 'Unknown',
+                            'diagnosis': str(row['diagnosis']) if pd.notna(row['diagnosis']) else 'Unknown'
+                        }
+                        
+                        stored_id = st.session_state.kg_manager.store_participant(participant_data)
+                        
+                        if stored_id:
+                            # Create session
+                            session_data = {
+                                'session_id': f"S_{stored_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+                                'date': datetime.now().isoformat(),
+                                'video_duration': 0,
+                                'frame_count': 0
+                            }
+                            
+                            session_id = st.session_state.kg_manager.store_gait_session(session_data, stored_id)
+                            
+                            # Extract features for ML (exclude metadata columns)
+                            exclude_cols = ['participant_id', 'age', 'gender', 'diagnosis', 'class']
+                            feature_cols = [col for col in df.columns if col not in exclude_cols]
+                            
+                            features = {}
+                            for col in feature_cols:
+                                try:
+                                    val = row[col]
+                                    if pd.notna(val):
+                                        features[col] = float(val)
+                                    else:
+                                        features[col] = 0.0
+                                except (ValueError, TypeError):
+                                    features[col] = 0.0
+                            
+                            features_list.append(features)
+                            labels.append(1 if row['diagnosis'] == 'ASD' else 0)
+                            
+                            # Store features in Neo4j
+                            if session_id:
+                                st.session_state.kg_manager.store_gait_features(features, session_id)
+                            
+                            processed_count += 1
+                    
+                    # Store για training
+                    if features_list and labels:
+                        st.session_state.training_features = features_list
+                        st.session_state.training_labels = labels
+                        
+                        # Display comprehensive summary
+                        st.subheader("📊 Dataset Processing Summary")
+                        
+                        col1, col2, col3, col4 = st.columns(4)
+                        with col1:
+                            st.metric("Total Processed", processed_count)
+                        with col2:
+                            asd_count = sum(labels)
+                            st.metric("ASD Cases", asd_count)
+                        with col3:
+                            control_count = len(labels) - asd_count
+                            st.metric("Control Cases", control_count)
+                        with col4:
+                            feature_count = len(features_list[0]) if features_list else 0
+                            st.metric("Features", feature_count)
+                        
+                        # Class balance info
+                        if asd_count > 0 and control_count > 0:
+                            balance_ratio = min(asd_count, control_count) / max(asd_count, control_count)
+                            if balance_ratio >= 0.8:
+                                st.success(f"✅ Well-balanced dataset! (Ratio: {balance_ratio:.2f})")
+                            else:
+                                st.warning(f"⚠️ Imbalanced dataset detected (Ratio: {balance_ratio:.2f})")
+                        
+                        st.success(f"✅ Successfully processed {processed_count} records from CSV file!")
+                        st.info("🎯 Data is ready for model training in the Analysis page.")
+                    
+                    else:
+                        st.error("❌ No valid data processed")
                     
             except Exception as e:
                 st.error(f"❌ Error processing CSV: {e}")
+                
+    else:  # XLSX format
+        st.markdown("""
+        ### XLSX Format for Batch Upload
+        Upload an Excel file (.xlsx or .xls) with pre-calculated gait features.
+        
+        **Required Columns:**
+        - **Target Variable**: `class` (with values: 'A' for ASD, 'T' for Typical/Control)
+        - **OR**: `diagnosis` (with values: 'ASD', 'Control')
+        - **Feature columns**: Any numerical gait features (e.g., mean-x-Midspain, variance-x-AnkleLeft, etc.)
+        
+        **Optional Columns:**
+        - participant_id, age, gender (will be auto-generated if missing)
+        
+        **Your Dataset Format:**
+        - 1,259 gait features from biomechanical analysis
+        - Target: `class` column with 'A'/'T' values
+        - Automatically processes all numerical features
+        """)
+        
+        xlsx_file = st.file_uploader("Upload XLSX with gait features", type=['xlsx', 'xls'])
+        
+        if xlsx_file is not None:
+            try:
+                # Read Excel file
+                df = pd.read_excel(xlsx_file)
+                st.dataframe(df.head())
+                
+                st.info(f"📊 Loaded {len(df)} rows and {len(df.columns)} columns")
+                
+                # Check for target column
+                has_class = 'class' in df.columns
+                has_diagnosis = 'diagnosis' in df.columns
+                
+                if has_class:
+                    # Check class values
+                    class_values = df['class'].value_counts()
+                    st.write("**Target Variable Found**: `class` column")
+                    st.write("Class distribution:", dict(class_values))
+                elif has_diagnosis:
+                    diag_values = df['diagnosis'].value_counts() 
+                    st.write("**Target Variable Found**: `diagnosis` column")
+                    st.write("Diagnosis distribution:", dict(diag_values))
+                else:
+                    st.warning("⚠️ No target variable found! Looking for 'class' or 'diagnosis' column.")
+                
+                # Display column info
+                with st.expander("📋 Column Information"):
+                    col_info = pd.DataFrame({
+                        'Column': df.columns,
+                        'Type': df.dtypes,
+                        'Non-Null Count': df.count(),
+                        'Sample Value': [df[col].iloc[0] if len(df) > 0 else None for col in df.columns]
+                    })
+                    st.dataframe(col_info)
+                
+                if st.button("🚀 Process XLSX Data"):
+                    with st.spinner(f"Processing {len(df)} participants..."):
+                        processed_count = 0
+                        features_list = []
+                        labels = []
+                        
+                        # Map target variable for your specific dataset
+                        if 'class' in df.columns:
+                            df['diagnosis'] = df['class'].map({'A': 'ASD', 'T': 'Control'})
+                            st.info("✅ Mapped 'class' column: A→ASD, T→Control")
+                        
+                        # Add missing demographic columns if not present
+                        if 'participant_id' not in df.columns:
+                            df['participant_id'] = [f"P_{i:04d}" for i in range(1, len(df) + 1)]
+                            st.info("✅ Generated participant IDs")
+                        
+                        if 'age' not in df.columns:
+                            df['age'] = 25  # Default age
+                            st.info("✅ Added default age (25)")
+                        
+                        if 'gender' not in df.columns:
+                            df['gender'] = 'Unknown'  # Default gender
+                            st.info("✅ Added default gender")
+                        
+                        # Verify diagnosis column
+                        if 'diagnosis' not in df.columns:
+                            st.error("❌ No valid target variable found! Expected 'class' or 'diagnosis' column.")
+                            return
+                        
+                        progress_bar = st.progress(0)
+                        
+                        for idx, row in df.iterrows():
+                            try:
+                                # Store participant in Neo4j
+                                participant_data = {
+                                    'participant_id': str(row['participant_id']),
+                                    'age': int(row['age']) if pd.notna(row['age']) else 25,
+                                    'gender': str(row['gender']) if pd.notna(row['gender']) else 'Unknown',
+                                    'diagnosis': str(row['diagnosis']) if pd.notna(row['diagnosis']) else 'Unknown'
+                                }
+                                
+                                stored_id = st.session_state.kg_manager.store_participant(participant_data)
+                                
+                                if stored_id:
+                                    # Create session
+                                    session_data = {
+                                        'session_id': f"S_{stored_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{idx}",
+                                        'date': datetime.now().isoformat(),
+                                        'video_duration': 0,
+                                        'frame_count': 0
+                                    }
+                                    
+                                    session_id = st.session_state.kg_manager.store_gait_session(session_data, stored_id)
+                                    
+                                    # Extract features for ML (exclude metadata columns)
+                                    exclude_cols = ['participant_id', 'age', 'gender', 'diagnosis', 'class']
+                                    feature_cols = [col for col in df.columns if col not in exclude_cols]
+                                    
+                                    features = {}
+                                    for col in feature_cols:
+                                        try:
+                                            val = row[col]
+                                            if pd.notna(val):
+                                                features[col] = float(val)
+                                            else:
+                                                features[col] = 0.0
+                                        except (ValueError, TypeError):
+                                            features[col] = 0.0
+                                    
+                                    features_list.append(features)
+                                    labels.append(1 if row['diagnosis'] == 'ASD' else 0)
+                                    
+                                    # Store features in Neo4j
+                                    if session_id:
+                                        st.session_state.kg_manager.store_gait_features(features, session_id)
+                                    
+                                    processed_count += 1
+                                
+                                # Update progress
+                                progress_bar.progress((idx + 1) / len(df))
+                                
+                            except Exception as e:
+                                st.warning(f"⚠️ Error processing row {idx}: {e}")
+                                continue
+                        
+                        # Store για training
+                        if features_list and labels:
+                            st.session_state.training_features = features_list
+                            st.session_state.training_labels = labels
+                            
+                            # Display comprehensive summary
+                            st.subheader("📊 Dataset Processing Summary")
+                            
+                            col1, col2, col3, col4 = st.columns(4)
+                            with col1:
+                                st.metric("Total Processed", processed_count)
+                            with col2:
+                                asd_count = sum(labels)
+                                st.metric("ASD Cases", asd_count)
+                            with col3:
+                                control_count = len(labels) - asd_count
+                                st.metric("Control Cases", control_count)
+                            with col4:
+                                feature_count = len(features_list[0]) if features_list else 0
+                                st.metric("Features", feature_count)
+                            
+                            # Class balance info
+                            if asd_count > 0 and control_count > 0:
+                                balance_ratio = min(asd_count, control_count) / max(asd_count, control_count)
+                                if balance_ratio >= 0.8:
+                                    st.success(f"✅ Well-balanced dataset! (Ratio: {balance_ratio:.2f})")
+                                else:
+                                    st.warning(f"⚠️ Imbalanced dataset detected (Ratio: {balance_ratio:.2f})")
+                            
+                            # Feature info
+                            st.info(f"🎯 Dataset loaded with {feature_count} gait features from {processed_count} participants")
+                            
+                            # Sample feature names
+                            if features_list:
+                                sample_features = list(features_list[0].keys())[:10]
+                                with st.expander("🔍 Sample Features (first 10)"):
+                                    for i, feature in enumerate(sample_features, 1):
+                                        st.write(f"{i}. {feature}")
+                                    if len(features_list[0]) > 10:
+                                        st.write(f"... and {len(features_list[0]) - 10} more features")
+                            
+                            st.success(f"✅ Successfully processed {processed_count} records from XLSX file!")
+                            st.info("🎯 Data is ready for model training in the Analysis page.")
+                        
+                        else:
+                            st.error("❌ No valid data processed")
+                            
+            except Exception as e:
+                st.error(f"❌ Error processing XLSX: {e}")
+                st.exception(e)
 
 def show_analysis_page():
     """Display the ML analysis page"""
@@ -1459,18 +1237,48 @@ def show_analysis_page():
         if st.button("🚀 Train Models"):
             with st.spinner("Training machine learning models..."):
                 try:
-                    # Convert to DataFrame for processing
-                    features_df = pd.DataFrame(st.session_state.training_features)
-                    labels_series = pd.Series(st.session_state.training_labels)
-                    
-                    X, y = st.session_state.ml_analyzer.prepare_training_data(features_df, labels_series)
+                    X, y = st.session_state.ml_analyzer.prepare_training_data(
+                        st.session_state.training_features,
+                        st.session_state.training_labels
+                    )
                     
                     if len(X) > 0:
                         st.session_state.ml_analyzer.train_models(X, y)
                         st.success("✅ Models trained successfully!")
                         
-                        # Show comprehensive results
-                        show_comprehensive_results()
+                        # Display training results
+                        st.subheader("📊 Training Results")
+                        
+                        # Cross-validation scores
+                        X_scaled = st.session_state.ml_analyzer.scaler.transform(X)
+                        cv_scores_rf = cross_val_score(
+                            st.session_state.ml_analyzer.rf_model, X_scaled, y, cv=5
+                        )
+                        cv_scores_xgb = cross_val_score(
+                            st.session_state.ml_analyzer.xgb_model, X_scaled, y, cv=5
+                        )
+                        
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.metric("Random Forest CV Score", f"{cv_scores_rf.mean():.3f} ± {cv_scores_rf.std():.3f}")
+                        with col2:
+                            st.metric("XGBoost CV Score", f"{cv_scores_xgb.mean():.3f} ± {cv_scores_xgb.std():.3f}")
+                        
+                        # Feature importance
+                        importance_data = st.session_state.ml_analyzer.get_feature_importance()
+                        
+                        if importance_data:
+                            st.subheader("🎯 Feature Importance")
+                            
+                            # Random Forest importance
+                            rf_imp_df = pd.DataFrame(
+                                list(importance_data['random_forest'].items()),
+                                columns=['Feature', 'Importance']
+                            ).sort_values('Importance', ascending=False)
+                            
+                            fig = px.bar(rf_imp_df.head(10), x='Importance', y='Feature',
+                                       orientation='h', title="Random Forest Feature Importance")
+                            st.plotly_chart(fig, use_container_width=True)
                     
                     else:
                         st.error("❌ No valid training data available")
@@ -1478,77 +1286,240 @@ def show_analysis_page():
                 except Exception as e:
                     st.error(f"❌ Error training models: {e}")
     
-    # Prediction Section
-    st.subheader("🔮 Individual Prediction")
+    # Enhanced Prediction Section with SHAP
+    st.subheader("🔮 Individual Prediction & Explainability")
     
     if hasattr(st.session_state, 'current_features') and st.session_state.ml_analyzer.is_trained:
-        if st.button("🎯 Make Prediction"):
-            with st.spinner("Making prediction..."):
-                try:
-                    prediction_result = st.session_state.ml_analyzer.predict(
-                        st.session_state.current_features
-                    )
-                    
-                    # Store prediction in knowledge graph
-                    if hasattr(st.session_state, 'current_session'):
-                        prediction_data = {
-                            'model_type': 'ensemble',
-                            'prediction': prediction_result['ensemble_prediction'],
-                            'confidence': prediction_result['rf_confidence'],
-                            'anomaly_score': prediction_result['anomaly_score']
-                        }
-                        
-                        st.session_state.kg_manager.store_prediction_result(
-                            prediction_data, st.session_state.current_session
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("🎯 Make Prediction"):
+                with st.spinner("Making prediction..."):
+                    try:
+                        prediction_result = st.session_state.ml_analyzer.predict(
+                            st.session_state.current_features
                         )
-                    
-                    # Display results
-                    st.subheader("🎯 Prediction Results")
-                    
-                    col1, col2, col3, col4 = st.columns(4)
-                    
-                    with col1:
-                        rf_pred = "ASD" if prediction_result['rf_prediction'] == 1 else "Control"
-                        st.metric("Random Forest", rf_pred, 
-                                f"Confidence: {prediction_result['rf_confidence']:.3f}")
-                    
-                    with col2:
-                        xgb_pred = "ASD" if prediction_result['xgb_prediction'] == 1 else "Control"
-                        st.metric("XGBoost", xgb_pred,
-                                f"Confidence: {prediction_result['xgb_confidence']:.3f}")
-                    
-                    with col3:
-                        ensemble_pred = "ASD" if prediction_result['ensemble_prediction'] == 1 else "Control"
-                        st.metric("Ensemble Prediction", ensemble_pred)
-                    
-                    with col4:
-                        anomaly_status = "Anomaly" if prediction_result['is_anomaly'] else "Normal"
-                        st.metric("Anomaly Detection", anomaly_status,
-                                f"Score: {prediction_result['anomaly_score']:.3f}")
-                    
-                    # Visualization
-                    prediction_viz_data = {
-                        'Model': ['Random Forest', 'XGBoost'],
-                        'Confidence': [prediction_result['rf_confidence'], prediction_result['xgb_confidence']],
-                        'Prediction': [prediction_result['rf_prediction'], prediction_result['xgb_prediction']]
-                    }
-                    
-                    fig = px.bar(prediction_viz_data, x='Model', y='Confidence', color='Prediction',
-                               title="Model Predictions and Confidence")
-                    st.plotly_chart(fig, use_container_width=True)
-                    
-                except Exception as e:
-                    st.error(f"❌ Error making prediction: {e}")
+                        
+                        # Store prediction in knowledge graph
+                        if hasattr(st.session_state, 'current_session'):
+                            prediction_data = {
+                                'model_type': 'ensemble',
+                                'prediction': prediction_result['ensemble_prediction'],
+                                'confidence': prediction_result['rf_confidence'],
+                                'anomaly_score': prediction_result['anomaly_score']
+                            }
+                            
+                            st.session_state.kg_manager.store_prediction_result(
+                                prediction_data, st.session_state.current_session
+                            )
+                        
+                        st.session_state.current_prediction = prediction_result
+                        
+                        # Display results
+                        st.subheader("🎯 Prediction Results")
+                        
+                        col1, col2, col3, col4 = st.columns(4)
+                        
+                        with col1:
+                            rf_pred = "ASD" if prediction_result['rf_prediction'] == 1 else "Control"
+                            st.metric("Random Forest", rf_pred, 
+                                    f"Confidence: {prediction_result['rf_confidence']:.3f}")
+                        
+                        with col2:
+                            xgb_pred = "ASD" if prediction_result['xgb_prediction'] == 1 else "Control"
+                            st.metric("XGBoost", xgb_pred,
+                                    f"Confidence: {prediction_result['xgb_confidence']:.3f}")
+                        
+                        with col3:
+                            ensemble_pred = "ASD" if prediction_result['ensemble_prediction'] == 1 else "Control"
+                            st.metric("Ensemble Prediction", ensemble_pred)
+                        
+                        with col4:
+                            anomaly_status = "Anomaly" if prediction_result['is_anomaly'] else "Normal"
+                            st.metric("Anomaly Detection", anomaly_status,
+                                    f"Score: {prediction_result['anomaly_score']:.3f}")
+                        
+                    except Exception as e:
+                        st.error(f"❌ Error making prediction: {e}")
+        
+        with col2:
+            if st.button("🔍 Generate SHAP Explanations"):
+                with st.spinner("Generating SHAP explanations..."):
+                    try:
+                        shap_data = st.session_state.ml_analyzer.get_shap_explanations(
+                            st.session_state.current_features
+                        )
+                        
+                        if 'error' not in shap_data:
+                            st.session_state.current_shap = shap_data
+                            
+                            st.subheader("🔍 SHAP Feature Explanations")
+                            
+                            # Display SHAP values
+                            if 'rf_shap_values' in shap_data:
+                                rf_shap_df = pd.DataFrame({
+                                    'Feature': shap_data['feature_names'],
+                                    'SHAP_Value': shap_data['rf_shap_values']
+                                }).sort_values('SHAP_Value', key=abs, ascending=False)
+                                
+                                fig = px.bar(rf_shap_df.head(10), 
+                                           x='SHAP_Value', y='Feature',
+                                           orientation='h',
+                                           title="Random Forest SHAP Values (Top 10 Features)",
+                                           color='SHAP_Value',
+                                           color_continuous_scale='RdBu')
+                                st.plotly_chart(fig, use_container_width=True)
+                        
+                        else:
+                            st.error(f"❌ Error generating SHAP: {shap_data['error']}")
+                            
+                    except Exception as e:
+                        st.error(f"❌ Error generating SHAP explanations: {e}")
     
     elif not st.session_state.ml_analyzer.is_trained:
         st.info("ℹ️ Please train the models first before making predictions.")
     
     elif not hasattr(st.session_state, 'current_features'):
-        st.info("ℹ️ Please upload and process a video first.")
+        st.info("ℹ️ Please upload and process a video or load training data first.")
+    
+    # Complete Performance Metrics Section
+    if st.session_state.ml_analyzer.is_trained and hasattr(st.session_state, 'training_features'):
+        st.subheader("📊 Complete Model Performance Analysis")
+        
+        if st.button("📈 Generate Complete Performance Report"):
+            generate_enhanced_model_report()
+
+def generate_enhanced_model_report():
+    """Enhanced model performance με όλα τα metrics"""
+    
+    try:
+        # Get ALL data for comprehensive evaluation
+        if hasattr(st.session_state, 'training_features') and hasattr(st.session_state, 'training_labels'):
+            
+            X, y = st.session_state.ml_analyzer.prepare_training_data(
+                st.session_state.training_features,
+                st.session_state.training_labels
+            )
+            
+            if len(X) > 0:
+                X_scaled = st.session_state.ml_analyzer.scaler.transform(X)
+                
+                # Predictions
+                rf_pred = st.session_state.ml_analyzer.rf_model.predict(X_scaled)
+                rf_proba = st.session_state.ml_analyzer.rf_model.predict_proba(X_scaled)[:, 1]
+                
+                xgb_pred = st.session_state.ml_analyzer.xgb_model.predict(X_scaled)
+                xgb_proba = st.session_state.ml_analyzer.xgb_model.predict_proba(X_scaled)[:, 1]
+                
+                # Calculate ALL metrics
+                # Random Forest Metrics
+                rf_accuracy = accuracy_score(y, rf_pred)
+                rf_precision = precision_score(y, rf_pred, zero_division=0)
+                rf_recall = recall_score(y, rf_pred, zero_division=0)
+                rf_f1 = f1_score(y, rf_pred, zero_division=0)
+                rf_auc = roc_auc_score(y, rf_proba) if len(np.unique(y)) > 1 else 0
+                
+                # XGBoost Metrics
+                xgb_accuracy = accuracy_score(y, xgb_pred)
+                xgb_precision = precision_score(y, xgb_pred, zero_division=0)
+                xgb_recall = recall_score(y, xgb_pred, zero_division=0)
+                xgb_f1 = f1_score(y, xgb_pred, zero_division=0)
+                xgb_auc = roc_auc_score(y, xgb_proba) if len(np.unique(y)) > 1 else 0
+                
+                # Display metrics
+                st.subheader("📊 Performance Metrics")
+                
+                metrics_df = pd.DataFrame({
+                    'Model': ['Random Forest', 'XGBoost'],
+                    'Accuracy': [rf_accuracy, xgb_accuracy],
+                    'Precision': [rf_precision, xgb_precision],
+                    'Recall': [rf_recall, xgb_recall],
+                    'F1-Score': [rf_f1, xgb_f1],
+                    'ROC-AUC': [rf_auc, xgb_auc]
+                })
+                
+                st.dataframe(metrics_df.style.format({
+                    'Accuracy': '{:.3f}',
+                    'Precision': '{:.3f}',
+                    'Recall': '{:.3f}',
+                    'F1-Score': '{:.3f}',
+                    'ROC-AUC': '{:.3f}'
+                }))
+                
+                # ROC Curve
+                if len(np.unique(y)) > 1:
+                    st.subheader("📈 ROC Curves")
+                    fig = go.Figure()
+                    
+                    # RF ROC
+                    fpr_rf, tpr_rf, _ = roc_curve(y, rf_proba)
+                    fig.add_trace(go.Scatter(x=fpr_rf, y=tpr_rf, 
+                                           name=f'Random Forest (AUC = {rf_auc:.3f})'))
+                    
+                    # XGB ROC
+                    fpr_xgb, tpr_xgb, _ = roc_curve(y, xgb_proba)
+                    fig.add_trace(go.Scatter(x=fpr_xgb, y=tpr_xgb, 
+                                           name=f'XGBoost (AUC = {xgb_auc:.3f})'))
+                    
+                    # Random line
+                    fig.add_trace(go.Scatter(x=[0, 1], y=[0, 1], 
+                                           name='Random', line=dict(dash='dash')))
+                    
+                    fig.update_layout(title="ROC Curves Comparison",
+                                    xaxis_title="False Positive Rate",
+                                    yaxis_title="True Positive Rate")
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                # Confusion Matrices
+                st.subheader("🔍 Confusion Matrices")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    # Random Forest Confusion Matrix
+                    cm_rf = confusion_matrix(y, rf_pred)
+                    fig_cm_rf = px.imshow(cm_rf, text_auto=True,
+                                        title="Random Forest Confusion Matrix",
+                                        labels=dict(x="Predicted", y="Actual"),
+                                        x=['Control', 'ASD'],
+                                        y=['Control', 'ASD'])
+                    st.plotly_chart(fig_cm_rf, use_container_width=True)
+                
+                with col2:
+                    # XGBoost Confusion Matrix
+                    cm_xgb = confusion_matrix(y, xgb_pred)
+                    fig_cm_xgb = px.imshow(cm_xgb, text_auto=True,
+                                         title="XGBoost Confusion Matrix",
+                                         labels=dict(x="Predicted", y="Actual"),
+                                         x=['Control', 'ASD'],
+                                         y=['Control', 'ASD'])
+                    st.plotly_chart(fig_cm_xgb, use_container_width=True)
+                
+                # Classification Reports
+                st.subheader("📋 Detailed Classification Reports")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.text("Random Forest Report:")
+                    st.text(classification_report(y, rf_pred, target_names=['Control', 'ASD']))
+                
+                with col2:
+                    st.text("XGBoost Report:")
+                    st.text(classification_report(y, xgb_pred, target_names=['Control', 'ASD']))
+                
+            else:
+                st.error("❌ No training data available")
+        
+        else:
+            st.error("❌ No training data available. Upload data first!")
+            
+    except Exception as e:
+        st.error(f"❌ Error generating performance report: {e}")
+        st.exception(e)
 
 def show_visualization_page():
     """Display comprehensive data visualizations"""
-    st.header("📉 Data Visualization & Analytics")
+    st.header("📈 Data Visualization & Analytics")
     
     if not st.session_state.neo4j_connection:
         st.warning("⚠️ Please configure Neo4j connection first.")
@@ -1817,6 +1788,8 @@ def show_query_interface_page():
         - "List participants by age"
         - "Show me all participants with high confidence predictions"
         - "What are the most important gait features?"
+        - "Count total features processed"
+        - "Show distribution of diagnosis types"
         """)
     
     # Query Input
@@ -1925,7 +1898,10 @@ def show_reports_page():
     if report_type == "📊 Summary Report":
         generate_summary_report()
     elif report_type == "🎯 Model Performance Report":
-        generate_model_performance_report()
+        if st.session_state.ml_analyzer.is_trained:
+            generate_enhanced_model_report()
+        else:
+            st.warning("⚠️ Please train the models first.")
     elif report_type == "👥 Demographic Analysis":
         generate_demographic_report()
     elif report_type == "🚶 Gait Pattern Analysis":
@@ -1994,28 +1970,6 @@ def generate_summary_report():
             fig.update_layout(title="Case Distribution", height=300)
             st.plotly_chart(fig, use_container_width=True)
         
-        # Detailed analysis sections
-        if summary_data['total_participants'] > 0:
-            st.subheader("📈 Trend Analysis")
-            
-            # Session trend over time
-            trend_query = """
-            MATCH (s:GaitSession)
-            WHERE s.date IS NOT NULL
-            RETURN date(s.date) as session_date, count(s) as session_count
-            ORDER BY session_date
-            """
-            
-            trend_data = st.session_state.kg_manager.neo4j.execute_query(trend_query)
-            
-            if trend_data:
-                trend_df = pd.DataFrame(trend_data)
-                trend_df['session_date'] = pd.to_datetime(trend_df['session_date'])
-                
-                fig = px.line(trend_df, x='session_date', y='session_count',
-                            title="Sessions Over Time")
-                st.plotly_chart(fig, use_container_width=True)
-        
         # Export functionality
         if st.button("📄 Export Report as PDF"):
             st.info("PDF export functionality would be implemented here using libraries like ReportLab")
@@ -2023,28 +1977,15 @@ def generate_summary_report():
     except Exception as e:
         st.error(f"❌ Error generating summary report: {e}")
 
-def generate_model_performance_report():
-    """Generate enhanced model performance analysis report"""
-    st.subheader("🎯 Enhanced Model Performance Report")
-    
-    if not st.session_state.ml_analyzer.is_trained:
-        st.warning("⚠️ No trained models available. Please train models first.")
-        return
-    
-    # Show comprehensive results if models are trained
-    show_comprehensive_results()
-
 def generate_demographic_report():
     """Generate demographic analysis report"""
     st.subheader("👥 Demographic Analysis Report")
-    # Implementation for demographic analysis
-    st.info("Demographic report implementation would go here...")
+    st.info("Detailed demographic report implementation would go here...")
 
 def generate_gait_pattern_report():
     """Generate gait pattern analysis report"""
     st.subheader("🚶 Gait Pattern Analysis Report")
-    # Implementation for gait pattern analysis
-    st.info("Gait pattern report implementation would go here...")
+    st.info("Detailed gait pattern report implementation would go here...")
 
 if __name__ == "__main__":
     main()
