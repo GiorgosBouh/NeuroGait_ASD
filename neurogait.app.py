@@ -26,10 +26,22 @@ import requests
 from sklearn.ensemble import RandomForestClassifier, IsolationForest
 from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.preprocessing import StandardScaler, LabelEncoder
-from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score, roc_curve
+from sklearn.metrics import (
+    classification_report, confusion_matrix, roc_auc_score, roc_curve,
+    precision_score, recall_score, f1_score, accuracy_score,
+    precision_recall_curve, average_precision_score
+)
 import xgboost as xgb
 from sklearn.decomposition import PCA
 from imblearn.over_sampling import SMOTE
+
+# Additional imports for enhanced functionality
+import shap
+import openpyxl
+from sklearn.model_selection import StratifiedKFold
+from sklearn.calibration import calibration_curve
+import warnings
+warnings.filterwarnings('ignore')
 
 # Configuration
 st.set_page_config(
@@ -89,6 +101,292 @@ class Neo4jConnection:
                 logger.info(f"Schema query executed: {query[:50]}...")
             except Exception as e:
                 logger.error(f"Error executing schema query: {e}")
+
+class ExcelDataProcessor:
+    """Enhanced Excel data processing with comprehensive feature extraction"""
+    
+    def __init__(self):
+        self.processed_data = None
+        self.feature_columns = []
+        
+    def load_excel_data(self, file_path_or_buffer) -> pd.DataFrame:
+        """Load and process Excel data"""
+        try:
+            # Read Excel file
+            if isinstance(file_path_or_buffer, str):
+                df = pd.read_excel(file_path_or_buffer)
+            else:
+                df = pd.read_excel(file_path_or_buffer)
+            
+            # Clean column names
+            df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_')
+            
+            # Basic data cleaning
+            df = df.dropna(thresh=len(df.columns) * 0.5)  # Drop rows with >50% missing values
+            
+            self.processed_data = df
+            self._identify_feature_columns()
+            
+            return df
+            
+        except Exception as e:
+            st.error(f"Error loading Excel data: {e}")
+            return pd.DataFrame()
+    
+    def _identify_feature_columns(self):
+        """Automatically identify feature columns"""
+        if self.processed_data is not None:
+            # Exclude ID and label columns
+            exclude_cols = ['participant_id', 'id', 'diagnosis', 'label', 'target']
+            self.feature_columns = [col for col in self.processed_data.columns 
+                                  if col not in exclude_cols and 
+                                  self.processed_data[col].dtype in ['int64', 'float64']]
+    
+    def get_features_and_labels(self) -> Tuple[pd.DataFrame, pd.Series]:
+        """Extract features and labels from processed data"""
+        if self.processed_data is None:
+            return pd.DataFrame(), pd.Series()
+        
+        # Get features
+        X = self.processed_data[self.feature_columns]
+        
+        # Get labels (try different column names)
+        label_cols = ['diagnosis', 'label', 'target', 'asd', 'class']
+        y = None
+        
+        for col in label_cols:
+            if col in self.processed_data.columns:
+                y = self.processed_data[col]
+                break
+        
+        if y is None:
+            st.error("No label column found. Please ensure your data has one of: diagnosis, label, target, asd, class")
+            return X, pd.Series()
+        
+        # Convert labels to binary if needed
+        if y.dtype == 'object':
+            y = y.map({'ASD': 1, 'Control': 0, 'asd': 1, 'control': 0, 
+                      'positive': 1, 'negative': 0, 'yes': 1, 'no': 0})
+        
+        return X, y
+
+class EnhancedMLAnalyzer:
+    """Enhanced Machine Learning analyzer with comprehensive metrics and SHAP"""
+    
+    def __init__(self):
+        self.rf_model = RandomForestClassifier(n_estimators=100, random_state=42)
+        self.xgb_model = xgb.XGBClassifier(random_state=42, eval_metric='logloss')
+        self.isolation_forest = IsolationForest(contamination=0.1, random_state=42)
+        self.scaler = StandardScaler()
+        self.feature_names = []
+        self.is_trained = False
+        self.X_train = None
+        self.X_test = None
+        self.y_train = None
+        self.y_test = None
+        self.shap_explainer = None
+        self.shap_values = None
+        
+    def prepare_training_data(self, X: pd.DataFrame, y: pd.Series) -> Tuple[np.ndarray, np.ndarray]:
+        """Prepare features for training with enhanced preprocessing"""
+        if X.empty or y.empty:
+            return np.array([]), np.array([])
+        
+        # Handle missing values
+        X_clean = X.fillna(X.median())
+        
+        # Remove constant features
+        X_clean = X_clean.loc[:, X_clean.var() != 0]
+        
+        self.feature_names = list(X_clean.columns)
+        
+        # Convert to numpy arrays
+        X_array = X_clean.values
+        y_array = y.values
+        
+        # Remove any remaining NaN values
+        mask = ~(np.isnan(X_array).any(axis=1) | np.isnan(y_array))
+        X_array = X_array[mask]
+        y_array = y_array[mask]
+        
+        return X_array, y_array
+    
+    def train_models(self, X: np.ndarray, y: np.ndarray):
+        """Train all models with enhanced validation"""
+        if len(X) == 0:
+            logger.error("No training data provided")
+            return
+        
+        # Split data
+        self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(
+            X, y, test_size=0.3, random_state=42, stratify=y
+        )
+        
+        # Scale features
+        self.X_train_scaled = self.scaler.fit_transform(self.X_train)
+        self.X_test_scaled = self.scaler.transform(self.X_test)
+        
+        # Handle class imbalance with SMOTE
+        if len(np.unique(self.y_train)) > 1:
+            smote = SMOTE(random_state=42)
+            X_balanced, y_balanced = smote.fit_resample(self.X_train_scaled, self.y_train)
+        else:
+            X_balanced, y_balanced = self.X_train_scaled, self.y_train
+        
+        # Train supervised models
+        self.rf_model.fit(X_balanced, y_balanced)
+        self.xgb_model.fit(X_balanced, y_balanced)
+        
+        # Train anomaly detection
+        self.isolation_forest.fit(self.X_train_scaled)
+        
+        # Initialize SHAP explainer
+        try:
+            self.shap_explainer = shap.TreeExplainer(self.rf_model)
+            self.shap_values = self.shap_explainer.shap_values(self.X_test_scaled)
+            if isinstance(self.shap_values, list):
+                self.shap_values = self.shap_values[1]  # Take positive class for binary classification
+        except Exception as e:
+            logger.warning(f"SHAP initialization failed: {e}")
+            self.shap_explainer = None
+        
+        self.is_trained = True
+        logger.info("Models trained successfully")
+    
+    def predict(self, features: Dict) -> Dict:
+        """Make predictions on new data"""
+        if not self.is_trained:
+            return {"error": "Models not trained yet"}
+        
+        # Prepare features
+        feature_vector = []
+        for feature_name in self.feature_names:
+            feature_vector.append(features.get(feature_name, 0))
+        
+        X = np.array(feature_vector).reshape(1, -1)
+        X_scaled = self.scaler.transform(X)
+        
+        # Get predictions
+        rf_pred = self.rf_model.predict(X_scaled)[0]
+        rf_proba = self.rf_model.predict_proba(X_scaled)[0]
+        
+        xgb_pred = self.xgb_model.predict(X_scaled)[0]
+        xgb_proba = self.xgb_model.predict_proba(X_scaled)[0]
+        
+        # Anomaly detection
+        anomaly_score = self.isolation_forest.decision_function(X_scaled)[0]
+        is_anomaly = self.isolation_forest.predict(X_scaled)[0] == -1
+        
+        return {
+            'rf_prediction': int(rf_pred),
+            'rf_confidence': float(max(rf_proba)),
+            'xgb_prediction': int(xgb_pred),
+            'xgb_confidence': float(max(xgb_proba)),
+            'anomaly_score': float(anomaly_score),
+            'is_anomaly': bool(is_anomaly),
+            'ensemble_prediction': int((rf_pred + xgb_pred) / 2 > 0.5)
+        }
+    
+    def get_comprehensive_metrics(self) -> Dict:
+        """Calculate comprehensive performance metrics"""
+        if not self.is_trained or self.X_test is None:
+            return {}
+        
+        metrics = {}
+        
+        # Get predictions for test set
+        rf_pred = self.rf_model.predict(self.X_test_scaled)
+        rf_proba = self.rf_model.predict_proba(self.X_test_scaled)[:, 1]
+        
+        xgb_pred = self.xgb_model.predict(self.X_test_scaled)
+        xgb_proba = self.xgb_model.predict_proba(self.X_test_scaled)[:, 1]
+        
+        # Calculate metrics for each model
+        for model_name, y_pred, y_proba in [('rf', rf_pred, rf_proba), ('xgb', xgb_pred, xgb_proba)]:
+            metrics[f'{model_name}_accuracy'] = accuracy_score(self.y_test, y_pred)
+            metrics[f'{model_name}_precision'] = precision_score(self.y_test, y_pred, zero_division=0)
+            metrics[f'{model_name}_recall'] = recall_score(self.y_test, y_pred, zero_division=0)
+            metrics[f'{model_name}_f1'] = f1_score(self.y_test, y_pred, zero_division=0)
+            
+            if len(np.unique(self.y_test)) > 1:
+                metrics[f'{model_name}_auc'] = roc_auc_score(self.y_test, y_proba)
+                metrics[f'{model_name}_avg_precision'] = average_precision_score(self.y_test, y_proba)
+        
+        # Ensemble metrics
+        ensemble_pred = ((rf_pred + xgb_pred) / 2 > 0.5).astype(int)
+        ensemble_proba = (rf_proba + xgb_proba) / 2
+        
+        metrics['ensemble_accuracy'] = accuracy_score(self.y_test, ensemble_pred)
+        metrics['ensemble_precision'] = precision_score(self.y_test, ensemble_pred, zero_division=0)
+        metrics['ensemble_recall'] = recall_score(self.y_test, ensemble_pred, zero_division=0)
+        metrics['ensemble_f1'] = f1_score(self.y_test, ensemble_pred, zero_division=0)
+        
+        if len(np.unique(self.y_test)) > 1:
+            metrics['ensemble_auc'] = roc_auc_score(self.y_test, ensemble_proba)
+            metrics['ensemble_avg_precision'] = average_precision_score(self.y_test, ensemble_proba)
+        
+        return metrics
+    
+    def get_feature_importance(self) -> Dict:
+        """Get feature importance from trained models"""
+        if not self.is_trained:
+            return {}
+        
+        rf_importance = dict(zip(self.feature_names, self.rf_model.feature_importances_))
+        xgb_importance = dict(zip(self.feature_names, self.xgb_model.feature_importances_))
+        
+        return {
+            'random_forest': rf_importance,
+            'xgboost': xgb_importance
+        }
+    
+    def get_confusion_matrices(self) -> Dict:
+        """Get confusion matrices for all models"""
+        if not self.is_trained or self.X_test is None:
+            return {}
+        
+        rf_pred = self.rf_model.predict(self.X_test_scaled)
+        xgb_pred = self.xgb_model.predict(self.X_test_scaled)
+        ensemble_pred = ((rf_pred + xgb_pred) / 2 > 0.5).astype(int)
+        
+        return {
+            'rf_cm': confusion_matrix(self.y_test, rf_pred),
+            'xgb_cm': confusion_matrix(self.y_test, xgb_pred),
+            'ensemble_cm': confusion_matrix(self.y_test, ensemble_pred)
+        }
+    
+    def get_roc_data(self) -> Dict:
+        """Get ROC curve data for all models"""
+        if not self.is_trained or self.X_test is None:
+            return {}
+        
+        rf_proba = self.rf_model.predict_proba(self.X_test_scaled)[:, 1]
+        xgb_proba = self.xgb_model.predict_proba(self.X_test_scaled)[:, 1]
+        ensemble_proba = (rf_proba + xgb_proba) / 2
+        
+        roc_data = {}
+        
+        for model_name, y_proba in [('rf', rf_proba), ('xgb', xgb_proba), ('ensemble', ensemble_proba)]:
+            fpr, tpr, _ = roc_curve(self.y_test, y_proba)
+            auc = roc_auc_score(self.y_test, y_proba)
+            roc_data[model_name] = {'fpr': fpr, 'tpr': tpr, 'auc': auc}
+        
+        return roc_data
+    
+    def get_shap_values(self) -> Dict:
+        """Get SHAP values and importance"""
+        if self.shap_explainer is None or self.shap_values is None:
+            return {}
+        
+        # Feature importance from SHAP
+        shap_importance = np.abs(self.shap_values).mean(0)
+        shap_feature_importance = dict(zip(self.feature_names, shap_importance))
+        
+        return {
+            'shap_values': self.shap_values,
+            'feature_importance': shap_feature_importance,
+            'test_data': self.X_test_scaled
+        }
 
 class GaitAnalyzer:
     """Advanced Gait Analysis using MediaPipe"""
@@ -347,114 +645,17 @@ class KnowledgeGraphManager:
         
         return [{"error": "Query not recognized. Please try a simpler query."}]
 
-class MLAnalyzer:
-    """Machine Learning analysis for ASD prediction"""
-    
-    def __init__(self):
-        self.rf_model = RandomForestClassifier(n_estimators=100, random_state=42)
-        self.xgb_model = xgb.XGBClassifier(random_state=42)
-        self.isolation_forest = IsolationForest(contamination=0.1, random_state=42)
-        self.scaler = StandardScaler()
-        self.feature_names = []
-        self.is_trained = False
-        
-    def prepare_training_data(self, features_list: List[Dict], labels: List[int]) -> Tuple[np.ndarray, np.ndarray]:
-        """Prepare features for training"""
-        if not features_list:
-            return np.array([]), np.array([])
-            
-        # Convert to DataFrame and handle missing values
-        df = pd.DataFrame(features_list)
-        df = df.fillna(df.mean())
-        
-        self.feature_names = list(df.columns)
-        X = df.values
-        y = np.array(labels)
-        
-        return X, y
-    
-    def train_models(self, X: np.ndarray, y: np.ndarray):
-        """Train all models"""
-        if len(X) == 0:
-            logger.error("No training data provided")
-            return
-            
-        # Scale features
-        X_scaled = self.scaler.fit_transform(X)
-        
-        # Handle class imbalance with SMOTE
-        if len(np.unique(y)) > 1:
-            smote = SMOTE(random_state=42)
-            X_balanced, y_balanced = smote.fit_resample(X_scaled, y)
-        else:
-            X_balanced, y_balanced = X_scaled, y
-        
-        # Train supervised models
-        self.rf_model.fit(X_balanced, y_balanced)
-        self.xgb_model.fit(X_balanced, y_balanced)
-        
-        # Train anomaly detection
-        self.isolation_forest.fit(X_scaled)
-        
-        self.is_trained = True
-        logger.info("Models trained successfully")
-    
-    def predict(self, features: Dict) -> Dict:
-        """Make predictions on new data"""
-        if not self.is_trained:
-            return {"error": "Models not trained yet"}
-            
-        # Prepare features
-        feature_vector = []
-        for feature_name in self.feature_names:
-            feature_vector.append(features.get(feature_name, 0))
-        
-        X = np.array(feature_vector).reshape(1, -1)
-        X_scaled = self.scaler.transform(X)
-        
-        # Get predictions
-        rf_pred = self.rf_model.predict(X_scaled)[0]
-        rf_proba = self.rf_model.predict_proba(X_scaled)[0]
-        
-        xgb_pred = self.xgb_model.predict(X_scaled)[0]
-        xgb_proba = self.xgb_model.predict_proba(X_scaled)[0]
-        
-        # Anomaly detection
-        anomaly_score = self.isolation_forest.decision_function(X_scaled)[0]
-        is_anomaly = self.isolation_forest.predict(X_scaled)[0] == -1
-        
-        return {
-            'rf_prediction': int(rf_pred),
-            'rf_confidence': float(max(rf_proba)),
-            'xgb_prediction': int(xgb_pred),
-            'xgb_confidence': float(max(xgb_proba)),
-            'anomaly_score': float(anomaly_score),
-            'is_anomaly': bool(is_anomaly),
-            'ensemble_prediction': int((rf_pred + xgb_pred) / 2 > 0.5)
-        }
-    
-    def get_feature_importance(self) -> Dict:
-        """Get feature importance from trained models"""
-        if not self.is_trained:
-            return {}
-            
-        rf_importance = dict(zip(self.feature_names, self.rf_model.feature_importances_))
-        xgb_importance = dict(zip(self.feature_names, self.xgb_model.feature_importances_))
-        
-        return {
-            'random_forest': rf_importance,
-            'xgboost': xgb_importance
-        }
-
 # Initialize session state
 if 'neo4j_connection' not in st.session_state:
     st.session_state.neo4j_connection = None
 if 'kg_manager' not in st.session_state:
     st.session_state.kg_manager = None
 if 'ml_analyzer' not in st.session_state:
-    st.session_state.ml_analyzer = MLAnalyzer()
+    st.session_state.ml_analyzer = EnhancedMLAnalyzer()
 if 'gait_analyzer' not in st.session_state:
     st.session_state.gait_analyzer = GaitAnalyzer()
+if 'excel_processor' not in st.session_state:
+    st.session_state.excel_processor = ExcelDataProcessor()
 
 def main():
     """Main Streamlit application"""
@@ -466,7 +667,7 @@ def main():
     st.sidebar.title("Navigation")
     page = st.sidebar.selectbox(
         "Choose a page:",
-        ["🏠 Home", "🔧 Setup", "📊 Data Upload", "🎯 Analysis", "📈 Visualization", "🔍 Query Interface", "📋 Reports"]
+        ["🏠 Home", "🔧 Setup", "📊 Data Upload", "📈 Excel Analysis", "🎯 Analysis", "📉 Visualization", "🔍 Query Interface", "📋 Reports"]
     )
     
     if page == "🏠 Home":
@@ -475,9 +676,11 @@ def main():
         show_setup_page()
     elif page == "📊 Data Upload":
         show_data_upload_page()
+    elif page == "📈 Excel Analysis":
+        show_excel_analysis_page()
     elif page == "🎯 Analysis":
         show_analysis_page()
-    elif page == "📈 Visualization":
+    elif page == "📉 Visualization":
         show_visualization_page()
     elif page == "🔍 Query Interface":
         show_query_interface_page()
@@ -497,24 +700,25 @@ def show_home_page():
         
         ### Key Features:
         - **🎥 Video Gait Analysis**: Extract pose landmarks from walking videos
+        - **📈 Excel Data Analysis**: Process and analyze Excel datasets with comprehensive metrics
         - **🧠 Knowledge Graph Storage**: Store and relate complex gait data using Neo4j
         - **🤖 Machine Learning**: Multi-model approach for ASD prediction
+        - **📊 Advanced Metrics**: Precision, Recall, F1-Score, ROC curves, and more
+        - **🔍 SHAP Analysis**: Explainable AI with feature importance visualization
         - **📊 Interactive Visualizations**: Comprehensive data exploration tools
         - **💬 Natural Language Queries**: Ask questions about your data in plain English
         - **📱 Real-time Processing**: Immediate analysis and feedback
         
         ### System Architecture:
-        1. **Data Collection**: Upload video files of gait patterns
-        2. **Feature Extraction**: Advanced pose estimation using MediaPipe
+        1. **Data Collection**: Upload video files or Excel datasets
+        2. **Feature Extraction**: Advanced pose estimation and feature engineering
         3. **Knowledge Graph**: Semantic storage and relationship modeling
-        4. **ML Analysis**: Ensemble models for prediction and anomaly detection
-        5. **Visualization**: Interactive dashboards and reports
+        4. **ML Analysis**: Ensemble models with comprehensive evaluation metrics
+        5. **Explainable AI**: SHAP-based feature importance and model interpretation
+        6. **Visualization**: Interactive dashboards and detailed reports
         """)
     
     with col2:
-        st.image("logo.png", 
-                caption="NeuroGait ASD System")
-        
         # System status
         st.subheader("System Status")
         
@@ -525,6 +729,10 @@ def show_home_page():
         # Check ML models
         ml_status = "✅ Trained" if st.session_state.ml_analyzer.is_trained else "❌ Not Trained"
         st.write(f"**ML Models**: {ml_status}")
+        
+        # Check SHAP availability
+        shap_status = "✅ Available" if st.session_state.ml_analyzer.shap_explainer else "❌ Not Available"
+        st.write(f"**SHAP Explainer**: {shap_status}")
         
         # Quick stats if available
         if st.session_state.kg_manager:
@@ -644,6 +852,389 @@ def show_setup_page():
             st.session_state.ml_analyzer.isolation_forest.set_params(contamination=contamination)
             
             st.success("✅ ML configuration updated!")
+
+def show_excel_analysis_page():
+    """Display Excel data analysis page with comprehensive metrics and SHAP"""
+    st.header("📈 Excel Data Analysis")
+    st.markdown("Upload Excel files for comprehensive ASD analysis with advanced metrics and explainable AI")
+    
+    # File Upload
+    uploaded_file = st.file_uploader(
+        "Upload Excel file with gait features",
+        type=['xlsx', 'xls'],
+        help="Upload an Excel file containing gait features and diagnosis labels"
+    )
+    
+    if uploaded_file is not None:
+        try:
+            # Load and process Excel data
+            with st.spinner("Loading Excel data..."):
+                df = st.session_state.excel_processor.load_excel_data(uploaded_file)
+                
+            if not df.empty:
+                st.success(f"✅ Successfully loaded {len(df)} records with {len(df.columns)} columns")
+                
+                # Data Preview
+                st.subheader("📊 Data Preview")
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.write("**Dataset Information:**")
+                    st.write(f"- Rows: {len(df)}")
+                    st.write(f"- Columns: {len(df.columns)}")
+                    st.write(f"- Feature columns: {len(st.session_state.excel_processor.feature_columns)}")
+                
+                with col2:
+                    st.write("**Missing Values:**")
+                    missing_data = df.isnull().sum()
+                    if missing_data.sum() > 0:
+                        st.write(missing_data[missing_data > 0])
+                    else:
+                        st.write("No missing values found")
+                
+                # Show data preview
+                st.dataframe(df.head(10))
+                
+                # Data Analysis Section
+                if st.button("🚀 Start Comprehensive Analysis"):
+                    # Get features and labels
+                    X, y = st.session_state.excel_processor.get_features_and_labels()
+                    
+                    if not X.empty and not y.empty:
+                        with st.spinner("Training models and calculating metrics..."):
+                            # Prepare data
+                            X_prepared, y_prepared = st.session_state.ml_analyzer.prepare_training_data(X, y)
+                            
+                            if len(X_prepared) > 0:
+                                # Train models
+                                st.session_state.ml_analyzer.train_models(X_prepared, y_prepared)
+                                
+                                # Display results
+                                show_comprehensive_results()
+                            else:
+                                st.error("❌ Unable to prepare training data")
+                    else:
+                        st.error("❌ Unable to extract features and labels from the data")
+        
+        except Exception as e:
+            st.error(f"❌ Error processing Excel file: {e}")
+    
+    # Sample data format
+    with st.expander("📋 Excel Data Format Guide"):
+        st.markdown("""
+        ### Required Excel Format
+        
+        Your Excel file should contain the following columns:
+        
+        **Required Columns:**
+        - `diagnosis` or `label`: Target variable ('ASD', 'Control', 1, 0)
+        - Gait feature columns (numerical values)
+        
+        **Example Feature Columns:**
+        - step_length_mean, step_length_std
+        - cadence, stride_width_mean
+        - left_ankle_angle_mean, right_ankle_angle_mean
+        - step_asymmetry, grf_variance
+        
+        **Optional Columns:**
+        - participant_id: Unique identifier
+        - age, gender: Demographic information
+        
+        ### Sample Data Structure:
+        ```
+        participant_id | age | gender | step_length_mean | cadence | diagnosis
+        P001          | 25  | Male   | 0.65            | 1.2     | ASD
+        P002          | 30  | Female | 0.72            | 1.1     | Control
+        ...
+        ```
+        """)
+
+def show_comprehensive_results():
+    """Display comprehensive analysis results with metrics and SHAP"""
+    
+    # Get comprehensive metrics
+    metrics = st.session_state.ml_analyzer.get_comprehensive_metrics()
+    confusion_matrices = st.session_state.ml_analyzer.get_confusion_matrices()
+    roc_data = st.session_state.ml_analyzer.get_roc_data()
+    shap_data = st.session_state.ml_analyzer.get_shap_values()
+    
+    # Main metrics dashboard
+    st.subheader("🎯 Model Performance Metrics")
+    
+    # Create metrics comparison table
+    metrics_df = pd.DataFrame({
+        'Random Forest': [
+            metrics.get('rf_accuracy', 0),
+            metrics.get('rf_precision', 0),
+            metrics.get('rf_recall', 0),
+            metrics.get('rf_f1', 0),
+            metrics.get('rf_auc', 0)
+        ],
+        'XGBoost': [
+            metrics.get('xgb_accuracy', 0),
+            metrics.get('xgb_precision', 0),
+            metrics.get('xgb_recall', 0),
+            metrics.get('xgb_f1', 0),
+            metrics.get('xgb_auc', 0)
+        ],
+        'Ensemble': [
+            metrics.get('ensemble_accuracy', 0),
+            metrics.get('ensemble_precision', 0),
+            metrics.get('ensemble_recall', 0),
+            metrics.get('ensemble_f1', 0),
+            metrics.get('ensemble_auc', 0)
+        ]
+    }, index=['Accuracy', 'Precision', 'Recall', 'F1-Score', 'AUC'])
+    
+    # Display metrics table
+    st.dataframe(metrics_df.round(4))
+    
+    # Visual metrics comparison
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Metrics comparison chart
+        fig = go.Figure()
+        for column in metrics_df.columns:
+            fig.add_trace(go.Scatterpolar(
+                r=metrics_df[column].values,
+                theta=metrics_df.index,
+                fill='toself',
+                name=column
+            ))
+        
+        fig.update_layout(
+            polar=dict(
+                radialaxis=dict(
+                    visible=True,
+                    range=[0, 1]
+                )
+            ),
+            title="Model Performance Comparison",
+            showlegend=True
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    
+    with col2:
+        # Individual metric bars
+        melted_metrics = metrics_df.reset_index().melt(id_vars='index')
+        fig = px.bar(melted_metrics, x='index', y='value', color='variable',
+                    title="Detailed Metrics Comparison",
+                    labels={'index': 'Metric', 'value': 'Score', 'variable': 'Model'})
+        st.plotly_chart(fig, use_container_width=True)
+    
+    # ROC Curves
+    if roc_data:
+        st.subheader("📈 ROC Curves Analysis")
+        
+        fig = go.Figure()
+        
+        for model_name, data in roc_data.items():
+            fig.add_trace(go.Scatter(
+                x=data['fpr'], y=data['tpr'],
+                mode='lines',
+                name=f"{model_name.upper()} (AUC = {data['auc']:.3f})"
+            ))
+        
+        # Add diagonal line
+        fig.add_trace(go.Scatter(
+            x=[0, 1], y=[0, 1],
+            mode='lines',
+            name='Random Classifier',
+            line=dict(dash='dash', color='gray')
+        ))
+        
+        fig.update_layout(
+            title="ROC Curves Comparison",
+            xaxis_title="False Positive Rate",
+            yaxis_title="True Positive Rate",
+            xaxis=dict(range=[0, 1]),
+            yaxis=dict(range=[0, 1])
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+    
+    # Confusion Matrices
+    if confusion_matrices:
+        st.subheader("🔍 Confusion Matrices")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        for i, (model_name, cm) in enumerate(confusion_matrices.items()):
+            with [col1, col2, col3][i]:
+                fig = px.imshow(cm, 
+                              labels=dict(x="Predicted", y="Actual"),
+                              x=['Control', 'ASD'],
+                              y=['Control', 'ASD'],
+                              title=f"{model_name.upper()} Confusion Matrix",
+                              color_continuous_scale="Blues",
+                              text_auto=True)
+                st.plotly_chart(fig, use_container_width=True)
+    
+    # SHAP Analysis
+    if shap_data and 'shap_values' in shap_data:
+        st.subheader("🔍 SHAP Analysis - Explainable AI")
+        
+        # Feature importance from SHAP
+        shap_importance = shap_data['feature_importance']
+        
+        if shap_importance:
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # SHAP feature importance
+                importance_df = pd.DataFrame(
+                    list(shap_importance.items()),
+                    columns=['Feature', 'SHAP Importance']
+                ).sort_values('SHAP Importance', ascending=False).head(15)
+                
+                fig = px.bar(importance_df, 
+                           x='SHAP Importance', 
+                           y='Feature',
+                           orientation='h',
+                           title="SHAP Feature Importance")
+                fig.update_layout(yaxis={'categoryorder': 'total ascending'})
+                st.plotly_chart(fig, use_container_width=True)
+            
+            with col2:
+                # Traditional feature importance comparison
+                traditional_importance = st.session_state.ml_analyzer.get_feature_importance()
+                
+                if traditional_importance and 'random_forest' in traditional_importance:
+                    rf_importance = traditional_importance['random_forest']
+                    
+                    # Compare SHAP vs traditional importance
+                    comparison_data = []
+                    common_features = set(shap_importance.keys()) & set(rf_importance.keys())
+                    
+                    for feature in list(common_features)[:10]:  # Top 10 common features
+                        comparison_data.append({
+                            'Feature': feature,
+                            'SHAP Importance': shap_importance[feature],
+                            'RF Importance': rf_importance[feature]
+                        })
+                    
+                    if comparison_data:
+                        comp_df = pd.DataFrame(comparison_data)
+                        
+                        fig = go.Figure()
+                        fig.add_trace(go.Scatter(
+                            x=comp_df['RF Importance'],
+                            y=comp_df['SHAP Importance'],
+                            mode='markers+text',
+                            text=comp_df['Feature'],
+                            textposition='top center',
+                            marker=dict(size=10),
+                            name='Features'
+                        ))
+                        
+                        fig.update_layout(
+                            title="SHAP vs Traditional Feature Importance",
+                            xaxis_title="Random Forest Importance",
+                            yaxis_title="SHAP Importance"
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+        
+        # SHAP Summary Plot
+        try:
+            st.subheader("📊 SHAP Summary Visualization")
+            
+            # Create SHAP summary plot
+            shap_values = shap_data['shap_values']
+            test_data = shap_data['test_data']
+            
+            if len(shap_values.shape) == 2:  # For classification
+                # Create a matplotlib figure for SHAP summary plot
+                fig, ax = plt.subplots(figsize=(10, 8))
+                
+                # SHAP summary plot
+                shap.summary_plot(
+                    shap_values, 
+                    test_data, 
+                    feature_names=st.session_state.ml_analyzer.feature_names,
+                    plot_type="dot",
+                    show=False
+                )
+                
+                st.pyplot(fig)
+                plt.close()
+                
+                # SHAP waterfall plot for first prediction
+                if len(shap_values) > 0:
+                    st.subheader("🌊 SHAP Waterfall Plot (Sample Prediction)")
+                    
+                    fig, ax = plt.subplots(figsize=(10, 6))
+                    
+                    # Create explanation object
+                    explanation = shap.Explanation(
+                        values=shap_values[0],
+                        base_values=st.session_state.ml_analyzer.shap_explainer.expected_value,
+                        data=test_data[0],
+                        feature_names=st.session_state.ml_analyzer.feature_names
+                    )
+                    
+                    shap.waterfall_plot(explanation, show=False)
+                    st.pyplot(fig)
+                    plt.close()
+        
+        except Exception as e:
+            st.warning(f"Could not generate SHAP plots: {e}")
+    
+    # Cross-validation results
+    st.subheader("🔄 Cross-Validation Analysis")
+    
+    if hasattr(st.session_state.ml_analyzer, 'X_train') and st.session_state.ml_analyzer.X_train is not None:
+        try:
+            # Perform stratified k-fold cross-validation
+            skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+            
+            cv_results = {}
+            for model_name, model in [('Random Forest', st.session_state.ml_analyzer.rf_model),
+                                    ('XGBoost', st.session_state.ml_analyzer.xgb_model)]:
+                
+                cv_scores = cross_val_score(
+                    model, 
+                    st.session_state.ml_analyzer.X_train_scaled, 
+                    st.session_state.ml_analyzer.y_train,
+                    cv=skf, 
+                    scoring='f1'
+                )
+                
+                cv_results[model_name] = {
+                    'mean': cv_scores.mean(),
+                    'std': cv_scores.std(),
+                    'scores': cv_scores
+                }
+            
+            # Display CV results
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                cv_df = pd.DataFrame({
+                    'Model': list(cv_results.keys()),
+                    'Mean F1': [results['mean'] for results in cv_results.values()],
+                    'Std F1': [results['std'] for results in cv_results.values()]
+                })
+                
+                fig = px.bar(cv_df, x='Model', y='Mean F1', 
+                           error_y='Std F1',
+                           title="Cross-Validation F1 Scores")
+                st.plotly_chart(fig, use_container_width=True)
+            
+            with col2:
+                # Box plot of CV scores
+                cv_plot_data = []
+                for model_name, results in cv_results.items():
+                    for score in results['scores']:
+                        cv_plot_data.append({'Model': model_name, 'F1 Score': score})
+                
+                cv_plot_df = pd.DataFrame(cv_plot_data)
+                fig = px.box(cv_plot_df, x='Model', y='F1 Score',
+                           title="Cross-Validation Score Distribution")
+                st.plotly_chart(fig, use_container_width=True)
+        
+        except Exception as e:
+            st.warning(f"Could not perform cross-validation: {e}")
 
 def show_data_upload_page():
     """Display the data upload and processing page"""
@@ -868,47 +1459,18 @@ def show_analysis_page():
         if st.button("🚀 Train Models"):
             with st.spinner("Training machine learning models..."):
                 try:
-                    X, y = st.session_state.ml_analyzer.prepare_training_data(
-                        st.session_state.training_features,
-                        st.session_state.training_labels
-                    )
+                    # Convert to DataFrame for processing
+                    features_df = pd.DataFrame(st.session_state.training_features)
+                    labels_series = pd.Series(st.session_state.training_labels)
+                    
+                    X, y = st.session_state.ml_analyzer.prepare_training_data(features_df, labels_series)
                     
                     if len(X) > 0:
                         st.session_state.ml_analyzer.train_models(X, y)
                         st.success("✅ Models trained successfully!")
                         
-                        # Display training results
-                        st.subheader("📊 Training Results")
-                        
-                        # Cross-validation scores
-                        cv_scores_rf = cross_val_score(
-                            st.session_state.ml_analyzer.rf_model, X, y, cv=5
-                        )
-                        cv_scores_xgb = cross_val_score(
-                            st.session_state.ml_analyzer.xgb_model, X, y, cv=5
-                        )
-                        
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.metric("Random Forest CV Score", f"{cv_scores_rf.mean():.3f} ± {cv_scores_rf.std():.3f}")
-                        with col2:
-                            st.metric("XGBoost CV Score", f"{cv_scores_xgb.mean():.3f} ± {cv_scores_xgb.std():.3f}")
-                        
-                        # Feature importance
-                        importance_data = st.session_state.ml_analyzer.get_feature_importance()
-                        
-                        if importance_data:
-                            st.subheader("🎯 Feature Importance")
-                            
-                            # Random Forest importance
-                            rf_imp_df = pd.DataFrame(
-                                list(importance_data['random_forest'].items()),
-                                columns=['Feature', 'Importance']
-                            ).sort_values('Importance', ascending=False)
-                            
-                            fig = px.bar(rf_imp_df.head(10), x='Importance', y='Feature',
-                                       orientation='h', title="Random Forest Feature Importance")
-                            st.plotly_chart(fig, use_container_width=True)
+                        # Show comprehensive results
+                        show_comprehensive_results()
                     
                     else:
                         st.error("❌ No valid training data available")
@@ -986,7 +1548,7 @@ def show_analysis_page():
 
 def show_visualization_page():
     """Display comprehensive data visualizations"""
-    st.header("📈 Data Visualization & Analytics")
+    st.header("📉 Data Visualization & Analytics")
     
     if not st.session_state.neo4j_connection:
         st.warning("⚠️ Please configure Neo4j connection first.")
@@ -1462,105 +2024,15 @@ def generate_summary_report():
         st.error(f"❌ Error generating summary report: {e}")
 
 def generate_model_performance_report():
-    """Generate model performance analysis report"""
-    st.subheader("🎯 Model Performance Report")
+    """Generate enhanced model performance analysis report"""
+    st.subheader("🎯 Enhanced Model Performance Report")
     
     if not st.session_state.ml_analyzer.is_trained:
         st.warning("⚠️ No trained models available. Please train models first.")
         return
     
-    try:
-        # Get prediction data
-        predictions_query = """
-        MATCH (p:Participant)-[:HAS_SESSION]->(s:GaitSession)-[:HAS_PREDICTION]->(r:PredictionResult)
-        RETURN p.diagnosis as actual, r.prediction as predicted, 
-               r.confidence as confidence, r.anomaly_score as anomaly_score
-        """
-        
-        predictions_data = st.session_state.kg_manager.neo4j.execute_query(predictions_query)
-        
-        if predictions_data:
-            pred_df = pd.DataFrame(predictions_data)
-            pred_df['actual_binary'] = pred_df['actual'].map({'ASD': 1, 'Control': 0})
-            
-            # Calculate performance metrics
-            if len(pred_df) > 0:
-                accuracy = (pred_df['actual_binary'] == pred_df['predicted']).mean()
-                
-                # True/False Positives/Negatives
-                tp = len(pred_df[(pred_df['actual_binary'] == 1) & (pred_df['predicted'] == 1)])
-                tn = len(pred_df[(pred_df['actual_binary'] == 0) & (pred_df['predicted'] == 0)])
-                fp = len(pred_df[(pred_df['actual_binary'] == 0) & (pred_df['predicted'] == 1)])
-                fn = len(pred_df[(pred_df['actual_binary'] == 1) & (pred_df['predicted'] == 0)])
-                
-                precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-                recall = tp / (tp + fn) if (tp + fn) > 0 else 0
-                f1_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
-                
-                # Display metrics
-                col1, col2, col3, col4 = st.columns(4)
-                
-                with col1:
-                    st.metric("Accuracy", f"{accuracy:.3f}")
-                with col2:
-                    st.metric("Precision", f"{precision:.3f}")
-                with col3:
-                    st.metric("Recall", f"{recall:.3f}")
-                with col4:
-                    st.metric("F1 Score", f"{f1_score:.3f}")
-                
-                # Confusion Matrix
-                st.subheader("🔍 Detailed Analysis")
-                
-                confusion_matrix_data = [
-                    ['True Negative', tn], ['False Positive', fp],
-                    ['False Negative', fn], ['True Positive', tp]
-                ]
-                
-                cm_df = pd.DataFrame(confusion_matrix_data, columns=['Metric', 'Count'])
-                
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    fig = px.bar(cm_df, x='Metric', y='Count',
-                               title="Confusion Matrix Components")
-                    st.plotly_chart(fig, use_container_width=True)
-                
-                with col2:
-                    # ROC Curve data preparation
-                    if len(pred_df['confidence'].unique()) > 1:
-                        fpr, tpr, _ = roc_curve(pred_df['actual_binary'], pred_df['confidence'])
-                        auc_score = roc_auc_score(pred_df['actual_binary'], pred_df['confidence'])
-                        
-                        fig = go.Figure()
-                        fig.add_trace(go.Scatter(x=fpr, y=tpr, mode='lines',
-                                               name=f'ROC Curve (AUC = {auc_score:.3f})'))
-                        fig.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode='lines',
-                                               name='Random Classifier', line=dict(dash='dash')))
-                        fig.update_layout(title="ROC Curve", xaxis_title="False Positive Rate",
-                                        yaxis_title="True Positive Rate")
-                        st.plotly_chart(fig, use_container_width=True)
-                
-                # Feature importance if available
-                importance_data = st.session_state.ml_analyzer.get_feature_importance()
-                
-                if importance_data:
-                    st.subheader("🎯 Feature Importance Analysis")
-                    
-                    rf_imp_df = pd.DataFrame(
-                        list(importance_data['random_forest'].items()),
-                        columns=['Feature', 'Importance']
-                    ).sort_values('Importance', ascending=False).head(10)
-                    
-                    fig = px.bar(rf_imp_df, x='Importance', y='Feature',
-                               orientation='h', title="Top 10 Most Important Features")
-                    st.plotly_chart(fig, use_container_width=True)
-        
-        else:
-            st.info("ℹ️ No prediction data available for performance analysis.")
-            
-    except Exception as e:
-        st.error(f"❌ Error generating model performance report: {e}")
+    # Show comprehensive results if models are trained
+    show_comprehensive_results()
 
 def generate_demographic_report():
     """Generate demographic analysis report"""
