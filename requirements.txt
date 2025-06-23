@@ -39,3 +39,4 @@ cerberus>=1.3.4
 xlrd>=2.0.1
 simplejson>=3.19.0
 multiprocessing-logging>=0.3.4
+gensim>=4.3.0
