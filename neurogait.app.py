@@ -558,7 +558,7 @@ def show_home_page():
         ### Supported Data Formats:
         - **Video files**: MP4, AVI, MOV (MediaPipe pose extraction)
         - **Excel files**: .xlsx/.xls with gait features
-        - **CSV files**: Comma-separated gait features
+        - **CSV files**: Comma-separated gait features (auto-detects delimiters)
         - **Target variables**: 'class' (A/T) or 'diagnosis' (ASD/Control)
         
         ### System Architecture:
@@ -571,9 +571,6 @@ def show_home_page():
         """)
     
     with col2:
-        st.image("logo.png", 
-                caption="NeuroGait ASD System")
-        
         # System status
         st.subheader("System Status")
         
@@ -712,7 +709,7 @@ def show_setup_page():
             st.success("✅ ML configuration updated!")
 
 def show_data_upload_page():
-    """Display the data upload and processing page"""
+    """Display the data upload and processing page - ENHANCED WITH CSV FIX"""
     st.header("📊 Data Upload & Processing")
     
     if not st.session_state.neo4j_connection:
@@ -838,7 +835,7 @@ def show_data_upload_page():
     elif uploaded_file is not None:
         st.warning("⚠️ Please register a participant first before uploading video.")
     
-    # Enhanced Batch Data Upload with XLSX support
+    # ENHANCED Batch Data Upload with CSV FIX
     st.subheader("📁 Batch Data Upload")
     
     # File format selection
@@ -856,132 +853,245 @@ def show_data_upload_page():
         **Optional Columns:**
         - participant_id, age, gender (auto-generated if missing)
         
-        **Example Format:**
-        ```csv
-        feature1,feature2,feature3,...,class
-        0.65,1.2,0.8,...,A
-        0.72,1.1,0.9,...,T
-        ```
+        **Note:** The system will auto-detect CSV delimiters (comma, semicolon, tab)
         """)
         
         csv_file = st.file_uploader("Upload CSV with gait features", type=['csv'])
         
         if csv_file is not None:
             try:
-                df = pd.read_csv(csv_file)
+                # Enhanced CSV parsing with multiple delimiter detection
+                import io
+                
+                # Read the file content
+                file_content = csv_file.read().decode('utf-8')
+                csv_file.seek(0)  # Reset file pointer
+                
+                # Auto-detect delimiter
+                delimiters = [',', ';', '\t', '|']
+                best_delimiter = ','
+                max_columns = 0
+                
+                for delimiter in delimiters:
+                    try:
+                        test_df = pd.read_csv(io.StringIO(file_content), 
+                                            delimiter=delimiter, 
+                                            nrows=5)
+                        if len(test_df.columns) > max_columns:
+                            max_columns = len(test_df.columns)
+                            best_delimiter = delimiter
+                    except:
+                        continue
+                
+                st.info(f"🔍 Detected delimiter: '{best_delimiter}' with {max_columns} columns")
+                
+                # Read CSV with detected delimiter
+                df = pd.read_csv(io.StringIO(file_content), delimiter=best_delimiter)
+                
+                # Check if first row might be headers
+                first_row_numeric = all(pd.to_numeric(df.iloc[0], errors='coerce').notna())
+                
+                if first_row_numeric and 'class' not in df.columns:
+                    st.warning("⚠️ No proper headers detected. Would you like to specify column names?")
+                    
+                    # Option to add headers manually
+                    add_headers = st.checkbox("Add custom headers")
+                    
+                    if add_headers:
+                        st.info("💡 For your dataset, the last column should be 'class' with values 'A' or 'T'")
+                        
+                        # Generate default column names
+                        num_cols = len(df.columns)
+                        default_headers = [f"feature_{i}" for i in range(1, num_cols)] + ['class']
+                        
+                        headers_input = st.text_input(
+                            f"Enter {num_cols} column names separated by commas:",
+                            value=",".join(default_headers),
+                            help="Last column should be 'class' for target variable"
+                        )
+                        
+                        if st.button("Apply Headers"):
+                            try:
+                                new_headers = [h.strip() for h in headers_input.split(',')]
+                                if len(new_headers) == len(df.columns):
+                                    df.columns = new_headers
+                                    st.success("✅ Headers applied successfully!")
+                                else:
+                                    st.error(f"❌ Number of headers ({len(new_headers)}) doesn't match columns ({len(df.columns)})")
+                            except Exception as e:
+                                st.error(f"❌ Error applying headers: {e}")
+                
+                # Display dataframe with current column names
+                st.subheader("📊 Data Preview")
+                st.write(f"**Shape:** {df.shape[0]} rows × {df.shape[1]} columns")
+                st.write(f"**Columns:** {list(df.columns)}")
                 st.dataframe(df.head())
                 
-                if st.button("Process CSV Data"):
-                    processed_count = 0
-                    features_list = []
-                    labels = []
-                    
-                    # Map target variable for your specific dataset
-                    if 'class' in df.columns:
-                        df['diagnosis'] = df['class'].map({'A': 'ASD', 'T': 'Control'})
-                        st.info("✅ Mapped 'class' column: A→ASD, T→Control")
-                    
-                    # Add missing demographic columns if not present
-                    if 'participant_id' not in df.columns:
-                        df['participant_id'] = [f"P_{i:04d}" for i in range(1, len(df) + 1)]
-                        st.info("✅ Generated participant IDs")
-                    
-                    if 'age' not in df.columns:
-                        df['age'] = 25  # Default age
-                        st.info("✅ Added default age (25)")
-                    
-                    if 'gender' not in df.columns:
-                        df['gender'] = 'Unknown'  # Default gender
-                        st.info("✅ Added default gender")
-                    
-                    # Verify diagnosis column
-                    if 'diagnosis' not in df.columns:
-                        st.error("❌ No valid target variable found! Expected 'class' or 'diagnosis' column.")
-                        return
-                    
-                    for _, row in df.iterrows():
-                        # Store participant in Neo4j
-                        participant_data = {
-                            'participant_id': str(row['participant_id']),
-                            'age': int(row['age']) if pd.notna(row['age']) else 25,
-                            'gender': str(row['gender']) if pd.notna(row['gender']) else 'Unknown',
-                            'diagnosis': str(row['diagnosis']) if pd.notna(row['diagnosis']) else 'Unknown'
-                        }
+                # Check for target variable more thoroughly
+                target_column = None
+                if 'class' in df.columns:
+                    target_column = 'class'
+                elif 'diagnosis' in df.columns:
+                    target_column = 'diagnosis'
+                else:
+                    # Look for columns with A/T or ASD/Control values
+                    for col in df.columns:
+                        unique_vals = df[col].unique()
+                        if len(unique_vals) <= 10:  # Likely categorical
+                            unique_str = [str(v).upper() for v in unique_vals if pd.notna(v)]
+                            if any(v in ['A', 'T', 'ASD', 'CONTROL'] for v in unique_str):
+                                st.info(f"🎯 Potential target column found: '{col}' with values: {unique_vals}")
+                                if st.button(f"Use '{col}' as target variable"):
+                                    target_column = col
+                                    if col != 'class':
+                                        df['class'] = df[col]
+                                    break
+                
+                if target_column:
+                    st.success(f"✅ Target variable found: {target_column}")
+                    st.write(f"**Value distribution:** {df[target_column].value_counts().to_dict()}")
+                
+                # Process data button
+                if st.button("🚀 Process CSV Data") and target_column:
+                    with st.spinner("Processing CSV data..."):
+                        processed_count = 0
+                        features_list = []
+                        labels = []
                         
-                        stored_id = st.session_state.kg_manager.store_participant(participant_data)
-                        
-                        if stored_id:
-                            # Create session
-                            session_data = {
-                                'session_id': f"S_{stored_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-                                'date': datetime.now().isoformat(),
-                                'video_duration': 0,
-                                'frame_count': 0
+                        # Map target variable
+                        if target_column == 'class' or target_column in df.columns:
+                            # Create diagnosis column based on target
+                            target_values = df[target_column].astype(str).str.upper()
+                            
+                            # Map various formats to standard
+                            diagnosis_map = {
+                                'A': 'ASD', 'T': 'Control', 'TYPICAL': 'Control',
+                                'ASD': 'ASD', 'CONTROL': 'Control', 'NEUROTYPICAL': 'Control',
+                                '1': 'ASD', '0': 'Control'
                             }
                             
-                            session_id = st.session_state.kg_manager.store_gait_session(session_data, stored_id)
+                            df['diagnosis'] = target_values.map(diagnosis_map)
                             
-                            # Extract features for ML (exclude metadata columns)
-                            exclude_cols = ['participant_id', 'age', 'gender', 'diagnosis', 'class']
-                            feature_cols = [col for col in df.columns if col not in exclude_cols]
+                            # Handle unmapped values
+                            unmapped = df['diagnosis'].isna().sum()
+                            if unmapped > 0:
+                                st.warning(f"⚠️ {unmapped} rows have unmapped target values")
+                                st.write("Unmapped values:", df[df['diagnosis'].isna()][target_column].unique())
                             
-                            features = {}
-                            for col in feature_cols:
-                                try:
-                                    val = row[col]
-                                    if pd.notna(val):
-                                        features[col] = float(val)
-                                    else:
-                                        features[col] = 0.0
-                                except (ValueError, TypeError):
-                                    features[col] = 0.0
-                            
-                            features_list.append(features)
-                            labels.append(1 if row['diagnosis'] == 'ASD' else 0)
-                            
-                            # Store features in Neo4j
-                            if session_id:
-                                st.session_state.kg_manager.store_gait_features(features, session_id)
-                            
-                            processed_count += 1
-                    
-                    # Store για training
-                    if features_list and labels:
-                        st.session_state.training_features = features_list
-                        st.session_state.training_labels = labels
+                            st.info(f"✅ Mapped target variable: {dict(df['diagnosis'].value_counts())}")
                         
-                        # Display comprehensive summary
-                        st.subheader("📊 Dataset Processing Summary")
+                        # Add missing demographic columns
+                        if 'participant_id' not in df.columns:
+                            df['participant_id'] = [f"P_{i:04d}" for i in range(1, len(df) + 1)]
+                            st.info("✅ Generated participant IDs")
                         
-                        col1, col2, col3, col4 = st.columns(4)
-                        with col1:
-                            st.metric("Total Processed", processed_count)
-                        with col2:
-                            asd_count = sum(labels)
-                            st.metric("ASD Cases", asd_count)
-                        with col3:
-                            control_count = len(labels) - asd_count
-                            st.metric("Control Cases", control_count)
-                        with col4:
-                            feature_count = len(features_list[0]) if features_list else 0
-                            st.metric("Features", feature_count)
+                        if 'age' not in df.columns:
+                            df['age'] = 25
+                            st.info("✅ Added default age (25)")
                         
-                        # Class balance info
-                        if asd_count > 0 and control_count > 0:
-                            balance_ratio = min(asd_count, control_count) / max(asd_count, control_count)
-                            if balance_ratio >= 0.8:
-                                st.success(f"✅ Well-balanced dataset! (Ratio: {balance_ratio:.2f})")
-                            else:
-                                st.warning(f"⚠️ Imbalanced dataset detected (Ratio: {balance_ratio:.2f})")
+                        if 'gender' not in df.columns:
+                            df['gender'] = 'Unknown'
+                            st.info("✅ Added default gender")
                         
-                        st.success(f"✅ Successfully processed {processed_count} records from CSV file!")
-                        st.info("🎯 Data is ready for model training in the Analysis page.")
-                    
-                    else:
-                        st.error("❌ No valid data processed")
+                        # Process each row
+                        progress_bar = st.progress(0)
+                        
+                        for idx, row in df.iterrows():
+                            if pd.isna(row['diagnosis']):
+                                continue  # Skip rows with invalid diagnosis
+                            
+                            try:
+                                # Store participant
+                                participant_data = {
+                                    'participant_id': str(row['participant_id']),
+                                    'age': int(row['age']) if pd.notna(row['age']) else 25,
+                                    'gender': str(row['gender']) if pd.notna(row['gender']) else 'Unknown',
+                                    'diagnosis': str(row['diagnosis'])
+                                }
+                                
+                                stored_id = st.session_state.kg_manager.store_participant(participant_data)
+                                
+                                if stored_id:
+                                    # Create session
+                                    session_data = {
+                                        'session_id': f"S_{stored_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{idx}",
+                                        'date': datetime.now().isoformat(),
+                                        'video_duration': 0,
+                                        'frame_count': 0
+                                    }
+                                    
+                                    session_id = st.session_state.kg_manager.store_gait_session(session_data, stored_id)
+                                    
+                                    # Extract features (exclude metadata columns)
+                                    exclude_cols = ['participant_id', 'age', 'gender', 'diagnosis', 'class', target_column]
+                                    feature_cols = [col for col in df.columns if col not in exclude_cols]
+                                    
+                                    features = {}
+                                    for col in feature_cols:
+                                        try:
+                                            val = row[col]
+                                            if pd.notna(val):
+                                                # Handle semicolon-separated values
+                                                if isinstance(val, str) and ';' in val:
+                                                    val = float(val.replace(';', '.'))
+                                                else:
+                                                    val = float(val)
+                                                features[col] = val
+                                            else:
+                                                features[col] = 0.0
+                                        except (ValueError, TypeError):
+                                            features[col] = 0.0
+                                    
+                                    if features:  # Only add if we have features
+                                        features_list.append(features)
+                                        labels.append(1 if row['diagnosis'] == 'ASD' else 0)
+                                        
+                                        # Store features in Neo4j
+                                        if session_id:
+                                            st.session_state.kg_manager.store_gait_features(features, session_id)
+                                        
+                                        processed_count += 1
+                                
+                                # Update progress
+                                progress_bar.progress((idx + 1) / len(df))
+                                
+                            except Exception as e:
+                                st.warning(f"⚠️ Error processing row {idx}: {e}")
+                                continue
+                        
+                        # Store for training
+                        if features_list and labels:
+                            st.session_state.training_features = features_list
+                            st.session_state.training_labels = labels
+                            
+                            # Display summary
+                            st.subheader("📊 Processing Complete!")
+                            
+                            col1, col2, col3, col4 = st.columns(4)
+                            with col1:
+                                st.metric("Processed", processed_count)
+                            with col2:
+                                asd_count = sum(labels)
+                                st.metric("ASD Cases", asd_count)
+                            with col3:
+                                control_count = len(labels) - asd_count
+                                st.metric("Control Cases", control_count)
+                            with col4:
+                                feature_count = len(features_list[0]) if features_list else 0
+                                st.metric("Features", feature_count)
+                            
+                            st.success(f"✅ Successfully processed {processed_count} records!")
+                            st.info("🎯 Data is ready for model training in the Analysis page.")
+                        
+                        else:
+                            st.error("❌ No valid data processed")
+                
+                elif not target_column and st.button("🚀 Process CSV Data"):
+                    st.error("❌ Please identify a target variable first!")
                     
             except Exception as e:
                 st.error(f"❌ Error processing CSV: {e}")
+                st.exception(e)
                 
     else:  # XLSX format
         st.markdown("""
@@ -1980,12 +2090,172 @@ def generate_summary_report():
 def generate_demographic_report():
     """Generate demographic analysis report"""
     st.subheader("👥 Demographic Analysis Report")
-    st.info("Detailed demographic report implementation would go here...")
+    
+    try:
+        # Age distribution analysis
+        age_query = """
+        MATCH (p:Participant)
+        WHERE p.age IS NOT NULL
+        RETURN p.age as age, p.diagnosis as diagnosis, p.gender as gender
+        """
+        age_data = st.session_state.kg_manager.neo4j.execute_query(age_query)
+        
+        if age_data:
+            age_df = pd.DataFrame(age_data)
+            
+            # Age statistics by diagnosis
+            st.subheader("📊 Age Analysis")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Age distribution histogram
+                fig = px.histogram(age_df, x='age', color='diagnosis',
+                                 title="Age Distribution by Diagnosis",
+                                 nbins=15, barmode='overlay',
+                                 opacity=0.7)
+                st.plotly_chart(fig, use_container_width=True)
+            
+            with col2:
+                # Age box plot
+                fig = px.box(age_df, x='diagnosis', y='age',
+                           title="Age Distribution Box Plot")
+                st.plotly_chart(fig, use_container_width=True)
+            
+            # Age statistics table
+            age_stats = age_df.groupby('diagnosis')['age'].agg(['mean', 'std', 'min', 'max', 'count']).round(2)
+            st.dataframe(age_stats)
+            
+            # Gender analysis
+            st.subheader("👫 Gender Analysis")
+            
+            gender_stats = age_df.groupby(['diagnosis', 'gender']).size().unstack(fill_value=0)
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Gender distribution pie chart
+                gender_totals = age_df['gender'].value_counts()
+                fig = px.pie(values=gender_totals.values, names=gender_totals.index,
+                           title="Overall Gender Distribution")
+                st.plotly_chart(fig, use_container_width=True)
+            
+            with col2:
+                # Gender by diagnosis stacked bar
+                fig = px.bar(gender_stats.reset_index(), x='diagnosis', 
+                           y=['Male', 'Female', 'Other'], 
+                           title="Gender Distribution by Diagnosis")
+                st.plotly_chart(fig, use_container_width=True)
+        
+        else:
+            st.warning("⚠️ No demographic data available")
+            
+    except Exception as e:
+        st.error(f"❌ Error generating demographic report: {e}")
 
 def generate_gait_pattern_report():
     """Generate gait pattern analysis report"""
     st.subheader("🚶 Gait Pattern Analysis Report")
-    st.info("Detailed gait pattern report implementation would go here...")
+    
+    try:
+        # Get gait features data
+        features_query = """
+        MATCH (p:Participant)-[:HAS_SESSION]->(s:GaitSession)-[:HAS_FEATURE]->(f:GaitFeature)
+        RETURN p.diagnosis as diagnosis, f.feature_type as feature_type, 
+               f.value as value, p.age as age, p.gender as gender
+        """
+        features_data = st.session_state.kg_manager.neo4j.execute_query(features_query)
+        
+        if features_data:
+            features_df = pd.DataFrame(features_data)
+            
+            # Feature importance analysis
+            st.subheader("🎯 Key Gait Features Analysis")
+            
+            # Statistical analysis by diagnosis
+            feature_stats = features_df.groupby(['diagnosis', 'feature_type'])['value'].agg([
+                'mean', 'std', 'count'
+            ]).round(4)
+            
+            # Show top features with significant differences
+            asd_means = feature_stats.xs('ASD', level='diagnosis')['mean'] if 'ASD' in features_df['diagnosis'].values else pd.Series()
+            control_means = feature_stats.xs('Control', level='diagnosis')['mean'] if 'Control' in features_df['diagnosis'].values else pd.Series()
+            
+            if not asd_means.empty and not control_means.empty:
+                # Calculate effect sizes (simple difference)
+                effect_sizes = abs(asd_means - control_means)
+                top_features = effect_sizes.nlargest(10)
+                
+                st.write("**Top 10 Features with Largest Differences Between Groups:**")
+                top_features_df = pd.DataFrame({
+                    'Feature': top_features.index,
+                    'Effect_Size': top_features.values,
+                    'ASD_Mean': [asd_means.get(f, 0) for f in top_features.index],
+                    'Control_Mean': [control_means.get(f, 0) for f in top_features.index]
+                })
+                st.dataframe(top_features_df)
+                
+                # Visualize top features
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    # Effect sizes bar chart
+                    fig = px.bar(top_features_df, x='Effect_Size', y='Feature',
+                               orientation='h', title="Feature Effect Sizes")
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                with col2:
+                    # Mean comparison
+                    fig = go.Figure()
+                    fig.add_trace(go.Bar(name='ASD', x=top_features_df['Feature'], 
+                                       y=top_features_df['ASD_Mean']))
+                    fig.add_trace(go.Bar(name='Control', x=top_features_df['Feature'], 
+                                       y=top_features_df['Control_Mean']))
+                    fig.update_layout(title="Mean Feature Values by Diagnosis",
+                                    xaxis_tickangle=-45)
+                    st.plotly_chart(fig, use_container_width=True)
+            
+            # Feature distribution analysis
+            st.subheader("📊 Feature Distribution Analysis")
+            
+            # Select specific features for detailed analysis
+            available_features = features_df['feature_type'].unique()[:10]  # Limit to first 10
+            
+            for feature in available_features:
+                feature_data = features_df[features_df['feature_type'] == feature]
+                
+                if len(feature_data) > 10:  # Only analyze if sufficient data
+                    fig = px.violin(feature_data, x='diagnosis', y='value',
+                                  title=f"Distribution of {feature}")
+                    st.plotly_chart(fig, use_container_width=True)
+            
+            # Correlation analysis
+            st.subheader("🔗 Feature Correlation Analysis")
+            
+            # Pivot data for correlation analysis
+            pivot_df = features_df.pivot_table(
+                index=['diagnosis'], 
+                columns='feature_type', 
+                values='value', 
+                aggfunc='mean'
+            ).fillna(0)
+            
+            if len(pivot_df.columns) > 2:
+                # Calculate correlation matrix
+                correlation_matrix = pivot_df.T.corr()
+                
+                # Show only top correlations
+                fig = px.imshow(correlation_matrix, 
+                              title="Feature Correlation Matrix",
+                              color_continuous_scale="RdBu",
+                              aspect="auto")
+                st.plotly_chart(fig, use_container_width=True)
+        
+        else:
+            st.warning("⚠️ No gait pattern data available")
+            
+    except Exception as e:
+        st.error(f"❌ Error generating gait pattern report: {e}")
 
 if __name__ == "__main__":
     main()
