@@ -376,6 +376,13 @@ class MLAnalyzer:
         self.feature_names = []
         self.is_trained = False
         
+        # Store train/test splits to prevent data leakage
+        self.X_train = None
+        self.X_test = None
+        self.y_train = None
+        self.y_test = None
+        self.test_size = 0.3
+        
     def prepare_training_data(self, features_list: List[Dict], labels: List[int]) -> Tuple[np.ndarray, np.ndarray]:
         """Prepare features for training"""
         if not features_list:
@@ -392,30 +399,64 @@ class MLAnalyzer:
         return X, y
     
     def train_models(self, X: np.ndarray, y: np.ndarray):
-        """Train all models"""
+        """Train all models with proper train/test split"""
         if len(X) == 0:
             logger.error("No training data provided")
             return
             
-        # Scale features
-        X_scaled = self.scaler.fit_transform(X)
+        # CRITICAL: Split data BEFORE any processing to prevent data leakage
+        self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(
+            X, y, test_size=self.test_size, random_state=42, stratify=y
+        )
         
-        # Handle class imbalance with SMOTE
-        if len(np.unique(y)) > 1:
+        # Scale features using ONLY training data
+        X_train_scaled = self.scaler.fit_transform(self.X_train)
+        
+        # Handle class imbalance with SMOTE on training data only
+        if len(np.unique(self.y_train)) > 1:
             smote = SMOTE(random_state=42)
-            X_balanced, y_balanced = smote.fit_resample(X_scaled, y)
+            X_train_balanced, y_train_balanced = smote.fit_resample(X_train_scaled, self.y_train)
         else:
-            X_balanced, y_balanced = X_scaled, y
+            X_train_balanced, y_train_balanced = X_train_scaled, self.y_train
         
-        # Train supervised models
-        self.rf_model.fit(X_balanced, y_balanced)
-        self.xgb_model.fit(X_balanced, y_balanced)
+        # Train supervised models on training data only
+        self.rf_model.fit(X_train_balanced, y_train_balanced)
+        self.xgb_model.fit(X_train_balanced, y_train_balanced)
         
-        # Train anomaly detection
-        self.isolation_forest.fit(X_scaled)
+        # Train anomaly detection on original training data (not SMOTE-balanced)
+        self.isolation_forest.fit(X_train_scaled)
         
         self.is_trained = True
-        logger.info("Models trained successfully")
+        logger.info("Models trained successfully with train/test split")
+    
+    def get_test_predictions(self) -> Dict:
+        """Get predictions on unseen test data"""
+        if not self.is_trained or self.X_test is None:
+            return {"error": "Models not trained or no test data available"}
+        
+        # Transform test data using scaler fitted on training data
+        X_test_scaled = self.scaler.transform(self.X_test)
+        
+        # Get predictions on test data
+        rf_pred = self.rf_model.predict(X_test_scaled)
+        rf_proba = self.rf_model.predict_proba(X_test_scaled)[:, 1]
+        
+        xgb_pred = self.xgb_model.predict(X_test_scaled)
+        xgb_proba = self.xgb_model.predict_proba(X_test_scaled)[:, 1]
+        
+        # Anomaly detection on test data
+        anomaly_scores = self.isolation_forest.decision_function(X_test_scaled)
+        anomaly_predictions = self.isolation_forest.predict(X_test_scaled)
+        
+        return {
+            'rf_predictions': rf_pred,
+            'rf_probabilities': rf_proba,
+            'xgb_predictions': xgb_pred,
+            'xgb_probabilities': xgb_proba,
+            'anomaly_scores': anomaly_scores,
+            'anomaly_predictions': anomaly_predictions,
+            'y_true': self.y_test
+        }
     
     def predict(self, features: Dict) -> Dict:
         """Make predictions on new data"""
@@ -1356,18 +1397,50 @@ def show_analysis_page():
                         st.session_state.ml_analyzer.train_models(X, y)
                         st.success("✅ Models trained successfully!")
                         
-                        # Display training results
+                        # Display training results with proper split information
                         st.subheader("📊 Training Results")
                         
-                        # Cross-validation scores
-                        X_scaled = st.session_state.ml_analyzer.scaler.transform(X)
+                        # Show train/test split information
+                        col1, col2, col3, col4 = st.columns(4)
+                        with col1:
+                            st.metric("Total Samples", len(X))
+                        with col2:
+                            st.metric("Training Samples", len(st.session_state.ml_analyzer.X_train))
+                        with col3:
+                            st.metric("Test Samples", len(st.session_state.ml_analyzer.X_test))
+                        with col4:
+                            st.metric("Test Split", f"{st.session_state.ml_analyzer.test_size*100:.0f}%")
+                        
+                        # Class distribution in train/test
+                        st.subheader("📈 Train/Test Split Distribution")
+                        
+                        train_asd = sum(st.session_state.ml_analyzer.y_train)
+                        train_control = len(st.session_state.ml_analyzer.y_train) - train_asd
+                        test_asd = sum(st.session_state.ml_analyzer.y_test)
+                        test_control = len(st.session_state.ml_analyzer.y_test) - test_asd
+                        
+                        split_df = pd.DataFrame({
+                            'Set': ['Training', 'Training', 'Test', 'Test'],
+                            'Class': ['ASD', 'Control', 'ASD', 'Control'],
+                            'Count': [train_asd, train_control, test_asd, test_control]
+                        })
+                        
+                        fig = px.bar(split_df, x='Set', y='Count', color='Class',
+                                   title="Class Distribution in Train/Test Sets")
+                        st.plotly_chart(fig, use_container_width=True)
+                        
+                        # Cross-validation scores on training data only
+                        X_train_scaled = st.session_state.ml_analyzer.scaler.transform(st.session_state.ml_analyzer.X_train)
                         cv_scores_rf = cross_val_score(
-                            st.session_state.ml_analyzer.rf_model, X_scaled, y, cv=5
+                            st.session_state.ml_analyzer.rf_model, X_train_scaled, 
+                            st.session_state.ml_analyzer.y_train, cv=5
                         )
                         cv_scores_xgb = cross_val_score(
-                            st.session_state.ml_analyzer.xgb_model, X_scaled, y, cv=5
+                            st.session_state.ml_analyzer.xgb_model, X_train_scaled, 
+                            st.session_state.ml_analyzer.y_train, cv=5
                         )
                         
+                        st.subheader("🔄 Cross-Validation Scores (Training Data Only)")
                         col1, col2 = st.columns(2)
                         with col1:
                             st.metric("Random Forest CV Score", f"{cv_scores_rf.mean():.3f} ± {cv_scores_rf.std():.3f}")
@@ -1395,6 +1468,7 @@ def show_analysis_page():
                         
                 except Exception as e:
                     st.error(f"❌ Error training models: {e}")
+                    st.exception(e)
     
     # Enhanced Prediction Section with SHAP
     st.subheader("🔮 Individual Prediction & Explainability")
@@ -1496,133 +1570,204 @@ def show_analysis_page():
     if st.session_state.ml_analyzer.is_trained and hasattr(st.session_state, 'training_features'):
         st.subheader("📊 Complete Model Performance Analysis")
         
+        # Important warning about proper evaluation
+        st.warning("""
+        🚨 **DATA LEAKAGE PREVENTION**: 
+        - Models are trained on 70% of data
+        - Performance is evaluated on unseen 30% test data
+        - Perfect accuracy (1.0) indicates potential data leakage
+        - Always use separate test data for evaluation
+        """)
+        
         if st.button("📈 Generate Complete Performance Report"):
             generate_enhanced_model_report()
 
 def generate_enhanced_model_report():
-    """Enhanced model performance με όλα τα metrics"""
+    """Enhanced model performance evaluation on UNSEEN test data"""
     
     try:
-        # Get ALL data for comprehensive evaluation
-        if hasattr(st.session_state, 'training_features') and hasattr(st.session_state, 'training_labels'):
+        # CRITICAL: Use test data only to prevent data leakage
+        if not st.session_state.ml_analyzer.is_trained:
+            st.error("❌ Models not trained yet!")
+            return
             
-            X, y = st.session_state.ml_analyzer.prepare_training_data(
-                st.session_state.training_features,
-                st.session_state.training_labels
-            )
-            
-            if len(X) > 0:
-                X_scaled = st.session_state.ml_analyzer.scaler.transform(X)
-                
-                # Predictions
-                rf_pred = st.session_state.ml_analyzer.rf_model.predict(X_scaled)
-                rf_proba = st.session_state.ml_analyzer.rf_model.predict_proba(X_scaled)[:, 1]
-                
-                xgb_pred = st.session_state.ml_analyzer.xgb_model.predict(X_scaled)
-                xgb_proba = st.session_state.ml_analyzer.xgb_model.predict_proba(X_scaled)[:, 1]
-                
-                # Calculate ALL metrics
-                # Random Forest Metrics
-                rf_accuracy = accuracy_score(y, rf_pred)
-                rf_precision = precision_score(y, rf_pred, zero_division=0)
-                rf_recall = recall_score(y, rf_pred, zero_division=0)
-                rf_f1 = f1_score(y, rf_pred, zero_division=0)
-                rf_auc = roc_auc_score(y, rf_proba) if len(np.unique(y)) > 1 else 0
-                
-                # XGBoost Metrics
-                xgb_accuracy = accuracy_score(y, xgb_pred)
-                xgb_precision = precision_score(y, xgb_pred, zero_division=0)
-                xgb_recall = recall_score(y, xgb_pred, zero_division=0)
-                xgb_f1 = f1_score(y, xgb_pred, zero_division=0)
-                xgb_auc = roc_auc_score(y, xgb_proba) if len(np.unique(y)) > 1 else 0
-                
-                # Display metrics
-                st.subheader("📊 Performance Metrics")
-                
-                metrics_df = pd.DataFrame({
-                    'Model': ['Random Forest', 'XGBoost'],
-                    'Accuracy': [rf_accuracy, xgb_accuracy],
-                    'Precision': [rf_precision, xgb_precision],
-                    'Recall': [rf_recall, xgb_recall],
-                    'F1-Score': [rf_f1, xgb_f1],
-                    'ROC-AUC': [rf_auc, xgb_auc]
-                })
-                
-                st.dataframe(metrics_df.style.format({
-                    'Accuracy': '{:.3f}',
-                    'Precision': '{:.3f}',
-                    'Recall': '{:.3f}',
-                    'F1-Score': '{:.3f}',
-                    'ROC-AUC': '{:.3f}'
-                }))
-                
-                # ROC Curve
-                if len(np.unique(y)) > 1:
-                    st.subheader("📈 ROC Curves")
-                    fig = go.Figure()
-                    
-                    # RF ROC
-                    fpr_rf, tpr_rf, _ = roc_curve(y, rf_proba)
-                    fig.add_trace(go.Scatter(x=fpr_rf, y=tpr_rf, 
-                                           name=f'Random Forest (AUC = {rf_auc:.3f})'))
-                    
-                    # XGB ROC
-                    fpr_xgb, tpr_xgb, _ = roc_curve(y, xgb_proba)
-                    fig.add_trace(go.Scatter(x=fpr_xgb, y=tpr_xgb, 
-                                           name=f'XGBoost (AUC = {xgb_auc:.3f})'))
-                    
-                    # Random line
-                    fig.add_trace(go.Scatter(x=[0, 1], y=[0, 1], 
-                                           name='Random', line=dict(dash='dash')))
-                    
-                    fig.update_layout(title="ROC Curves Comparison",
-                                    xaxis_title="False Positive Rate",
-                                    yaxis_title="True Positive Rate")
-                    st.plotly_chart(fig, use_container_width=True)
-                
-                # Confusion Matrices
-                st.subheader("🔍 Confusion Matrices")
-                
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    # Random Forest Confusion Matrix
-                    cm_rf = confusion_matrix(y, rf_pred)
-                    fig_cm_rf = px.imshow(cm_rf, text_auto=True,
-                                        title="Random Forest Confusion Matrix",
-                                        labels=dict(x="Predicted", y="Actual"),
-                                        x=['Control', 'ASD'],
-                                        y=['Control', 'ASD'])
-                    st.plotly_chart(fig_cm_rf, use_container_width=True)
-                
-                with col2:
-                    # XGBoost Confusion Matrix
-                    cm_xgb = confusion_matrix(y, xgb_pred)
-                    fig_cm_xgb = px.imshow(cm_xgb, text_auto=True,
-                                         title="XGBoost Confusion Matrix",
-                                         labels=dict(x="Predicted", y="Actual"),
-                                         x=['Control', 'ASD'],
-                                         y=['Control', 'ASD'])
-                    st.plotly_chart(fig_cm_xgb, use_container_width=True)
-                
-                # Classification Reports
-                st.subheader("📋 Detailed Classification Reports")
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.text("Random Forest Report:")
-                    st.text(classification_report(y, rf_pred, target_names=['Control', 'ASD']))
-                
-                with col2:
-                    st.text("XGBoost Report:")
-                    st.text(classification_report(y, xgb_pred, target_names=['Control', 'ASD']))
-                
-            else:
-                st.error("❌ No training data available")
+        if st.session_state.ml_analyzer.X_test is None:
+            st.error("❌ No test data available!")
+            return
         
-        else:
-            st.error("❌ No training data available. Upload data first!")
+        # Get predictions on unseen test data
+        test_results = st.session_state.ml_analyzer.get_test_predictions()
+        
+        if 'error' in test_results:
+            st.error(f"❌ {test_results['error']}")
+            return
             
+        # Extract test predictions
+        y_true = test_results['y_true']
+        rf_pred = test_results['rf_predictions']
+        rf_proba = test_results['rf_probabilities']
+        xgb_pred = test_results['xgb_predictions']
+        xgb_proba = test_results['xgb_probabilities']
+        
+        # Calculate ALL metrics on test data
+        # Random Forest Metrics
+        rf_accuracy = accuracy_score(y_true, rf_pred)
+        rf_precision = precision_score(y_true, rf_pred, zero_division=0)
+        rf_recall = recall_score(y_true, rf_pred, zero_division=0)
+        rf_f1 = f1_score(y_true, rf_pred, zero_division=0)
+        rf_auc = roc_auc_score(y_true, rf_proba) if len(np.unique(y_true)) > 1 else 0
+        
+        # XGBoost Metrics
+        xgb_accuracy = accuracy_score(y_true, xgb_pred)
+        xgb_precision = precision_score(y_true, xgb_pred, zero_division=0)
+        xgb_recall = recall_score(y_true, xgb_pred, zero_division=0)
+        xgb_f1 = f1_score(y_true, xgb_pred, zero_division=0)
+        xgb_auc = roc_auc_score(y_true, xgb_proba) if len(np.unique(y_true)) > 1 else 0
+        
+        # Display test set information
+        st.subheader("🧪 Test Set Evaluation")
+        st.info(f"**IMPORTANT**: All metrics below are calculated on UNSEEN test data ({len(y_true)} samples)")
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Test Samples", len(y_true))
+        with col2:
+            test_asd = sum(y_true)
+            st.metric("Test ASD Cases", test_asd)
+        with col3:
+            test_control = len(y_true) - test_asd
+            st.metric("Test Control Cases", test_control)
+        
+        # Display metrics
+        st.subheader("📊 Performance Metrics on Test Data")
+        
+        metrics_df = pd.DataFrame({
+            'Model': ['Random Forest', 'XGBoost'],
+            'Accuracy': [rf_accuracy, xgb_accuracy],
+            'Precision': [rf_precision, xgb_precision],
+            'Recall': [rf_recall, xgb_recall],
+            'F1-Score': [rf_f1, xgb_f1],
+            'ROC-AUC': [rf_auc, xgb_auc]
+        })
+        
+        st.dataframe(metrics_df.style.format({
+            'Accuracy': '{:.3f}',
+            'Precision': '{:.3f}',
+            'Recall': '{:.3f}',
+            'F1-Score': '{:.3f}',
+            'ROC-AUC': '{:.3f}'
+        }))
+        
+        # Performance interpretation
+        st.subheader("📈 Performance Interpretation")
+        
+        # Color-coded performance assessment
+        def get_performance_color(score):
+            if score >= 0.9:
+                return "🟢 Excellent"
+            elif score >= 0.8:
+                return "🟡 Good"
+            elif score >= 0.7:
+                return "🟠 Fair"
+            else:
+                return "🔴 Poor"
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write("**Random Forest Performance:**")
+            st.write(f"- Accuracy: {get_performance_color(rf_accuracy)} ({rf_accuracy:.3f})")
+            st.write(f"- Precision: {get_performance_color(rf_precision)} ({rf_precision:.3f})")
+            st.write(f"- Recall: {get_performance_color(rf_recall)} ({rf_recall:.3f})")
+            st.write(f"- F1-Score: {get_performance_color(rf_f1)} ({rf_f1:.3f})")
+            
+        with col2:
+            st.write("**XGBoost Performance:**")
+            st.write(f"- Accuracy: {get_performance_color(xgb_accuracy)} ({xgb_accuracy:.3f})")
+            st.write(f"- Precision: {get_performance_color(xgb_precision)} ({xgb_precision:.3f})")
+            st.write(f"- Recall: {get_performance_color(xgb_recall)} ({xgb_recall:.3f})")
+            st.write(f"- F1-Score: {get_performance_color(xgb_f1)} ({xgb_f1:.3f})")
+        
+        # ROC Curve
+        if len(np.unique(y_true)) > 1:
+            st.subheader("📈 ROC Curves")
+            fig = go.Figure()
+            
+            # RF ROC
+            fpr_rf, tpr_rf, _ = roc_curve(y_true, rf_proba)
+            fig.add_trace(go.Scatter(x=fpr_rf, y=tpr_rf, 
+                                   name=f'Random Forest (AUC = {rf_auc:.3f})'))
+            
+            # XGB ROC
+            fpr_xgb, tpr_xgb, _ = roc_curve(y_true, xgb_proba)
+            fig.add_trace(go.Scatter(x=fpr_xgb, y=tpr_xgb, 
+                                   name=f'XGBoost (AUC = {xgb_auc:.3f})'))
+            
+            # Random line
+            fig.add_trace(go.Scatter(x=[0, 1], y=[0, 1], 
+                                   name='Random Classifier', line=dict(dash='dash')))
+            
+            fig.update_layout(title="ROC Curves Comparison (Test Data)",
+                            xaxis_title="False Positive Rate",
+                            yaxis_title="True Positive Rate")
+            st.plotly_chart(fig, use_container_width=True)
+        
+        # Confusion Matrices
+        st.subheader("🔍 Confusion Matrices (Test Data)")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Random Forest Confusion Matrix
+            cm_rf = confusion_matrix(y_true, rf_pred)
+            fig_cm_rf = px.imshow(cm_rf, text_auto=True,
+                                title="Random Forest Confusion Matrix",
+                                labels=dict(x="Predicted", y="Actual"),
+                                x=['Control', 'ASD'],
+                                y=['Control', 'ASD'])
+            st.plotly_chart(fig_cm_rf, use_container_width=True)
+        
+        with col2:
+            # XGBoost Confusion Matrix
+            cm_xgb = confusion_matrix(y_true, xgb_pred)
+            fig_cm_xgb = px.imshow(cm_xgb, text_auto=True,
+                                 title="XGBoost Confusion Matrix",
+                                 labels=dict(x="Predicted", y="Actual"),
+                                 x=['Control', 'ASD'],
+                                 y=['Control', 'ASD'])
+            st.plotly_chart(fig_cm_xgb, use_container_width=True)
+        
+        # Classification Reports
+        st.subheader("📋 Detailed Classification Reports (Test Data)")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.text("Random Forest Report:")
+            st.text(classification_report(y_true, rf_pred, target_names=['Control', 'ASD']))
+        
+        with col2:
+            st.text("XGBoost Report:")
+            st.text(classification_report(y_true, xgb_pred, target_names=['Control', 'ASD']))
+        
+        # Model comparison
+        st.subheader("🏆 Model Comparison Summary")
+        
+        # Determine best model
+        rf_score = (rf_accuracy + rf_precision + rf_recall + rf_f1) / 4
+        xgb_score = (xgb_accuracy + xgb_precision + xgb_recall + xgb_f1) / 4
+        
+        if rf_score > xgb_score:
+            st.success(f"🏆 **Random Forest** performs better (Avg Score: {rf_score:.3f} vs {xgb_score:.3f})")
+        elif xgb_score > rf_score:
+            st.success(f"🏆 **XGBoost** performs better (Avg Score: {xgb_score:.3f} vs {rf_score:.3f})")
+        else:
+            st.info("🤝 Both models perform equally well")
+            
+        # Data leakage check
+        if rf_accuracy == 1.0 and xgb_accuracy == 1.0:
+            st.error("⚠️ **POTENTIAL DATA LEAKAGE**: Perfect accuracy (1.0) is highly suspicious and may indicate data leakage!")
+        elif rf_accuracy > 0.99 or xgb_accuracy > 0.99:
+            st.warning("⚠️ **HIGH ACCURACY WARNING**: Accuracy > 99% is unusual and should be investigated")
+        
     except Exception as e:
         st.error(f"❌ Error generating performance report: {e}")
         st.exception(e)
