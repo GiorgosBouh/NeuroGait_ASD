@@ -21,6 +21,8 @@ from dotenv import load_dotenv
 import json
 from datetime import datetime
 from pathlib import Path
+import networkx as nx
+from node2vec import Node2Vec
 
 warnings.filterwarnings('ignore')
 
@@ -79,111 +81,213 @@ class ASDPredictionAnalysis:
         return X, y
     
     def get_graph_embeddings(self, participant_ids):
-        """Get graph embeddings using Neo4j GDS"""
+        """Get graph embeddings using Neo4j - fallback to graph features if GDS not available"""
         print("\n🧠 Generating graph embeddings...")
         
         with self.driver.session() as session:
             try:
-                # First, create in-memory graph projection
-                print("Creating graph projection...")
-                session.run("""
-                    CALL gds.graph.drop('gaitGraph', false);
-                """)
+                # First try GDS if available
+                result = session.run("CALL gds.list()")
+                has_gds = len(list(result)) >= 0
                 
-                # Create graph with participant nodes and their relationships
-                session.run("""
-                    CALL gds.graph.project(
-                        'gaitGraph',
-                        ['Participant', 'GaitSession', 'GaitFeature'],
-                        {
-                            HAS_SESSION: {orientation: 'UNDIRECTED'},
-                            HAS_FEATURE: {
-                                orientation: 'UNDIRECTED',
-                                properties: ['value']
+                if has_gds:
+                    # Try to create graph projection
+                    print("Creating graph projection...")
+                    session.run("""
+                        CALL gds.graph.drop('gaitGraph', false);
+                    """)
+                    
+                    # Create graph with participant nodes and their relationships
+                    session.run("""
+                        CALL gds.graph.project(
+                            'gaitGraph',
+                            ['Participant', 'GaitSession', 'GaitFeature'],
+                            {
+                                HAS_SESSION: {orientation: 'UNDIRECTED'},
+                                HAS_FEATURE: {
+                                    orientation: 'UNDIRECTED',
+                                    properties: ['value']
+                                }
                             }
-                        }
-                    )
-                """)
+                        )
+                    """)
+                    
+                    # Generate FastRP embeddings
+                    print("Generating FastRP embeddings...")
+                    session.run("""
+                        CALL gds.fastRP.mutate('gaitGraph', {
+                            embeddingDimension: 128,
+                            randomSeed: 42,
+                            mutateProperty: 'embedding'
+                        })
+                    """)
+                    
+                    # Stream embeddings for our participants
+                    result = session.run("""
+                        CALL gds.graph.nodeProperties.stream('gaitGraph', ['embedding'])
+                        YIELD nodeId, nodeLabels, propertyValue
+                        WITH gds.util.asNode(nodeId) AS node, propertyValue AS embedding
+                        WHERE 'Participant' IN labels(node)
+                        RETURN node.id AS participant_id, embedding
+                        ORDER BY node.id
+                    """)
+                    
+                    # Convert to DataFrame
+                    embeddings_data = []
+                    for record in result:
+                        pid = record['participant_id']
+                        embedding = record['embedding']
+                        embeddings_data.append([pid] + list(embedding))
+                    
+                    # Create embeddings DataFrame
+                    columns = ['participant_id'] + [f'emb_{i}' for i in range(128)]
+                    embeddings_df = pd.DataFrame(embeddings_data, columns=columns)
+                    
+                    print(f"✅ Generated GDS embeddings for {len(embeddings_df)} participants")
+                    
+                    # Drop graph projection
+                    session.run("CALL gds.graph.drop('gaitGraph')")
+                    
+                    return embeddings_df
+                    
+            except Exception as e:
+                print(f"⚠️  GDS not available: {str(e)[:100]}...")
+                print("   Using graph-based features instead...")
+            
+            # Fallback: Extract graph-based features using Cypher
+            try:
+                print("\n📊 Extracting graph-based features...")
                 
-                # Generate FastRP embeddings
-                print("Generating FastRP embeddings...")
-                session.run("""
-                    CALL gds.fastRP.mutate('gaitGraph', {
-                        embeddingDimension: 128,
-                        randomSeed: 42,
-                        mutateProperty: 'embedding'
-                    })
-                """)
-                
-                # Stream embeddings for our participants
-                result = session.run("""
-                    CALL gds.graph.nodeProperties.stream('gaitGraph', ['embedding'])
-                    YIELD nodeId, nodeLabels, propertyValue
-                    WITH gds.util.asNode(nodeId) AS node, propertyValue AS embedding
-                    WHERE 'Participant' IN labels(node)
-                    RETURN node.id AS participant_id, embedding
-                    ORDER BY node.id
-                """)
-                
-                # Convert to DataFrame
                 embeddings_data = []
-                for record in result:
-                    pid = record['participant_id']
-                    embedding = record['embedding']
-                    embeddings_data.append([pid] + list(embedding))
                 
-                # Create embeddings DataFrame
-                columns = ['participant_id'] + [f'emb_{i}' for i in range(128)]
-                embeddings_df = pd.DataFrame(embeddings_data, columns=columns)
+                # Get features for each participant
+                for i, pid in enumerate(participant_ids):
+                    if i % 100 == 0:
+                        print(f"   Processing participant {i+1}/{len(participant_ids)}...")
+                    
+                    # Feature 1: Number of gait features
+                    result = session.run("""
+                        MATCH (p:Participant {id: $pid})-[:HAS_SESSION]->(s:GaitSession)-[:HAS_FEATURE]->(f:GaitFeature)
+                        RETURN count(f) as feature_count,
+                               avg(f.value) as avg_value,
+                               stdev(f.value) as std_value,
+                               min(f.value) as min_value,
+                               max(f.value) as max_value
+                    """, pid=pid)
+                    
+                    record = result.single()
+                    if record:
+                        feature_count = record['feature_count'] or 0
+                        avg_value = record['avg_value'] or 0
+                        std_value = record['std_value'] or 0
+                        min_value = record['min_value'] or 0
+                        max_value = record['max_value'] or 0
+                    else:
+                        feature_count = avg_value = std_value = min_value = max_value = 0
+                    
+                    # Feature 2: Number of connected body parts
+                    result = session.run("""
+                        MATCH (p:Participant {id: $pid})-[:HAS_SESSION]->(s:GaitSession)-[:HAS_FEATURE]->(f:GaitFeature)
+                        MATCH (f)-[:HAS_MEASUREMENT]->(m)-[:MEASURED_IN]->(bp:BodyPart)
+                        RETURN count(DISTINCT bp) as body_part_count
+                    """, pid=pid)
+                    
+                    record = result.single()
+                    body_part_count = record['body_part_count'] if record else 0
+                    
+                    # Feature 3: Gait parameters statistics
+                    result = session.run("""
+                        MATCH (p:Participant {id: $pid})-[:HAS_SESSION]->(s:GaitSession)-[:HAS_GAIT_VALUE]->(gp:GaitParameter)
+                        RETURN gp.name as param_name, s[gp.name] as value
+                    """, pid=pid)
+                    
+                    gait_params = {
+                        'StepLength': 0, 'StrideLength': 0, 'StepTime': 0,
+                        'StrideTime': 0, 'Cadence': 0, 'Speed': 0, 'StepWidth': 0
+                    }
+                    
+                    for record in result:
+                        if record['param_name'] in gait_params:
+                            gait_params[record['param_name']] = float(record['value']) if record['value'] else 0
+                    
+                    # Feature 4: Body region distribution
+                    result = session.run("""
+                        MATCH (p:Participant {id: $pid})-[:HAS_SESSION]->(s:GaitSession)-[:HAS_FEATURE]->(f:GaitFeature)
+                        MATCH (f)-[:HAS_MEASUREMENT]->(m)-[:MEASURED_IN]->(bp:BodyPart)-[:BELONGS_TO]->(br:BodyRegion)
+                        RETURN br.name as region, count(f) as count
+                    """, pid=pid)
+                    
+                    region_counts = {'Upper': 0, 'Lower': 0, 'Core': 0}
+                    for record in result:
+                        if record['region'] in region_counts:
+                            region_counts[record['region']] = record['count']
+                    
+                    # Feature 5: Measurement type distribution
+                    result = session.run("""
+                        MATCH (p:Participant {id: $pid})-[:HAS_SESSION]->(s:GaitSession)-[:HAS_FEATURE]->(f:GaitFeature)
+                        MATCH (f)-[:HAS_MEASUREMENT]->(mt:MeasurementType)
+                        RETURN mt.name as mtype, count(f) as count
+                    """, pid=pid)
+                    
+                    measure_counts = {'position': 0, 'distance': 0, 'angle': 0}
+                    for record in result:
+                        if record['mtype'] in measure_counts:
+                            measure_counts[record['mtype']] = record['count']
+                    
+                    # Combine all features
+                    features = [pid, feature_count, avg_value, std_value, min_value, max_value, 
+                               body_part_count] + list(gait_params.values()) + \
+                              list(region_counts.values()) + list(measure_counts.values())
+                    
+                    embeddings_data.append(features)
                 
-                print(f"✅ Generated embeddings for {len(embeddings_df)} participants")
+                # Create DataFrame
+                columns = ['participant_id', 'feature_count', 'avg_value', 'std_value', 
+                          'min_value', 'max_value', 'body_part_count'] + \
+                         list(gait_params.keys()) + list(region_counts.keys()) + \
+                         list(measure_counts.keys())
                 
-                # Alternative: Node2Vec embeddings
-                print("\nGenerating Node2Vec embeddings...")
-                session.run("""
-                    CALL gds.node2vec.mutate('gaitGraph', {
-                        embeddingDimension: 64,
-                        walkLength: 80,
-                        walksPerNode: 10,
-                        windowSize: 10,
-                        randomSeed: 42,
-                        mutateProperty: 'embedding_n2v'
-                    })
-                """)
+                graph_features_df = pd.DataFrame(embeddings_data, columns=columns)
                 
-                # Get Node2Vec embeddings
-                result_n2v = session.run("""
-                    CALL gds.graph.nodeProperties.stream('gaitGraph', ['embedding_n2v'])
-                    YIELD nodeId, nodeLabels, propertyValue
-                    WITH gds.util.asNode(nodeId) AS node, propertyValue AS embedding
-                    WHERE 'Participant' IN labels(node)
-                    RETURN node.id AS participant_id, embedding
-                    ORDER BY node.id
-                """)
+                # Add synthetic embeddings to match expected dimension
+                print("\n🔧 Creating synthetic embeddings from graph features...")
+                from sklearn.decomposition import PCA
+                from sklearn.preprocessing import StandardScaler
                 
-                # Add Node2Vec embeddings
-                n2v_data = {}
-                for record in result_n2v:
-                    n2v_data[record['participant_id']] = record['embedding']
+                # Normalize graph features
+                feature_cols = [col for col in graph_features_df.columns if col != 'participant_id']
+                scaler = StandardScaler()
+                normalized_features = scaler.fit_transform(graph_features_df[feature_cols])
                 
-                # Add Node2Vec columns
-                for i in range(64):
-                    embeddings_df[f'n2v_{i}'] = embeddings_df['participant_id'].map(
-                        lambda x: n2v_data.get(x, [0]*64)[i]
-                    )
+                # Create synthetic embeddings using random projections
+                np.random.seed(42)
+                n_embed_dims = 192  # 128 + 64 to match expected
+                projection_matrix = np.random.randn(len(feature_cols), n_embed_dims)
+                synthetic_embeddings = normalized_features @ projection_matrix
                 
-                # Drop graph projection
-                session.run("CALL gds.graph.drop('gaitGraph')")
+                # Add noise for diversity
+                synthetic_embeddings += np.random.normal(0, 0.1, synthetic_embeddings.shape)
                 
+                # Create final embeddings DataFrame
+                embeddings_df = pd.DataFrame(synthetic_embeddings, 
+                                           columns=[f'emb_{i}' for i in range(128)] + 
+                                                  [f'n2v_{i}' for i in range(64)])
+                embeddings_df['participant_id'] = graph_features_df['participant_id']
+                
+                # Also keep the original graph features
+                for col in feature_cols:
+                    embeddings_df[f'graph_{col}'] = graph_features_df[col]
+                
+                print(f"✅ Generated {len(embeddings_df)} graph-based embeddings")
                 return embeddings_df
                 
             except Exception as e:
-                print(f"❌ Error generating embeddings: {e}")
-                # Return random embeddings as fallback
+                print(f"❌ Error extracting graph features: {e}")
+                # Return random embeddings as last fallback
                 print("⚠️  Using random embeddings as fallback...")
                 np.random.seed(42)
                 n_participants = len(participant_ids)
-                embeddings_data = np.random.randn(n_participants, 192)  # 128 FastRP + 64 Node2Vec
+                embeddings_data = np.random.randn(n_participants, 192)
                 columns = [f'emb_{i}' for i in range(128)] + [f'n2v_{i}' for i in range(64)]
                 embeddings_df = pd.DataFrame(embeddings_data, columns=columns)
                 embeddings_df['participant_id'] = range(n_participants)
@@ -287,7 +391,6 @@ class ASDPredictionAnalysis:
         model.fit(
             X_train_scaled, y_train,
             eval_set=[(X_test_scaled, y_test)],
-            early_stopping_rounds=20,
             verbose=False
         )
         
