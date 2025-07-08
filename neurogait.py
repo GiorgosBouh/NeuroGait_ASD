@@ -1,6 +1,6 @@
 """
 XGBoost ASD Prediction: Graph Embeddings vs Raw Data vs Combined
-Αποφυγή Data Leakage με proper train-test split
+WITH Data Leakage Detection and Fixed Graph Construction
 """
 
 import pandas as pd
@@ -11,7 +11,8 @@ import xgboost as xgb
 from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, confusion_matrix, classification_report
-from sklearn.feature_selection import SelectKBest, f_classif
+from sklearn.feature_selection import SelectKBest, f_classif, mutual_info_classif
+from sklearn.tree import DecisionTreeClassifier
 import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy import stats
@@ -63,25 +64,111 @@ class ASDPredictionAnalysis:
             print(f"❌ Failed to connect to Neo4j: {e}")
             return False
     
+    def detect_data_leakage(self, df):
+        """Detect potential data leakage in the dataset"""
+        print("\n🔍 Checking for Data Leakage...")
+        
+        # 1. Check for duplicate rows
+        duplicates = df.duplicated().sum()
+        print(f"   Duplicate rows: {duplicates}")
+        if duplicates > 0:
+            print(f"   ⚠️  WARNING: Found {duplicates} duplicate rows!")
+        
+        # 2. Check for suspiciously perfect features
+        print("\n   Checking individual feature predictive power...")
+        suspicious_features = []
+        
+        X = df.drop('class', axis=1)
+        y = df['class']
+        
+        for col in X.columns[:50]:  # Check first 50 features
+            try:
+                # Single feature accuracy
+                X_single = X[[col]].values.reshape(-1, 1)
+                dt = DecisionTreeClassifier(max_depth=1, random_state=42)
+                scores = cross_val_score(dt, X_single, y, cv=5, scoring='roc_auc')
+                mean_score = scores.mean()
+                
+                if mean_score > 0.95:
+                    suspicious_features.append((col, mean_score))
+                    print(f"   🚨 SUSPICIOUS: '{col}' alone gives AUC={mean_score:.3f}")
+                elif mean_score > 0.85:
+                    print(f"   ⚠️  High predictive: '{col}' gives AUC={mean_score:.3f}")
+            except:
+                pass
+        
+        # 3. Check for extreme class imbalances in features
+        print("\n   Checking feature distributions between classes...")
+        for col in X.columns[:20]:
+            try:
+                asd_mean = df[df['class']==1][col].mean()
+                control_mean = df[df['class']==0][col].mean()
+                
+                if control_mean != 0:
+                    ratio = abs(asd_mean / control_mean)
+                    if ratio > 100 or ratio < 0.01:
+                        print(f"   ⚠️  Extreme difference in '{col}': ASD/Control ratio = {ratio:.2f}")
+            except:
+                pass
+        
+        # 4. Check correlation with target
+        print("\n   Checking correlations with target...")
+        correlations = X.corrwith(y).abs().sort_values(ascending=False)
+        high_corr = correlations[correlations > 0.8]
+        if len(high_corr) > 0:
+            print("   🚨 Features with very high correlation to target:")
+            for feat, corr in high_corr.head(10).items():
+                print(f"      {feat}: {corr:.3f}")
+        
+        # 5. Mutual information
+        print("\n   Calculating mutual information...")
+        mi_scores = mutual_info_classif(X.fillna(0), y, random_state=42)
+        mi_df = pd.DataFrame({
+            'feature': X.columns,
+            'mi_score': mi_scores
+        }).sort_values('mi_score', ascending=False)
+        
+        print("   Top 10 features by mutual information:")
+        for idx, row in mi_df.head(10).iterrows():
+            print(f"      {row['feature']}: {row['mi_score']:.3f}")
+        
+        return suspicious_features
+    
     def load_raw_data(self, filepath="Final dataset.xlsx"):
-        """Load raw data from Excel file"""
+        """Load raw data from Excel file with leakage detection"""
         print("\n📊 Loading raw data...")
         df = pd.read_excel(filepath)
         
         # Map class labels
         df['class'] = df['class'].map({'A': 1, 'T': 0})  # ASD=1, Control=0
         
+        print(f"✅ Loaded {len(df)} samples with {df.shape[1]-1} features")
+        print(f"   Class distribution: ASD={sum(df['class']==1)}, Control={sum(df['class']==0)}")
+        
+        # Detect data leakage
+        suspicious = self.detect_data_leakage(df)
+        
+        if len(suspicious) > 0:
+            print("\n⚠️  WARNING: Potential data leakage detected!")
+            print("   Consider removing these features:")
+            for feat, score in suspicious[:5]:
+                print(f"   - {feat} (AUC={score:.3f})")
+            
+            # Option to remove suspicious features
+            response = input("\n   Remove suspicious features? (y/n): ")
+            if response.lower() == 'y':
+                features_to_remove = [feat for feat, _ in suspicious]
+                df = df.drop(columns=features_to_remove)
+                print(f"   ✅ Removed {len(features_to_remove)} suspicious features")
+        
         # Separate features and target
         X = df.drop('class', axis=1)
         y = df['class']
         
-        print(f"✅ Loaded {len(df)} samples with {X.shape[1]} features")
-        print(f"   Class distribution: ASD={sum(y==1)}, Control={sum(y==0)}")
-        
         return X, y
     
     def get_graph_embeddings(self, participant_ids):
-        """Get graph embeddings using Python Node2Vec"""
+        """Get graph embeddings using Python Node2Vec with improved graph construction"""
         print("\n🧠 Generating graph embeddings...")
         
         with self.driver.session() as session:
@@ -114,7 +201,7 @@ class ASDPredictionAnalysis:
             
             print(f"   Added {len(participants)} participant nodes")
             
-            # Method 1: Connect participants with similar gait parameters
+            # Method 1: Connect participants with similar gait parameters (RELAXED THRESHOLDS)
             print("   Building edges based on gait parameter similarity...")
             result = session.run("""
                 MATCH (p1:Participant)-[:HAS_SESSION]->(s1:GaitSession)
@@ -124,10 +211,10 @@ class ASDPredictionAnalysis:
                      abs(s1.StepLength - s2.StepLength) as step_diff,
                      abs(s1.Cadence - s2.Cadence) as cadence_diff,
                      abs(s1.Speed - s2.Speed) as speed_diff
-                WHERE step_diff < 0.1 AND cadence_diff < 10 AND speed_diff < 0.2
+                WHERE step_diff < 0.3 AND cadence_diff < 20 AND speed_diff < 0.5
                 RETURN p1.id as p1_id, p2.id as p2_id, 
                        1.0 / (1 + step_diff + cadence_diff/100 + speed_diff) as weight
-                LIMIT 5000
+                LIMIT 20000
             """)
             
             edges = [(record['p1_id'], record['p2_id'], {'weight': record['weight']}) 
@@ -136,28 +223,101 @@ class ASDPredictionAnalysis:
             
             print(f"   Added {len(edges)} edges based on gait similarity")
             
-            # Method 2: Add edges based on shared feature patterns
+            # Method 2: Add edges based on shared feature patterns (RELAXED THRESHOLDS)
             print("   Adding edges based on shared feature patterns...")
             result = session.run("""
                 MATCH (p1:Participant)-[:HAS_SESSION]->(s1)-[:HAS_FEATURE]->(f1:GaitFeature)
                 MATCH (p2:Participant)-[:HAS_SESSION]->(s2)-[:HAS_FEATURE]->(f2:GaitFeature)
                 WHERE p1.id < p2.id 
                 AND f1.measurement_id = f2.measurement_id
-                AND abs(f1.value - f2.value) < 0.1
+                AND abs(f1.value - f2.value) < 0.2
                 WITH p1.id as p1_id, p2.id as p2_id, count(*) as shared_features
-                WHERE shared_features > 100
+                WHERE shared_features > 50
                 RETURN p1_id, p2_id, shared_features
-                LIMIT 3000
+                LIMIT 10000
             """)
             
+            feature_edges = 0
             for record in result:
                 if G.has_edge(record['p1_id'], record['p2_id']):
                     G[record['p1_id']][record['p2_id']]['weight'] += record['shared_features'] / 1000
                 else:
                     G.add_edge(record['p1_id'], record['p2_id'], 
                               weight=record['shared_features'] / 1000)
+                    feature_edges += 1
             
-            print(f"   Final graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
+            print(f"   Added {feature_edges} additional edges based on features")
+            
+            # Method 3: k-NN based on overall similarity
+            print("\n   Building k-NN connections...")
+            
+            # Get all features for each participant
+            result = session.run("""
+                MATCH (p:Participant)-[:HAS_SESSION]->(s:GaitSession)
+                RETURN p.id as pid, 
+                       s.StepLength as sl, s.StrideLength as stl, 
+                       s.Cadence as cad, s.Speed as sp, s.StepWidth as sw
+                ORDER BY p.id
+            """)
+            
+            # Create feature matrix for k-NN
+            feature_matrix = {}
+            for record in result:
+                feature_matrix[record['pid']] = [
+                    record['sl'] or 0, record['stl'] or 0,
+                    record['cad'] or 0, record['sp'] or 0, record['sw'] or 0
+                ]
+            
+            # Add k-NN edges (k=10)
+            from sklearn.neighbors import NearestNeighbors
+            if len(feature_matrix) > 0:
+                pids = list(feature_matrix.keys())
+                X_knn = np.array([feature_matrix[pid] for pid in pids])
+                
+                knn = NearestNeighbors(n_neighbors=min(11, len(pids)), metric='euclidean')
+                knn.fit(X_knn)
+                
+                distances, indices = knn.kneighbors(X_knn)
+                
+                knn_edges = 0
+                for i, pid1 in enumerate(pids):
+                    for j in range(1, min(11, len(indices[i]))):  # Skip self (index 0)
+                        pid2 = pids[indices[i][j]]
+                        if pid1 < pid2:  # Avoid duplicate edges
+                            weight = 1.0 / (1 + distances[i][j])
+                            if G.has_edge(pid1, pid2):
+                                G[pid1][pid2]['weight'] += weight
+                            else:
+                                G.add_edge(pid1, pid2, weight=weight)
+                                knn_edges += 1
+                
+                print(f"   Added {knn_edges} k-NN edges")
+            
+            # Graph statistics
+            print(f"\n📊 Graph statistics:")
+            print(f"   Nodes: {G.number_of_nodes()}")
+            print(f"   Edges: {G.number_of_edges()}")
+            print(f"   Average degree: {sum(dict(G.degree()).values()) / G.number_of_nodes():.2f}")
+            print(f"   Density: {nx.density(G):.4f}")
+            
+            # Check connectivity
+            n_components = nx.number_connected_components(G)
+            print(f"   Connected components: {n_components}")
+            if n_components > 1:
+                largest_cc = max(nx.connected_components(G), key=len)
+                print(f"   Largest component size: {len(largest_cc)} ({len(largest_cc)/G.number_of_nodes()*100:.1f}%)")
+            
+            # Ensure minimum connectivity
+            if nx.density(G) < 0.01:
+                print("\n⚠️  Graph is too sparse! Adding more edges...")
+                # Add random edges to ensure connectivity
+                nodes = list(G.nodes())
+                n_random_edges = int(0.01 * len(nodes) * (len(nodes) - 1) / 2 - G.number_of_edges())
+                for _ in range(n_random_edges):
+                    n1, n2 = np.random.choice(nodes, 2, replace=False)
+                    if not G.has_edge(n1, n2):
+                        G.add_edge(n1, n2, weight=0.1)
+                print(f"   Added {n_random_edges} random edges for connectivity")
             
             # Run Node2Vec
             print("\n🚀 Running Node2Vec algorithm...")
@@ -180,6 +340,35 @@ class ASDPredictionAnalysis:
                     n2v_embeddings[node] = np.random.randn(64)
             
             print(f"✅ Generated Node2Vec embeddings for {len(n2v_embeddings)} participants")
+            
+            # Test embedding quality
+            print("\n   Testing embedding quality...")
+            # Get class labels for participants
+            result = session.run("""
+                MATCH (p:Participant)-[:HAS_SESSION]->(s:GaitSession)-[:CLASSIFIED_AS]->(c:Classification)
+                RETURN p.id as pid, c.label as label
+            """)
+            
+            labels = {}
+            for record in result:
+                labels[record['pid']] = 1 if record['label'] == 'ASD' else 0
+            
+            # Quick classification test on embeddings
+            if len(labels) > 100:
+                from sklearn.ensemble import RandomForestClassifier
+                X_test = []
+                y_test = []
+                for pid in list(labels.keys())[:200]:
+                    if pid in n2v_embeddings:
+                        X_test.append(n2v_embeddings[pid])
+                        y_test.append(labels[pid])
+                
+                if len(X_test) > 50:
+                    X_test = np.array(X_test)
+                    y_test = np.array(y_test)
+                    rf = RandomForestClassifier(n_estimators=50, random_state=42)
+                    scores = cross_val_score(rf, X_test, y_test, cv=5)
+                    print(f"   Embedding quality (CV accuracy): {scores.mean():.3f} ± {scores.std():.3f}")
             
             # Also extract graph-based features
             print("\n📊 Extracting additional graph-based features...")
@@ -217,15 +406,20 @@ class ASDPredictionAnalysis:
                     degree = G.degree(pid)
                     clustering = nx.clustering(G, pid)
                     try:
-                        # Calculate for small subset to save time
-                        if i < 50:  
-                            betweenness = nx.betweenness_centrality(G, normalized=True)[pid]
+                        if G.number_of_nodes() < 200:
+                            closeness = nx.closeness_centrality(G)[pid]
                         else:
-                            betweenness = 0
+                            closeness = 0
                     except:
-                        betweenness = 0
+                        closeness = 0
+                    
+                    # PageRank
+                    try:
+                        pagerank = nx.pagerank(G, max_iter=50)[pid]
+                    except:
+                        pagerank = 0
                 else:
-                    degree = clustering = betweenness = 0
+                    degree = clustering = closeness = pagerank = 0
                 
                 # Get gait parameters
                 result = session.run("""
@@ -245,7 +439,7 @@ class ASDPredictionAnalysis:
                 
                 # Combine all features
                 features = [pid] + list(n2v_emb) + stats + \
-                          [degree, clustering, betweenness] + gait_values
+                          [degree, clustering, closeness, pagerank] + gait_values
                 
                 embeddings_data.append(features)
             
@@ -253,7 +447,7 @@ class ASDPredictionAnalysis:
             columns = ['participant_id'] + \
                      [f'n2v_{i}' for i in range(64)] + \
                      ['feature_count', 'avg_value', 'std_value', 'min_value', 'max_value',
-                      'degree', 'clustering', 'betweenness'] + \
+                      'degree', 'clustering', 'closeness', 'pagerank'] + \
                      ['StepLength', 'StrideLength', 'StepTime', 'StrideTime', 
                       'Cadence', 'Speed', 'StepWidth']
             
@@ -354,17 +548,17 @@ class ASDPredictionAnalysis:
         X_train_scaled = scaler.fit_transform(X_train)  # Fit only on training data!
         X_test_scaled = scaler.transform(X_test)
         
-        # XGBoost parameters
+        # XGBoost parameters - add more regularization
         params = {
             'objective': 'binary:logistic',
-            'max_depth': 6,
-            'learning_rate': 0.1,
-            'n_estimators': 200,
-            'subsample': 0.8,
-            'colsample_bytree': 0.8,
-            'gamma': 0.1,
-            'reg_alpha': 0.1,
-            'reg_lambda': 1,
+            'max_depth': 5,  # Reduced from 6
+            'learning_rate': 0.05,  # Reduced from 0.1
+            'n_estimators': 300,  # Increased from 200
+            'subsample': 0.7,  # Reduced from 0.8
+            'colsample_bytree': 0.7,  # Reduced from 0.8
+            'gamma': 0.5,  # Increased from 0.1
+            'reg_alpha': 0.5,  # Increased from 0.1
+            'reg_lambda': 2,  # Increased from 1
             'random_state': 42,
             'eval_metric': 'logloss',
             'use_label_encoder': False
@@ -418,6 +612,11 @@ class ASDPredictionAnalysis:
         print(f"   CV AUC: {metrics['cv_auc_mean']:.4f} ± {metrics['cv_auc_std']:.4f}")
         print(f"\n   Confusion Matrix:")
         print(f"   {metrics['confusion_matrix']}")
+        
+        # Warning if performance is suspiciously high
+        if metrics['auc_roc'] > 0.98:
+            print("\n   ⚠️  WARNING: Performance seems unusually high!")
+            print("      Consider checking for data leakage.")
         
         return metrics
     
