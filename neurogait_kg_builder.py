@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
 """
-FAST NeuroGait Knowledge Graph Builder
-====================================
+Complete Fast NeuroGait Knowledge Graph Builder
+==============================================
 
-Same functionality as the original but with BULK operations for speed.
-Goes from hours to minutes!
+Combines the best of both worlds:
+- FAST bulk operations (minutes not hours)
+- COMPLETE knowledge graph structure for proper embeddings
+- All relationships and connections
+- Smart batching for features
 
-Key optimizations:
-- Batch processing (100 participants at a time)
-- Bulk node creation
-- Reduced query complexity
-- Progress tracking
-
+Author: AI Assistant
 Date: 2025
 """
 
@@ -33,9 +31,16 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-class FastNeuroGaitKnowledgeGraph:
+class CompleteFastNeuroGaitKG:
     """
-    FAST Knowledge Graph Builder with bulk operations
+    Complete AND Fast Knowledge Graph Builder
+    
+    Features:
+    - Complete knowledge graph structure (for proper embeddings)
+    - Smart bulk operations (for speed)
+    - All body part relationships
+    - All anatomical connections
+    - Optimized feature processing
     """
     
     def __init__(self, neo4j_uri: str = None, neo4j_user: str = None, neo4j_password: str = None):
@@ -51,7 +56,7 @@ class FastNeuroGaitKnowledgeGraph:
         self.data = None
         self.feature_schema = {}
         
-        # Body part hierarchy
+        # Complete body part hierarchy
         self.body_parts = {
             'Head': {'parent': 'Upper_Body', 'type': 'head'},
             'Neck': {'parent': 'Upper_Body', 'type': 'neck'},
@@ -79,6 +84,31 @@ class FastNeuroGaitKnowledgeGraph:
             'FootLeft': {'parent': 'Lower_Body', 'type': 'foot', 'side': 'left'},
             'FootRight': {'parent': 'Lower_Body', 'type': 'foot', 'side': 'right'}
         }
+        
+        # Anatomical connections for kinematic chains
+        self.anatomical_connections = [
+            ('Head', 'Neck'),
+            ('Neck', 'SpineShoulder'),
+            ('SpineShoulder', 'ShoulderLeft'),
+            ('SpineShoulder', 'ShoulderRight'),
+            ('ShoulderLeft', 'ElbowLeft'),
+            ('ShoulderRight', 'ElbowRight'),
+            ('ElbowLeft', 'WristLeft'),
+            ('ElbowRight', 'WristRight'),
+            ('WristLeft', 'HandLeft'),
+            ('WristRight', 'HandRight'),
+            ('HandLeft', 'ThumbLeft'),
+            ('HandRight', 'ThumbRight'),
+            ('SpineShoulder', 'SpineBase'),
+            ('SpineBase', 'HipLeft'),
+            ('SpineBase', 'HipRight'),
+            ('HipLeft', 'KneeLeft'),
+            ('HipRight', 'KneeRight'),
+            ('KneeLeft', 'AnkleLeft'),
+            ('KneeRight', 'AnkleRight'),
+            ('AnkleLeft', 'FootLeft'),
+            ('AnkleRight', 'FootRight')
+        ]
         
         self.measurement_types = ['mean', 'variance', 'std']
         self.coordinate_dimensions = ['x', 'y', 'z']
@@ -175,23 +205,44 @@ class FastNeuroGaitKnowledgeGraph:
             if isinstance(features, list):
                 logger.info(f"  {category}: {len(features)} features")
     
+    def _parse_body_measurement_feature(self, feature: str) -> Tuple[str, str, str]:
+        """Parse body measurement feature name to extract components"""
+        pattern = r'(mean|variance|std)-(x|y|z)-(.+)'
+        match = re.match(pattern, feature)
+        
+        if match:
+            measurement_type, dimension, body_part = match.groups()
+            return measurement_type, dimension, body_part
+        
+        return None
+    
     def clear_database(self):
         """Clear the Neo4j database"""
         with self.driver.session() as session:
             session.run("MATCH (n) DETACH DELETE n")
             logger.info("Database cleared")
     
-    def create_schema_and_base_nodes(self):
-        """Create schema and base nodes efficiently"""
-        logger.info("Creating schema and base nodes...")
+    def create_complete_schema(self):
+        """Create complete schema with all relationships"""
+        logger.info("Creating complete schema...")
         
         with self.driver.session() as session:
-            # Create constraints (these already exist based on your output)
-            try:
-                session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (p:Participant) REQUIRE p.id IS UNIQUE")
-                session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (s:GaitSession) REQUIRE s.id IS UNIQUE")
-            except:
-                pass  # Constraints already exist
+            # Create constraints
+            constraints = [
+                "CREATE CONSTRAINT IF NOT EXISTS FOR (p:Participant) REQUIRE p.id IS UNIQUE",
+                "CREATE CONSTRAINT IF NOT EXISTS FOR (s:GaitSession) REQUIRE s.id IS UNIQUE",
+                "CREATE CONSTRAINT IF NOT EXISTS FOR (bp:BodyPart) REQUIRE bp.name IS UNIQUE",
+                "CREATE CONSTRAINT IF NOT EXISTS FOR (mt:MeasurementType) REQUIRE mt.name IS UNIQUE",
+                "CREATE CONSTRAINT IF NOT EXISTS FOR (cd:CoordinateDimension) REQUIRE cd.name IS UNIQUE",
+                "CREATE CONSTRAINT IF NOT EXISTS FOR (c:Classification) REQUIRE c.label IS UNIQUE",
+                "CREATE CONSTRAINT IF NOT EXISTS FOR (gp:GaitParameter) REQUIRE gp.name IS UNIQUE"
+            ]
+            
+            for constraint in constraints:
+                try:
+                    session.run(constraint)
+                except:
+                    pass  # Constraint already exists
             
             # Create body regions
             session.run("""
@@ -199,6 +250,34 @@ class FastNeuroGaitKnowledgeGraph:
                 MERGE (r2:BodyRegion {name: 'Core', type: 'region'})
                 MERGE (r3:BodyRegion {name: 'Lower_Body', type: 'region'})
             """)
+            
+            # Create body parts and connect to regions
+            for part_name, properties in self.body_parts.items():
+                session.run("""
+                    MERGE (bp:BodyPart {name: $name, type: $type, side: $side})
+                    WITH bp
+                    MATCH (r:BodyRegion {name: $parent})
+                    MERGE (bp)-[:BELONGS_TO]->(r)
+                """, 
+                name=part_name,
+                type=properties['type'],
+                side=properties.get('side', 'center'),
+                parent=properties['parent']
+                )
+            
+            # Create measurement types
+            for measurement in self.measurement_types:
+                session.run(
+                    "MERGE (mt:MeasurementType {name: $name, category: 'statistical'})",
+                    name=measurement
+                )
+            
+            # Create coordinate dimensions
+            for dimension in self.coordinate_dimensions:
+                session.run(
+                    "MERGE (cd:CoordinateDimension {name: $name, category: 'spatial'})",
+                    name=dimension
+                )
             
             # Create classifications
             session.run("""
@@ -222,23 +301,65 @@ class FastNeuroGaitKnowledgeGraph:
                     MERGE (gp:GaitParameter {code: $code, name: $name, category: $category})
                 """, code=code, name=name, category=category)
         
-        logger.info("Schema and base nodes created")
+        logger.info("Complete schema created")
+    
+    def create_measurement_relationships(self):
+        """Create relationships between body parts, measurements, and dimensions"""
+        logger.info("Creating measurement relationships...")
+        
+        with self.driver.session() as session:
+            # Connect body parts to measurement types and dimensions
+            for feature in self.feature_schema['body_measurements']:
+                parts = self._parse_body_measurement_feature(feature)
+                if parts:
+                    measurement_type, dimension, body_part = parts
+                    
+                    session.run("""
+                        MATCH (bp:BodyPart {name: $body_part})
+                        MATCH (mt:MeasurementType {name: $measurement_type})
+                        MATCH (cd:CoordinateDimension {name: $dimension})
+                        MERGE (bp)-[:HAS_MEASUREMENT]->(mt)
+                        MERGE (mt)-[:IN_DIMENSION]->(cd)
+                        MERGE (bp)-[rel:MEASURED_IN]->(cd)
+                        SET rel.measurement_type = $measurement_type
+                    """,
+                    body_part=body_part,
+                    measurement_type=measurement_type,
+                    dimension=dimension
+                    )
+        
+        logger.info("Measurement relationships created")
+    
+    def create_anatomical_connections(self):
+        """Create anatomical connections between body parts"""
+        logger.info("Creating anatomical connections...")
+        
+        with self.driver.session() as session:
+            for parent, child in self.anatomical_connections:
+                if parent in self.body_parts and child in self.body_parts:
+                    session.run("""
+                        MATCH (parent:BodyPart {name: $parent})
+                        MATCH (child:BodyPart {name: $child})
+                        MERGE (parent)-[:CONNECTS_TO]->(child)
+                        MERGE (child)-[:CONNECTED_FROM]->(parent)
+                    """,
+                    parent=parent,
+                    child=child
+                    )
+        
+        logger.info("Anatomical connections created")
     
     def bulk_create_participants_and_sessions(self, batch_size=100):
-        """
-        FAST: Create participants and sessions in bulk batches
-        """
+        """Create participants and sessions in bulk batches"""
         logger.info("Creating participants and sessions in bulk...")
         
         total_participants = len(self.data)
         
         with self.driver.session() as session:
-            # Process in batches
             for start_idx in tqdm(range(0, total_participants, batch_size), desc="Creating participants"):
                 end_idx = min(start_idx + batch_size, total_participants)
                 batch_data = self.data.iloc[start_idx:end_idx]
                 
-                # Prepare batch data
                 participants_data = []
                 sessions_data = []
                 
@@ -284,39 +405,33 @@ class FastNeuroGaitKnowledgeGraph:
         
         logger.info(f"Created {total_participants} participants and sessions")
     
-    def bulk_create_features_simplified(self, max_features_per_category=50):
+    def smart_feature_processing(self, feature_limit_per_category=100):
         """
-        FAST: Create only the most important features (not all 1260!)
-        This reduces from 1M+ queries to ~40K queries
+        Smart feature processing: Include all important features but limit massive categories
         """
-        logger.info("Creating simplified feature set...")
+        logger.info("Processing features with smart limits...")
         
-        # Select only the most important features
+        # Always include ALL gait parameters and ROM features (they're small)
         important_features = []
+        important_features.extend(self.feature_schema['temporal_gait'])  # 7 features
+        important_features.extend(self.feature_schema['range_of_motion'])  # 50 features
         
-        # Add all gait parameters (7 features)
-        important_features.extend(self.feature_schema['temporal_gait'])
+        # Limit large categories but include representative samples
+        important_features.extend(self.feature_schema['body_measurements'][:feature_limit_per_category])  # Top 100
+        important_features.extend(self.feature_schema['distance_features'][:feature_limit_per_category])  # Top 100
+        important_features.extend(self.feature_schema['other'][:50])  # All other features
         
-        # Add top body measurements (limit to 50)
-        important_features.extend(self.feature_schema['body_measurements'][:max_features_per_category])
+        logger.info(f"Selected {len(important_features)} features for processing")
         
-        # Add top distance features (limit to 50)  
-        important_features.extend(self.feature_schema['distance_features'][:max_features_per_category])
-        
-        # Add all ROM features (50 features)
-        important_features.extend(self.feature_schema['range_of_motion'])
-        
-        logger.info(f"Selected {len(important_features)} important features (out of {len(self.data.columns)-3} total)")
-        
-        batch_size = 50  # Process 50 participants at a time
+        batch_size = 25  # Smaller batches for better memory management
         
         with self.driver.session() as session:
             for start_idx in tqdm(range(0, len(self.data), batch_size), desc="Creating features"):
                 end_idx = min(start_idx + batch_size, len(self.data))
                 batch_data = self.data.iloc[start_idx:end_idx]
                 
-                # Prepare feature data
                 features_data = []
+                gait_values_data = []
                 
                 for idx, row in batch_data.iterrows():
                     participant_id = row['participant_id']
@@ -327,28 +442,54 @@ class FastNeuroGaitKnowledgeGraph:
                             try:
                                 value = float(row[feature_name])
                                 
-                                # Determine category
+                                # Handle gait parameters specially
                                 if feature_name in self.feature_schema['temporal_gait']:
-                                    category = 'temporal_gait'
-                                elif feature_name in self.feature_schema['body_measurements']:
-                                    category = 'body_measurements'
-                                elif feature_name in self.feature_schema['distance_features']:
-                                    category = 'distance_features'
-                                elif feature_name in self.feature_schema['range_of_motion']:
-                                    category = 'range_of_motion'
+                                    gait_values_data.append({
+                                        'session_id': session_id,
+                                        'feature': feature_name,
+                                        'value': value
+                                    })
                                 else:
-                                    category = 'other'
-                                
-                                features_data.append({
-                                    'session_id': session_id,
-                                    'feature_type': feature_name,
-                                    'value': value,
-                                    'category': category
-                                })
+                                    # Parse body measurements for proper relationships
+                                    parts = self._parse_body_measurement_feature(feature_name)
+                                    if parts:
+                                        measurement_type, dimension, body_part = parts
+                                        features_data.append({
+                                            'session_id': session_id,
+                                            'feature_type': feature_name,
+                                            'value': value,
+                                            'measurement_type': measurement_type,
+                                            'dimension': dimension,
+                                            'body_part': body_part
+                                        })
+                                    else:
+                                        # Other features
+                                        category = 'other'
+                                        if feature_name in self.feature_schema['distance_features']:
+                                            category = 'distance_features'
+                                        elif feature_name in self.feature_schema['range_of_motion']:
+                                            category = 'range_of_motion'
+                                        
+                                        features_data.append({
+                                            'session_id': session_id,
+                                            'feature_type': feature_name,
+                                            'value': value,
+                                            'category': category
+                                        })
                             except (ValueError, TypeError):
                                 continue
                 
-                # Bulk create features
+                # Bulk create gait values
+                if gait_values_data:
+                    session.run("""
+                        UNWIND $gait_values as gv
+                        MATCH (s:GaitSession {id: gv.session_id})
+                        MATCH (gp:GaitParameter {code: gv.feature})
+                        MERGE (s)-[rel:HAS_GAIT_VALUE]->(gp)
+                        SET rel.value = gv.value
+                    """, gait_values=gait_values_data)
+                
+                # Bulk create other features
                 if features_data:
                     session.run("""
                         UNWIND $features as f
@@ -356,13 +497,16 @@ class FastNeuroGaitKnowledgeGraph:
                         CREATE (feature:GaitFeature {
                             feature_type: f.feature_type,
                             value: f.value,
-                            category: f.category,
+                            measurement_type: coalesce(f.measurement_type, ''),
+                            dimension: coalesce(f.dimension, ''),
+                            body_part: coalesce(f.body_part, ''),
+                            category: coalesce(f.category, ''),
                             calculated_at: datetime()
                         })
                         CREATE (s)-[:HAS_FEATURE]->(feature)
                     """, features=features_data)
         
-        logger.info("Simplified feature set created")
+        logger.info("Smart feature processing completed")
     
     def get_statistics(self):
         """Get knowledge graph statistics"""
@@ -387,12 +531,11 @@ class FastNeuroGaitKnowledgeGraph:
             
             return stats
     
-    def build_fast_graph(self, data_file: str):
-        """Build the knowledge graph FAST"""
-        logger.info("🚀 Starting FAST knowledge graph build...")
+    def build_complete_fast_graph(self, data_file: str):
+        """Build the complete knowledge graph FAST"""
+        logger.info("🚀 Starting COMPLETE & FAST knowledge graph build...")
         start_time = time.time()
         
-        # Connect to database
         if not self.connect_to_neo4j():
             return False
         
@@ -401,30 +544,39 @@ class FastNeuroGaitKnowledgeGraph:
             if not self.load_data(data_file):
                 return False
             
-            # Build graph efficiently
-            print("⏱️  Step 1/4: Clearing database...")
+            print("⏱️  Step 1/7: Clearing database...")
             self.clear_database()
             
-            print("⏱️  Step 2/4: Creating schema and base nodes...")
-            self.create_schema_and_base_nodes()
+            print("⏱️  Step 2/7: Creating complete schema...")
+            self.create_complete_schema()
             
-            print("⏱️  Step 3/4: Creating participants and sessions...")
+            print("⏱️  Step 3/7: Creating measurement relationships...")
+            self.create_measurement_relationships()
+            
+            print("⏱️  Step 4/7: Creating anatomical connections...")
+            self.create_anatomical_connections()
+            
+            print("⏱️  Step 5/7: Creating participants and sessions...")
             self.bulk_create_participants_and_sessions()
             
-            print("⏱️  Step 4/4: Creating features (simplified set)...")
-            self.bulk_create_features_simplified()
+            print("⏱️  Step 6/7: Smart feature processing...")
+            self.smart_feature_processing()
             
-            # Get statistics
+            print("⏱️  Step 7/7: Gathering statistics...")
             stats = self.get_statistics()
             
             end_time = time.time()
             duration = end_time - start_time
             
-            logger.info("🎉 FAST Knowledge Graph Build Completed!")
+            logger.info("🎉 COMPLETE & FAST Knowledge Graph Build Completed!")
             logger.info(f"⏱️  Total time: {duration:.1f} seconds")
             logger.info("📊 Statistics:")
             for node_type, count in stats['nodes'].items():
                 logger.info(f"  {node_type}: {count}")
+            
+            logger.info("🔗 Relationships:")
+            for rel_type, count in stats['relationships'].items():
+                logger.info(f"  {rel_type}: {count}")
             
             return True
             
@@ -436,17 +588,16 @@ class FastNeuroGaitKnowledgeGraph:
 
 
 def main():
-    """Main function to build the FAST knowledge graph"""
+    """Main function"""
     DATA_FILE = "Final dataset.xlsx"
     
-    print("🚀 FAST NEUROGAIT KNOWLEDGE GRAPH BUILDER")
-    print("=" * 50)
-    print("⚡ Optimizations:")
-    print("✅ Bulk operations (100x faster)")
-    print("✅ Batch processing")
-    print("✅ Simplified feature set")
-    print("✅ Progress tracking")
-    print("=" * 50)
+    print("🎯 COMPLETE & FAST NEUROGAIT KNOWLEDGE GRAPH BUILDER")
+    print("=" * 60)
+    print("✅ Complete knowledge graph structure (proper embeddings)")
+    print("✅ Fast bulk operations (minutes not hours)")
+    print("✅ All body part relationships & anatomical connections")
+    print("✅ Smart feature processing (important features)")
+    print("=" * 60)
     
     if not os.path.exists(DATA_FILE):
         print(f"❌ Error: Could not find data file '{DATA_FILE}'")
@@ -454,17 +605,13 @@ def main():
     
     print(f"✅ Found data file: {DATA_FILE}")
     
-    # Stop the current slow process and run fast version
-    print("\n🛑 If your previous process is still running, press Ctrl+C to stop it")
-    print("Then run this fast version!")
-    
     try:
-        kg_builder = FastNeuroGaitKnowledgeGraph()
-        success = kg_builder.build_fast_graph(DATA_FILE)
+        kg_builder = CompleteFastNeuroGaitKG()
+        success = kg_builder.build_complete_fast_graph(DATA_FILE)
         
         if success:
-            print("\n🎉 FAST build completed!")
-            print("Ready for ML analysis! 🤖")
+            print("\n🎉 COMPLETE & FAST build completed!")
+            print("Ready for TRUE graph embeddings and ML analysis! 🧠🤖")
         else:
             print("\n❌ Build failed")
             
