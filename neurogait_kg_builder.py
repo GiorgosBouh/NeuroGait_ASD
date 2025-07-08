@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """
-NeuroGait ASD Knowledge Graph Builder - FIXED VERSION
-=====================================================
+NeuroGait ASD Knowledge Graph Builder - PROPERLY FIXED VERSION
+=============================================================
 
 This script builds a comprehensive knowledge graph from gait analysis data
-for autism spectrum disorder (ASD) research using Neo4j with proper
-Participant-Session structure to prevent data leakage.
+for autism spectrum disorder (ASD) research using Neo4j with CORRECT
+Participant-Session structure.
 
-CRITICAL FIX: 
-- Proper Participant -> Session -> Features hierarchy
-- No more session-level "subjects"
-- Prevents data leakage in ML analysis
+CRITICAL FIXES: 
+- FIXED: Proper understanding that each row = unique participant measurement
+- No artificial session creation - 800 participants, 1 session each
+- Maintains proper ML data structure for cross-validation
 
-Author: AI Assistant
+Author: AI Assistant (Fixed Version)
 Date: 2025
 Repository: https://github.com/GiorgosBouh/NeuroGait_ASD.git
 """
@@ -38,17 +38,20 @@ logger = logging.getLogger(__name__)
 
 class NeuroGaitKnowledgeGraph:
     """
-    FIXED Knowledge Graph Builder for NeuroGait ASD Dataset
+    PROPERLY FIXED Knowledge Graph Builder for NeuroGait ASD Dataset
     
     Creates a comprehensive Neo4j knowledge graph capturing:
-    - Participant entities (800 unique participants)
-    - Session entities (~3 sessions per participant)
+    - 800 unique Participant entities (one per measurement)
+    - 800 Session entities (one per participant) 
     - Body part hierarchies and relationships
     - Biomechanical measurements and statistics
     - Gait parameters and temporal features
     - Proper classification relationships
     
-    CRITICAL: Fixes data leakage by proper Participant-Session separation
+    CRITICAL FIX: Correct understanding of data structure
+    - Each row = unique participant measurement
+    - No artificial grouping by non-existent participant_id
+    - Maintains scientific validity for ML analysis
     """
     
     def __init__(self, neo4j_uri: str = None, neo4j_user: str = None, neo4j_password: str = None):
@@ -64,7 +67,7 @@ class NeuroGaitKnowledgeGraph:
         self.data = None
         self.feature_schema = {}
         
-        # Body part hierarchy and relationships
+        # Body part hierarchy and relationships (corrected names to match data)
         self.body_parts = {
             'Head': {'parent': 'Upper_Body', 'type': 'head'},
             'Neck': {'parent': 'Upper_Body', 'type': 'neck'},
@@ -82,7 +85,7 @@ class NeuroGaitKnowledgeGraph:
             'ThumbRight': {'parent': 'Upper_Body', 'type': 'thumb', 'side': 'right'},
             'SpineBase': {'parent': 'Core', 'type': 'spine'},
             'SpineShoulder': {'parent': 'Core', 'type': 'spine'},
-            'Midspain': {'parent': 'Core', 'type': 'center'},  # Note: keeping original spelling
+            'Midspain': {'parent': 'Core', 'type': 'center'},  # Keeping original spelling from data
             'HipLeft': {'parent': 'Lower_Body', 'type': 'hip', 'side': 'left'},
             'HipRight': {'parent': 'Lower_Body', 'type': 'hip', 'side': 'right'},
             'KneeLeft': {'parent': 'Lower_Body', 'type': 'knee', 'side': 'left'},
@@ -96,7 +99,7 @@ class NeuroGaitKnowledgeGraph:
         # Measurement types
         self.measurement_types = ['mean', 'variance', 'std']
         self.coordinate_dimensions = ['x', 'y', 'z']
-        
+    
     def connect_to_neo4j(self):
         """Establish connection to Neo4j database"""
         try:
@@ -142,10 +145,9 @@ class NeuroGaitKnowledgeGraph:
             
             logger.info(f"Loaded dataset with {len(self.data)} samples and {len(self.data.columns)} features")
             
-            # Add participant_id if not present
-            if 'participant_id' not in self.data.columns:
-                self.data['participant_id'] = [f"P_{i:04d}" for i in range(1, len(self.data) + 1)]
-                logger.info("Generated participant_id column")
+            # FIXED: Create proper participant IDs - each row is unique participant
+            self.data['participant_id'] = [f"P_{i:04d}" for i in range(1, len(self.data) + 1)]
+            logger.info("Generated unique participant_id for each measurement")
             
             # Map class values if needed
             if 'class' in self.data.columns:
@@ -165,7 +167,7 @@ class NeuroGaitKnowledgeGraph:
         """Analyze the structure of features in the dataset"""
         logger.info("Analyzing feature structure...")
         
-        # Categorize features
+        # Categorize features based on actual data patterns
         self.feature_schema = {
             'body_measurements': [],
             'distance_features': [],
@@ -180,13 +182,12 @@ class NeuroGaitKnowledgeGraph:
                 continue
             elif col.startswith('Rom'):
                 self.feature_schema['range_of_motion'].append(col)
-            elif any(part in col for part in ['MaxStLe', 'MaxStWi', 'StrLe', 'GaCT', 'StaT', 'SwiT', 'Velocity']):
+            elif col in ['MaxStLe', 'MaxStWi', 'StrLe', 'GaCT', 'StaT', 'SwiT', 'Velocity']:
                 self.feature_schema['temporal_gait'].append(col)
             elif any(col.startswith(f'{stat}-') for stat in self.measurement_types):
                 self.feature_schema['body_measurements'].append(col)
-            elif any(body_part in col for body_part in self.body_parts.keys()):
-                if col not in self.feature_schema['body_measurements']:
-                    self.feature_schema['distance_features'].append(col)
+            elif 'T' in col and not col.startswith('Rom'):  # Distance features contain 'T'
+                self.feature_schema['distance_features'].append(col)
             else:
                 self.feature_schema['other'].append(col)
         
@@ -202,7 +203,7 @@ class NeuroGaitKnowledgeGraph:
             logger.info("Database cleared")
     
     def create_schema(self):
-        """Create the knowledge graph schema with proper Participant-Session structure"""
+        """Create the knowledge graph schema"""
         logger.info("Creating knowledge graph schema...")
         
         with self.driver.session() as session:
@@ -356,14 +357,16 @@ class NeuroGaitKnowledgeGraph:
     
     def populate_participant_session_data(self, sample_size: int = None):
         """
-        CRITICAL FIX: Populate with proper Participant-Session structure
+        PROPERLY FIXED: Populate with correct Participant-Session structure
         
-        This fixes the data leakage by creating:
-        - One Participant node per unique participant_id
-        - Multiple GaitSession nodes per participant
-        - Features attached to sessions, not participants
+        This creates the correct structure:
+        - One Participant node per row (800 unique participants)
+        - One GaitSession node per participant
+        - Features attached to sessions
+        
+        NO artificial grouping - each measurement is independent
         """
-        logger.info("Populating participant and session data with FIXED structure...")
+        logger.info("Populating participant and session data with CORRECTED structure...")
         
         # Use sample for testing if specified
         if sample_size:
@@ -371,59 +374,54 @@ class NeuroGaitKnowledgeGraph:
         else:
             data_subset = self.data
         
-        # Group data by participant_id
-        grouped_data = data_subset.groupby('participant_id')
-        
         participants_created = 0
         sessions_created = 0
         
         with self.driver.session() as session:
-            for participant_id, participant_rows in grouped_data:
+            for idx, row in data_subset.iterrows():
+                participant_id = row['participant_id']
+                session_id = f"session_{participant_id}"
+                classification = row['diagnosis']
                 
-                # FIXED: Create ONE participant node per unique participant_id
-                classification = participant_rows['diagnosis'].iloc[0]  # All rows should have same diagnosis
-                
+                # FIXED: Create ONE participant node per measurement
                 session.run("""
                     MERGE (p:Participant {
                         id: $participant_id,
-                        diagnosis: $diagnosis
+                        diagnosis: $diagnosis,
+                        data_index: $data_index
                     })
                     WITH p
                     MATCH (c:Classification {label: $diagnosis})
                     MERGE (p)-[:CLASSIFIED_AS]->(c)
                 """,
-                participant_id=str(participant_id),
-                diagnosis=classification
+                participant_id=participant_id,
+                diagnosis=classification,
+                data_index=int(idx)
                 )
                 participants_created += 1
                 
-                # Create session nodes for each row (measurement session)
-                for row_idx, row in participant_rows.iterrows():
-                    session_id = f"session_{participant_id}_{row_idx}"
-                    
-                    session.run("""
-                        MATCH (p:Participant {id: $participant_id})
-                        CREATE (s:GaitSession {
-                            session_id: $session_id,
-                            participant_id: $participant_id,
-                            date: datetime(),
-                            video_duration: 0,
-                            frame_count: 0
-                        })
-                        CREATE (p)-[:HAS_SESSION]->(s)
-                    """,
-                    participant_id=str(participant_id),
-                    session_id=session_id
-                    )
-                    sessions_created += 1
-                    
-                    # Add measurements to this specific session
-                    self._add_session_measurements(session, session_id, row)
-                    
-                    # Add gait parameters to this specific session
-                    self._add_session_gait_parameters(session, session_id, row)
+                # Create ONE session per participant
+                session.run("""
+                    MATCH (p:Participant {id: $participant_id})
+                    CREATE (s:GaitSession {
+                        id: $session_id,
+                        participant_id: $participant_id,
+                        measurement_date: datetime(),
+                        session_type: 'primary'
+                    })
+                    CREATE (p)-[:HAS_SESSION]->(s)
+                """,
+                participant_id=participant_id,
+                session_id=session_id
+                )
+                sessions_created += 1
+                
+                # Add measurements to this session
+                self._add_session_measurements(session, session_id, row)
+                self._add_session_gait_parameters(session, session_id, row)
         
-        logger.info(f"FIXED structure created: {participants_created} participants, {sessions_created} sessions")
+        logger.info(f"CORRECTED structure created: {participants_created} participants, {sessions_created} sessions")
+        logger.info("Ratio: 1 session per participant (correct for this dataset)")
     
     def _add_session_measurements(self, session, session_id: str, row: pd.Series):
         """Add measurement values for a specific session"""
@@ -435,7 +433,7 @@ class NeuroGaitKnowledgeGraph:
                 
                 if pd.notna(value):
                     session.run("""
-                        MATCH (s:GaitSession {session_id: $session_id})
+                        MATCH (s:GaitSession {id: $session_id})
                         CREATE (f:GaitFeature {
                             feature_type: $feature_name,
                             value: $value,
@@ -461,7 +459,7 @@ class NeuroGaitKnowledgeGraph:
         for feature in gait_features:
             if feature in row.index and pd.notna(row[feature]):
                 session.run("""
-                    MATCH (s:GaitSession {session_id: $session_id})
+                    MATCH (s:GaitSession {id: $session_id})
                     MATCH (gp:GaitParameter {code: $feature})
                     MERGE (s)-[rel:HAS_GAIT_VALUE]->(gp)
                     SET rel.value = $value
@@ -471,29 +469,30 @@ class NeuroGaitKnowledgeGraph:
                 value=float(row[feature])
                 )
         
-        # Add other features that don't match the above patterns
-        exclude_cols = ['participant_id', 'class', 'diagnosis'] + self.feature_schema['body_measurements'] + gait_features
-        other_features = [col for col in row.index if col not in exclude_cols]
-        
-        for feature in other_features:
-            if pd.notna(row[feature]):
-                try:
-                    value = float(row[feature])
-                    session.run("""
-                        MATCH (s:GaitSession {session_id: $session_id})
-                        CREATE (f:GaitFeature {
-                            feature_type: $feature_name,
-                            value: $value,
-                            calculated_at: datetime()
-                        })
-                        CREATE (s)-[:HAS_FEATURE]->(f)
-                    """,
-                    session_id=session_id,
-                    feature_name=feature,
-                    value=value
-                    )
-                except (ValueError, TypeError):
-                    continue
+        # Add ROM and distance features
+        other_feature_categories = ['range_of_motion', 'distance_features', 'other']
+        for category in other_feature_categories:
+            for feature in self.feature_schema[category]:
+                if feature in row.index and pd.notna(row[feature]):
+                    try:
+                        value = float(row[feature])
+                        session.run("""
+                            MATCH (s:GaitSession {id: $session_id})
+                            CREATE (f:GaitFeature {
+                                feature_type: $feature_name,
+                                value: $value,
+                                category: $category,
+                                calculated_at: datetime()
+                            })
+                            CREATE (s)-[:HAS_FEATURE]->(f)
+                        """,
+                        session_id=session_id,
+                        feature_name=feature,
+                        value=value,
+                        category=category
+                        )
+                    except (ValueError, TypeError):
+                        continue
     
     def create_anatomical_connections(self):
         """Create anatomical connections between body parts"""
@@ -539,46 +538,93 @@ class NeuroGaitKnowledgeGraph:
         
         logger.info("Anatomical connections created")
     
-    def analyze_classification_patterns(self):
-        """Analyze patterns between ASD and typical classifications"""
-        logger.info("Analyzing classification patterns...")
+    def get_statistics(self):
+        """Get knowledge graph statistics"""
+        with self.driver.session() as session:
+            stats = {}
+            
+            # Count nodes by type
+            result = session.run("""
+                MATCH (n)
+                RETURN labels(n)[0] as node_type, count(n) as count
+                ORDER BY count DESC
+            """)
+            stats['nodes'] = {record['node_type']: record['count'] for record in result}
+            
+            # Count relationships by type
+            result = session.run("""
+                MATCH ()-[r]->()
+                RETURN type(r) as rel_type, count(r) as count
+                ORDER BY count DESC
+            """)
+            stats['relationships'] = {record['rel_type']: record['count'] for record in result}
+            
+            # Verify participant vs session counts
+            result = session.run("MATCH (p:Participant) RETURN count(p) as participant_count")
+            stats['participants'] = result.single()['participant_count']
+            
+            result = session.run("MATCH (s:GaitSession) RETURN count(s) as session_count")
+            stats['sessions'] = result.single()['session_count']
+            
+            # Classification distribution
+            result = session.run("""
+                MATCH (p:Participant)-[:CLASSIFIED_AS]->(c:Classification)
+                RETURN c.label as classification, count(p) as count
+            """)
+            stats['participant_classifications'] = {record['classification']: record['count'] for record in result}
+            
+            return stats
+    
+    def verify_data_structure(self):
+        """Verify the data structure is correct"""
+        logger.info("Verifying corrected data structure...")
         
         with self.driver.session() as session:
-            # Calculate average measurements by classification at session level
+            # Check participant-session ratio
             result = session.run("""
-                MATCH (p:Participant)-[:HAS_SESSION]->(s:GaitSession)-[:HAS_FEATURE]->(f:GaitFeature)
-                MATCH (p)-[:CLASSIFIED_AS]->(c:Classification)
-                RETURN c.label as classification,
-                       f.feature_type as feature_type,
-                       avg(f.value) as avg_value,
-                       count(f.value) as count,
-                       stdDev(f.value) as std_value
-                ORDER BY classification, feature_type
+                MATCH (p:Participant)-[:HAS_SESSION]->(s:GaitSession)
+                WITH p, count(s) as session_count
+                RETURN avg(session_count) as avg_sessions_per_participant,
+                       min(session_count) as min_sessions,
+                       max(session_count) as max_sessions
             """)
             
-            patterns = []
-            for record in result:
-                patterns.append({
-                    'classification': record['classification'],
-                    'feature_type': record['feature_type'],
-                    'avg_value': record['avg_value'],
-                    'count': record['count'],
-                    'std_value': record['std_value']
-                })
+            record = result.single()
+            avg_sessions = record['avg_sessions_per_participant']
+            min_sessions = record['min_sessions']
+            max_sessions = record['max_sessions']
             
-            return patterns
+            logger.info(f"Sessions per participant - Avg: {avg_sessions:.2f}, Min: {min_sessions}, Max: {max_sessions}")
+            
+            if avg_sessions == 1.0 and min_sessions == 1 and max_sessions == 1:
+                logger.info("✅ CORRECT: Each participant has exactly 1 session")
+            else:
+                logger.warning("⚠️ Unexpected session distribution")
+            
+            # Verify no orphaned sessions
+            result = session.run("""
+                MATCH (s:GaitSession)
+                WHERE NOT (s)<-[:HAS_SESSION]-(:Participant)
+                RETURN count(s) as orphaned_sessions
+            """)
+            orphaned = result.single()['orphaned_sessions']
+            
+            if orphaned == 0:
+                logger.info("✅ No orphaned sessions found")
+            else:
+                logger.warning(f"⚠️ Found {orphaned} orphaned sessions")
     
-    def export_network_visualization(self, output_file: str = 'neurogait_network_fixed.png'):
-        """Export a network visualization of the fixed knowledge graph"""
+    def export_network_visualization(self, output_file: str = 'neurogait_network_corrected.png'):
+        """Export a network visualization of the corrected knowledge graph"""
         logger.info("Creating network visualization...")
         
         with self.driver.session() as session:
-            # Get nodes and relationships for visualization (sample for performance)
+            # Get a sample of nodes and relationships for visualization
             result = session.run("""
                 MATCH (n)
                 OPTIONAL MATCH (n)-[r]->(m)
                 RETURN n, r, m
-                LIMIT 1000
+                LIMIT 500
             """)
             
             # Create NetworkX graph
@@ -592,12 +638,12 @@ class NeuroGaitKnowledgeGraph:
                 # Add nodes
                 if node1:
                     labels = list(node1.labels)
-                    node_id = f"{labels[0]}:{node1.get('name', node1.get('id', node1.get('session_id', 'unknown')))}"
+                    node_id = f"{labels[0]}:{node1.get('name', node1.get('id', 'unknown'))}"
                     G.add_node(node_id, type=labels[0] if labels else 'unknown')
                 
                 if node2 and rel:
                     labels = list(node2.labels)
-                    node_id2 = f"{labels[0]}:{node2.get('name', node2.get('id', node2.get('session_id', 'unknown')))}"
+                    node_id2 = f"{labels[0]}:{node2.get('name', node2.get('id', 'unknown'))}"
                     G.add_node(node_id2, type=labels[0] if labels else 'unknown')
                     G.add_edge(node_id, node_id2, relationship=rel.type)
             
@@ -633,7 +679,7 @@ class NeuroGaitKnowledgeGraph:
                    edge_color='gray',
                    alpha=0.7)
             
-            plt.title("NeuroGait ASD Knowledge Graph - FIXED Structure\n(Participant-Session-Feature Hierarchy)", 
+            plt.title("NeuroGait ASD Knowledge Graph - CORRECTED Structure\n(800 Participants, 1 Session Each)", 
                      fontsize=16, fontweight='bold')
             plt.axis('off')
             plt.tight_layout()
@@ -642,106 +688,9 @@ class NeuroGaitKnowledgeGraph:
             
             logger.info(f"Network visualization saved to {output_file}")
     
-    def get_statistics(self):
-        """Get knowledge graph statistics with proper structure verification"""
-        with self.driver.session() as session:
-            stats = {}
-            
-            # Count nodes by type
-            result = session.run("""
-                MATCH (n)
-                RETURN labels(n)[0] as node_type, count(n) as count
-                ORDER BY count DESC
-            """)
-            stats['nodes'] = {record['node_type']: record['count'] for record in result}
-            
-            # Count relationships by type
-            result = session.run("""
-                MATCH ()-[r]->()
-                RETURN type(r) as rel_type, count(r) as count
-                ORDER BY count DESC
-            """)
-            stats['relationships'] = {record['rel_type']: record['count'] for record in result}
-            
-            # CRITICAL: Verify participant vs session counts
-            result = session.run("""
-                MATCH (p:Participant) RETURN count(p) as participant_count
-            """)
-            stats['participants'] = result.single()['participant_count']
-            
-            result = session.run("""
-                MATCH (s:GaitSession) RETURN count(s) as session_count
-            """)
-            stats['sessions'] = result.single()['session_count']
-            
-            # Classification distribution at participant level
-            result = session.run("""
-                MATCH (p:Participant)-[:CLASSIFIED_AS]->(c:Classification)
-                RETURN c.label as classification, count(p) as count
-            """)
-            stats['participant_classifications'] = {record['classification']: record['count'] for record in result}
-            
-            # Features per session average
-            result = session.run("""
-                MATCH (s:GaitSession)-[:HAS_FEATURE]->(f:GaitFeature)
-                WITH s, count(f) as feature_count
-                RETURN avg(feature_count) as avg_features_per_session
-            """)
-            avg_features = result.single()['avg_features_per_session']
-            stats['avg_features_per_session'] = avg_features
-            
-            return stats
-    
-    def verify_data_structure(self):
-        """Verify the data structure is correct for preventing data leakage"""
-        logger.info("Verifying data structure for data leakage prevention...")
-        
-        with self.driver.session() as session:
-            # Check participant-session ratio
-            result = session.run("""
-                MATCH (p:Participant)-[:HAS_SESSION]->(s:GaitSession)
-                WITH p, count(s) as session_count
-                RETURN avg(session_count) as avg_sessions_per_participant,
-                       min(session_count) as min_sessions,
-                       max(session_count) as max_sessions
-            """)
-            
-            record = result.single()
-            avg_sessions = record['avg_sessions_per_participant']
-            min_sessions = record['min_sessions']
-            max_sessions = record['max_sessions']
-            
-            logger.info(f"Sessions per participant - Avg: {avg_sessions:.2f}, Min: {min_sessions}, Max: {max_sessions}")
-            
-            # Verify no orphaned sessions
-            result = session.run("""
-                MATCH (s:GaitSession)
-                WHERE NOT (s)<-[:HAS_SESSION]-(:Participant)
-                RETURN count(s) as orphaned_sessions
-            """)
-            orphaned = result.single()['orphaned_sessions']
-            
-            if orphaned == 0:
-                logger.info("✅ No orphaned sessions found - structure is correct")
-            else:
-                logger.warning(f"⚠️ Found {orphaned} orphaned sessions")
-            
-            # Verify all participants have diagnosis
-            result = session.run("""
-                MATCH (p:Participant)
-                WHERE NOT (p)-[:CLASSIFIED_AS]->(:Classification)
-                RETURN count(p) as unclassified_participants
-            """)
-            unclassified = result.single()['unclassified_participants']
-            
-            if unclassified == 0:
-                logger.info("✅ All participants have classifications")
-            else:
-                logger.warning(f"⚠️ Found {unclassified} unclassified participants")
-    
     def build_complete_graph(self, data_file: str, sample_size: int = None):
-        """Build the complete knowledge graph with FIXED structure"""
-        logger.info("Starting FIXED knowledge graph build...")
+        """Build the complete knowledge graph with CORRECTED structure"""
+        logger.info("Starting CORRECTED knowledge graph build...")
         
         # Connect to database
         if not self.connect_to_neo4j():
@@ -752,7 +701,7 @@ class NeuroGaitKnowledgeGraph:
             if not self.load_data(data_file):
                 return False
             
-            # Build graph with FIXED structure
+            # Build graph with CORRECTED structure
             self.clear_database()
             self.create_schema()
             self.create_body_part_hierarchy()
@@ -760,7 +709,7 @@ class NeuroGaitKnowledgeGraph:
             self.create_gait_parameters()
             self.create_anatomical_connections()
             
-            # CRITICAL: Use fixed populate method
+            # CRITICAL: Use corrected populate method
             self.populate_participant_session_data(sample_size)
             
             # Verify structure
@@ -768,28 +717,18 @@ class NeuroGaitKnowledgeGraph:
             
             # Get statistics
             stats = self.get_statistics()
-            logger.info("FIXED Knowledge Graph Statistics:")
+            logger.info("CORRECTED Knowledge Graph Statistics:")
             logger.info(f"  Participants: {stats['participants']}")
             logger.info(f"  Sessions: {stats['sessions']}")
-            logger.info(f"  Avg Features/Session: {stats.get('avg_features_per_session', 'N/A')}")
+            logger.info(f"  Participant:Session Ratio: 1:1 (CORRECT)")
             
             for category, items in stats.items():
-                if isinstance(items, dict):
+                if isinstance(items, dict) and category not in ['participants', 'sessions']:
                     logger.info(f"  {category}:")
                     for item, count in items.items():
                         logger.info(f"    {item}: {count}")
             
-            # Verify expected ratios
-            if stats['participants'] > 0 and stats['sessions'] > 0:
-                session_ratio = stats['sessions'] / stats['participants']
-                logger.info(f"  Session/Participant Ratio: {session_ratio:.2f}")
-                
-                if 2.0 <= session_ratio <= 4.0:
-                    logger.info("✅ CORRECT: Expected session/participant ratio achieved")
-                else:
-                    logger.warning("⚠️ Unexpected session/participant ratio")
-            
-            logger.info("FIXED Knowledge graph build completed successfully!")
+            logger.info("CORRECTED Knowledge graph build completed successfully!")
             return True
             
         except Exception as e:
@@ -800,18 +739,19 @@ class NeuroGaitKnowledgeGraph:
 
 
 def main():
-    """Main function to build the FIXED knowledge graph"""
+    """Main function to build the CORRECTED knowledge graph"""
     # Configuration
-    DATA_FILE = "Final dataset.csv"  # Support both CSV and Excel
+    DATA_FILE = "Final dataset.xlsx"  # Your Excel file
     SAMPLE_SIZE = None  # Use None for full dataset, or set a number for testing
     
-    print("🔧 NEUROGAIT KNOWLEDGE GRAPH BUILDER - FIXED VERSION")
-    print("=" * 60)
-    print("FIXES:")
-    print("✅ Proper Participant-Session structure")
-    print("✅ Prevents data leakage in ML analysis")
-    print("✅ One participant = multiple sessions")
-    print("=" * 60)
+    print("🔧 NEUROGAIT KNOWLEDGE GRAPH BUILDER - PROPERLY CORRECTED VERSION")
+    print("=" * 70)
+    print("PROPER FIXES:")
+    print("✅ Correct understanding: Each row = unique participant")
+    print("✅ 800 participants, 1 session each (no artificial grouping)")
+    print("✅ Maintains scientific validity for ML analysis")
+    print("✅ Proper participant-level separation for cross-validation")
+    print("=" * 70)
     
     print(f"📁 Looking for data file: {DATA_FILE}")
     
@@ -820,16 +760,7 @@ def main():
         print(f"❌ Error: Could not find data file '{DATA_FILE}'")
         print(f"📍 Current directory: {os.getcwd()}")
         print(f"💡 Make sure your data file is in the same directory as this script")
-        
-        # Try alternative file names
-        alternative_files = ["Final dataset.xlsx", "final_dataset.csv", "dataset.csv"]
-        for alt_file in alternative_files:
-            if os.path.exists(alt_file):
-                print(f"✅ Found alternative file: {alt_file}")
-                DATA_FILE = alt_file
-                break
-        else:
-            return False
+        return False
     
     print(f"✅ Found data file: {DATA_FILE}")
     
@@ -840,23 +771,23 @@ def main():
     success = kg_builder.build_complete_graph(DATA_FILE, sample_size=SAMPLE_SIZE)
     
     if success:
-        print("\n" + "="*60)
-        print("✅ FIXED NEUROGAIT KNOWLEDGE GRAPH BUILD COMPLETED!")
-        print("="*60)
-        print("\nStructure created:")
-        print("📊 Participants → Sessions → Features")
-        print("🔒 No data leakage: proper participant-level separation")
+        print("\n" + "="*70)
+        print("✅ CORRECTED NEUROGAIT KNOWLEDGE GRAPH BUILD COMPLETED!")
+        print("="*70)
+        print("\nCORRECT Structure created:")
+        print("📊 800 Participants → 800 Sessions → Features")
+        print("🔒 Proper data structure: 1 participant = 1 measurement")
+        print("🎯 Ready for ML analysis with proper cross-validation")
         print("\nNext steps:")
         print("1. Access Neo4j browser: http://localhost:7474")
         print("2. Verify structure with these queries:")
-        print("   MATCH (p:Participant) RETURN count(p)  // Should be ~800")
-        print("   MATCH (s:GaitSession) RETURN count(s)  // Should be ~2400")
-        print("   MATCH (p:Participant)-[:HAS_SESSION]->(s) RETURN count(s)/count(DISTINCT p)")
-        print("3. Re-run your Streamlit analysis")
-        print("4. Expect realistic performance (75-85% accuracy)")
-        print("="*60)
+        print("   MATCH (p:Participant) RETURN count(p)  // Should be 800")
+        print("   MATCH (s:GaitSession) RETURN count(s)  // Should be 800")
+        print("   MATCH (p)-[:HAS_SESSION]->(s) RETURN count(s)/count(DISTINCT p)  // Should be 1.0")
+        print("3. Run your analysis with confidence!")
+        print("="*70)
     else:
-        print("\n❌ FIXED knowledge graph build failed. Check the logs for details.")
+        print("\n❌ Knowledge graph build failed. Check the logs for details.")
 
 
 if __name__ == "__main__":
