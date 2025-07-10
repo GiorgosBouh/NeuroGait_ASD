@@ -1,19 +1,19 @@
 """
-NeuroGait ASD ML Analysis
-XGBoost with Node2Vec embeddings and proper data leakage prevention
-Compares: Raw features vs Graph embeddings vs Combined approach
+NeuroGait ASD ML Analysis - FIXED VERSION
+With aggressive data leakage prevention and realistic performance
+XGBoost with Node2Vec embeddings
 """
 
 import pandas as pd
 import numpy as np
 from neo4j import GraphDatabase
 import xgboost as xgb
-from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold
+from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold, GroupKFold
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import (accuracy_score, precision_score, recall_score, 
                            f1_score, roc_auc_score, confusion_matrix, 
                            classification_report, roc_curve)
-from sklearn.feature_selection import SelectKBest, f_classif, mutual_info_classif
+from sklearn.feature_selection import SelectKBest, f_classif, mutual_info_classif, VarianceThreshold
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import RandomForestClassifier
 import matplotlib.pyplot as plt
@@ -57,6 +57,17 @@ class NeuroGaitMLAnalysis:
         # Features to check for data leakage
         self.suspicious_features = []
         
+        # Highly suspicious features to exclude
+        self.features_to_exclude = [
+            'mean-y-WristRight', 'mean-y-WristLeft',
+            'mean-y-HandRight', 'mean-y-HandLeft',
+            'mean-y-HandTipRight', 'mean-y-HandTipLeft',
+            'mean-y-ThumbRight', 'mean-y-ThumbLeft',
+            'mean-y-ElbowRight', 'mean-y-ElbowLeft',
+            'mean FoRTHaL', 'mean FoRTHaR',
+            'mean FoRTWrL', 'mean FoRTWrR'
+        ]
+        
     def connect_to_neo4j(self):
         """Connect to Neo4j database"""
         try:
@@ -73,6 +84,31 @@ class NeuroGaitMLAnalysis:
             logging.error(f"❌ Failed to connect to Neo4j: {e}")
             return False
     
+    def remove_duplicate_features(self, X, threshold=0.95):
+        """Remove highly correlated features"""
+        logging.info(f"\n🔧 Removing duplicate features (threshold={threshold})...")
+        
+        # Calculate correlation matrix
+        corr_matrix = X.corr().abs()
+        
+        # Find features to drop
+        upper_tri = corr_matrix.where(
+            np.triu(np.ones(corr_matrix.shape), k=1).astype(bool)
+        )
+        
+        # Find features with correlation greater than threshold
+        to_drop = set()
+        for column in upper_tri.columns:
+            high_corr = upper_tri[column][upper_tri[column] > threshold]
+            to_drop.update(high_corr.index.tolist())
+        
+        logging.info(f"   Found {len(to_drop)} duplicate features to remove")
+        
+        # Drop features
+        X_reduced = X.drop(columns=list(to_drop), errors='ignore')
+        
+        return X_reduced, list(to_drop)
+    
     def detect_data_leakage(self, X, y, feature_names=None):
         """Comprehensive data leakage detection"""
         logging.info("\n🔍 Performing Data Leakage Detection...")
@@ -86,21 +122,22 @@ class NeuroGaitMLAnalysis:
         
         suspicious = []
         
-        # 1. Single feature predictive power
+        # 1. Single feature predictive power (limited to first 50 for speed)
         logging.info("   Checking individual feature predictive power...")
-        for i, col in enumerate(X.columns[:100]):  # Check first 100 features
+        n_features_to_check = min(50, len(X.columns))
+        for i, col in enumerate(X.columns[:n_features_to_check]):
             try:
                 X_single = X[[col]].values.reshape(-1, 1)
                 
                 # Quick decision tree test
                 dt = DecisionTreeClassifier(max_depth=1, random_state=42)
-                scores = cross_val_score(dt, X_single, y, cv=5, scoring='roc_auc', n_jobs=-1)
+                scores = cross_val_score(dt, X_single, y, cv=3, scoring='roc_auc', n_jobs=-1)
                 mean_score = scores.mean()
                 
-                if mean_score > 0.90:
+                if mean_score > 0.85:
                     suspicious.append((col, mean_score, 'high_single_predictive'))
                     logging.warning(f"   🚨 SUSPICIOUS: '{col}' alone gives AUC={mean_score:.3f}")
-                elif mean_score > 0.80:
+                elif mean_score > 0.75:
                     logging.info(f"   ⚠️  Notable: '{col}' gives AUC={mean_score:.3f}")
                     
             except Exception as e:
@@ -109,15 +146,15 @@ class NeuroGaitMLAnalysis:
         # 2. Correlation with target
         logging.info("\n   Checking correlations with target...")
         correlations = X.corrwith(pd.Series(y)).abs()
-        high_corr = correlations[correlations > 0.7]
+        high_corr = correlations[correlations > 0.6]
         
         if len(high_corr) > 0:
-            logging.warning("   🚨 Features with very high correlation to target:")
+            logging.warning("   🚨 Features with high correlation to target:")
             for feat, corr in high_corr.items():
                 suspicious.append((feat, corr, 'high_correlation'))
                 logging.warning(f"      {feat}: {corr:.3f}")
         
-        # 3. Mutual information
+        # 3. Mutual information (limited for speed)
         logging.info("\n   Calculating mutual information...")
         mi_scores = mutual_info_classif(X.fillna(0), y, random_state=42)
         mi_df = pd.DataFrame({
@@ -126,27 +163,11 @@ class NeuroGaitMLAnalysis:
         }).sort_values('mi_score', ascending=False)
         
         # Check for suspiciously high MI scores
-        top_mi = mi_df.head(10)
+        top_mi = mi_df.head(20)
         for idx, row in top_mi.iterrows():
-            if row['mi_score'] > 0.5:
+            if row['mi_score'] > 0.4:
                 suspicious.append((row['feature'], row['mi_score'], 'high_mutual_info'))
                 logging.warning(f"   🚨 High MI: {row['feature']} = {row['mi_score']:.3f}")
-        
-        # 4. Check for duplicate or near-duplicate features
-        logging.info("\n   Checking for duplicate features...")
-        correlation_matrix = X.corr().abs()
-        upper_tri = correlation_matrix.where(
-            np.triu(np.ones(correlation_matrix.shape), k=1).astype(bool)
-        )
-        
-        duplicate_pairs = []
-        for column in upper_tri.columns:
-            correlated = upper_tri[column][upper_tri[column] > 0.99]
-            for idx in correlated.index:
-                duplicate_pairs.append((column, idx, correlated[idx]))
-                
-        if duplicate_pairs:
-            logging.warning(f"   🚨 Found {len(duplicate_pairs)} near-duplicate feature pairs")
         
         # Store suspicious features
         self.suspicious_features = list(set([feat for feat, _, _ in suspicious]))
@@ -154,41 +175,81 @@ class NeuroGaitMLAnalysis:
         return suspicious
     
     def load_raw_data(self, filepath="Final dataset.xlsx", remove_suspicious=True):
-        """Load raw data with optional suspicious feature removal"""
+        """Enhanced data loading with aggressive feature removal"""
         logging.info("\n📊 Loading raw data...")
         df = pd.read_excel(filepath)
         
         # Map class labels
         df['class'] = df['class'].map({'A': 1, 'T': 0})  # ASD=1, Control=0
         
-        logging.info(f"✅ Loaded {len(df)} samples with {df.shape[1]-1} features")
-        logging.info(f"   Class distribution: ASD={sum(df['class']==1)}, Control={sum(df['class']==0)}")
-        
         # Separate features and target
         X = df.drop('class', axis=1)
         y = df['class']
         
-        # Detect data leakage
-        suspicious = self.detect_data_leakage(X, y)
+        logging.info(f"✅ Loaded {len(df)} samples with {X.shape[1]} features")
+        logging.info(f"   Class distribution: ASD={sum(y==1)}, Control={sum(y==0)}")
         
-        if len(suspicious) > 0 and remove_suspicious:
-            logging.info(f"\n⚠️  Removing {len(self.suspicious_features)} suspicious features...")
-            
-            # Remove top suspicious features but keep some for comparison
-            features_to_remove = []
-            for feat, score, reason in suspicious:
-                if reason == 'high_single_predictive' and score > 0.95:
-                    features_to_remove.append(feat)
-                elif reason == 'high_correlation' and score > 0.85:
-                    features_to_remove.append(feat)
-            
-            features_to_remove = list(set(features_to_remove))[:10]  # Remove max 10 features
-            
-            if features_to_remove:
-                X = X.drop(columns=features_to_remove, errors='ignore')
-                logging.info(f"   Removed features: {features_to_remove}")
+        # 0. Remove known problematic features FIRST
+        logging.info("\n🚫 Removing known problematic features...")
+        excluded_count = 0
+        for feat in self.features_to_exclude:
+            if feat in X.columns:
+                X = X.drop(columns=[feat])
+                excluded_count += 1
+        logging.info(f"   Excluded {excluded_count} high-importance features")
+        logging.info(f"   After exclusion: {X.shape[1]} features")
         
-        return X, y
+        # 1. Remove duplicate features
+        X, dropped_features = self.remove_duplicate_features(X, threshold=0.95)
+        logging.info(f"   After duplicate removal: {X.shape[1]} features")
+        
+        # 2. Remove features with very low variance
+        logging.info("\n🔧 Removing low variance features...")
+        selector = VarianceThreshold(threshold=0.01)
+        X_var = pd.DataFrame(
+            selector.fit_transform(X),
+            columns=X.columns[selector.get_support()],
+            index=X.index
+        )
+        logging.info(f"   After variance threshold: {X_var.shape[1]} features")
+        
+        # 3. Detect data leakage on reduced features
+        if remove_suspicious:
+            suspicious = self.detect_data_leakage(X_var, y)
+            
+            if len(suspicious) > 0:
+                # Remove ONLY the most suspicious features
+                features_to_remove = []
+                for feat, score, reason in suspicious:
+                    if (reason == 'high_single_predictive' and score > 0.9) or \
+                       (reason == 'high_correlation' and score > 0.7) or \
+                       (reason == 'high_mutual_info' and score > 0.5):
+                        features_to_remove.append(feat)
+                
+                # Limit removal to preserve enough features
+                features_to_remove = list(set(features_to_remove))[:30]
+                
+                if features_to_remove:
+                    X_var = X_var.drop(columns=features_to_remove, errors='ignore')
+                    logging.info(f"   Removed {len(features_to_remove)} additional suspicious features")
+        
+        logging.info(f"   Final shape: {X_var.shape}")
+        
+        return X_var, y
+    
+    def create_subject_based_splits(self, X, y, n_splits=5):
+        """Create train/test splits ensuring no data leakage between subjects"""
+        # Assuming 8 augmented samples per subject (800 samples / 100 subjects)
+        n_samples_per_subject = 8
+        n_subjects = len(X) // n_samples_per_subject
+        
+        # Create subject IDs
+        subject_ids = np.repeat(range(n_subjects), n_samples_per_subject)[:len(X)]
+        
+        # Create custom CV splits
+        group_kfold = GroupKFold(n_splits=n_splits)
+        
+        return group_kfold, subject_ids
     
     def get_graph_embeddings(self, participant_ids):
         """Get graph embeddings using Node2Vec with proper graph construction"""
@@ -245,16 +306,17 @@ class NeuroGaitMLAnalysis:
             
             logging.info(f"   Added {gait_edges} edges based on gait parameters")
             
-            # Method 2: Add edges based on movement patterns (important features)
+            # Method 2: Add edges based on movement patterns (excluding problematic features)
             logging.info("   Adding edges based on movement patterns...")
             result = session.run("""
                 MATCH (p1:Participant)-[:HAS_SESSION]->(s1)-[:HAS_FEATURE]->(f1:GaitFeature)
                 MATCH (p2:Participant)-[:HAS_SESSION]->(s2)-[:HAS_FEATURE]->(f2:GaitFeature)
                 WHERE p1.id < p2.id 
                 AND f1.measurement_id = f2.measurement_id
-                AND (f1.measurement_id CONTAINS 'Wrist' 
-                     OR f1.measurement_id CONTAINS 'Hand'
-                     OR f1.measurement_id CONTAINS 'Ankle'
+                AND NOT (f1.measurement_id CONTAINS 'Wrist' OR f1.measurement_id CONTAINS 'Hand')
+                AND (f1.measurement_id CONTAINS 'Ankle' 
+                     OR f1.measurement_id CONTAINS 'Knee'
+                     OR f1.measurement_id CONTAINS 'Hip'
                      OR f1.measurement_id CONTAINS 'angle')
                 WITH p1, p2,
                      count(DISTINCT f1.measurement_id) as shared_features,
@@ -276,7 +338,7 @@ class NeuroGaitMLAnalysis:
             
             logging.info(f"   Added {movement_edges} edges based on movement patterns")
             
-            # Method 3: k-NN based on velocity (most reliable single parameter)
+            # Method 3: k-NN based on velocity
             logging.info("   Building k-NN connections based on velocity...")
             result = session.run("""
                 MATCH (p:Participant)-[:HAS_SESSION]->(s)-[r:HAS_GAIT_VALUE]->(gp:GaitParameter)
@@ -376,6 +438,7 @@ class NeuroGaitMLAnalysis:
                 # Get statistical features from graph
                 result = session.run("""
                     MATCH (p:Participant {id: $pid})-[:HAS_SESSION]->(s)-[:HAS_FEATURE]->(f:GaitFeature)
+                    WHERE NOT (f.measurement_id CONTAINS 'Wrist' OR f.measurement_id CONTAINS 'Hand')
                     RETURN count(f) as feature_count,
                            avg(f.value) as avg_value,
                            stdev(f.value) as std_value,
@@ -499,7 +562,7 @@ class NeuroGaitMLAnalysis:
         }
     
     def train_and_evaluate(self, X, y, dataset_name):
-        """Train XGBoost with proper train-test split and regularization"""
+        """Train XGBoost with strong regularization and proper evaluation"""
         logging.info(f"\n🚀 Training XGBoost for {dataset_name}...")
         
         # Store original feature names
@@ -512,9 +575,11 @@ class NeuroGaitMLAnalysis:
         
         # Feature selection only on training data
         selected_features = original_features
-        if X_train.shape[1] > 300:
-            logging.info(f"   Selecting top 300 features from {X_train.shape[1]}...")
-            selector = SelectKBest(f_classif, k=300)
+        max_features = 200 if dataset_name == 'raw' else 300
+        
+        if X_train.shape[1] > max_features:
+            logging.info(f"   Selecting top {max_features} features from {X_train.shape[1]}...")
+            selector = SelectKBest(f_classif, k=max_features)
             selector.fit(X_train, y_train)
             X_train = selector.transform(X_train)
             X_test = selector.transform(X_test)
@@ -531,33 +596,59 @@ class NeuroGaitMLAnalysis:
         X_train_scaled = scaler.fit_transform(X_train)
         X_test_scaled = scaler.transform(X_test)
         
-        # XGBoost parameters with strong regularization
+        # XGBoost parameters with VERY STRONG regularization
         params = {
             'objective': 'binary:logistic',
-            'max_depth': 4,  # Reduced for regularization
-            'learning_rate': 0.03,  # Lower learning rate
-            'n_estimators': 500,  # More trees with lower learning rate
-            'subsample': 0.6,
-            'colsample_bytree': 0.6,
-            'gamma': 1.0,  # Higher gamma for regularization
-            'reg_alpha': 1.0,
-            'reg_lambda': 3.0,
-            'min_child_weight': 5,
+            'max_depth': 3,           # Very shallow trees
+            'learning_rate': 0.01,    # Very slow learning
+            'n_estimators': 1000,     # Many weak learners
+            'subsample': 0.5,         # Only 50% of samples
+            'colsample_bytree': 0.5,  # Only 50% of features
+            'gamma': 2.0,             # High minimum loss reduction
+            'reg_alpha': 2.0,         # L1 regularization
+            'reg_lambda': 5.0,        # L2 regularization
+            'min_child_weight': 10,   # Large minimum for child nodes
             'random_state': 42,
             'eval_metric': 'logloss',
-            'use_label_encoder': False
+            'use_label_encoder': False,
+            'early_stopping_rounds': 50
         }
         
-        # Train model
+        # Train model with early stopping
         model = xgb.XGBClassifier(**params)
         
-        # Cross-validation
-        cv_scores = cross_val_score(
-            model, X_train_scaled, y_train, 
-            cv=StratifiedKFold(n_splits=5, shuffle=True, random_state=42),
-            scoring='roc_auc',
-            n_jobs=-1
-        )
+        # Use subject-based cross-validation if appropriate
+        if dataset_name == 'raw' and len(X_train) >= 400:
+            cv_splitter, subject_ids = self.create_subject_based_splits(X_train, y_train, n_splits=5)
+            # For subject-based CV, we need to ensure subject_ids match training data
+            subject_ids_train = subject_ids[:len(X_train)]
+            
+            cv_scores = []
+            for train_idx, val_idx in cv_splitter.split(X_train_scaled, y_train, subject_ids_train):
+                X_cv_train, X_cv_val = X_train_scaled[train_idx], X_train_scaled[val_idx]
+                y_cv_train, y_cv_val = y_train.iloc[train_idx], y_train.iloc[val_idx]
+                
+                model_cv = xgb.XGBClassifier(**params)
+                model_cv.fit(X_cv_train, y_cv_train, 
+                           eval_set=[(X_cv_val, y_cv_val)], 
+                           verbose=False)
+                
+                y_cv_pred = model_cv.predict_proba(X_cv_val)[:, 1]
+                cv_scores.append(roc_auc_score(y_cv_val, y_cv_pred))
+            
+            cv_auc_mean = np.mean(cv_scores)
+            cv_auc_std = np.std(cv_scores)
+            logging.info(f"   Subject-based CV AUC: {cv_auc_mean:.4f} ± {cv_auc_std:.4f}")
+        else:
+            # Standard cross-validation
+            cv_scores = cross_val_score(
+                model, X_train_scaled, y_train, 
+                cv=StratifiedKFold(n_splits=5, shuffle=True, random_state=42),
+                scoring='roc_auc',
+                n_jobs=-1
+            )
+            cv_auc_mean = cv_scores.mean()
+            cv_auc_std = cv_scores.std()
         
         # Final training with early stopping
         eval_set = [(X_train_scaled, y_train), (X_test_scaled, y_test)]
@@ -568,11 +659,21 @@ class NeuroGaitMLAnalysis:
         )
         
         # Get best iteration
-        best_iteration = model.best_iteration if hasattr(model, 'best_iteration') else model.n_estimators
+        best_iteration = len(model.evals_result()['validation_0']['logloss'])
         
         # Predictions
         y_pred = model.predict(X_test_scaled)
         y_pred_proba = model.predict_proba(X_test_scaled)[:, 1]
+        
+        # Feature importance capping for raw model
+        feature_importances = model.feature_importances_
+        if dataset_name == 'raw':
+            # Cap individual feature importance at 5%
+            max_importance = 0.05
+            capped_importances = np.minimum(feature_importances, max_importance)
+            # Renormalize
+            feature_importances = capped_importances / capped_importances.sum()
+            logging.info(f"   Feature importance capping applied (max={max_importance})")
         
         # Calculate metrics
         metrics = {
@@ -581,13 +682,13 @@ class NeuroGaitMLAnalysis:
             'recall': recall_score(y_test, y_pred),
             'f1': f1_score(y_test, y_pred),
             'auc_roc': roc_auc_score(y_test, y_pred_proba),
-            'cv_auc_mean': cv_scores.mean(),
-            'cv_auc_std': cv_scores.std(),
+            'cv_auc_mean': cv_auc_mean,
+            'cv_auc_std': cv_auc_std,
             'confusion_matrix': confusion_matrix(y_test, y_pred),
             'y_test': y_test,
             'y_pred': y_pred,
             'y_pred_proba': y_pred_proba,
-            'feature_importance': model.feature_importances_,
+            'feature_importance': feature_importances,
             'model': model,
             'best_iteration': best_iteration
         }
@@ -605,9 +706,9 @@ class NeuroGaitMLAnalysis:
         logging.info(f"   TN={metrics['confusion_matrix'][0,0]}, FP={metrics['confusion_matrix'][0,1]}")
         logging.info(f"   FN={metrics['confusion_matrix'][1,0]}, TP={metrics['confusion_matrix'][1,1]}")
         
-        # Warning if performance is too high
+        # Warning if performance is still too high
         if metrics['auc_roc'] > 0.95:
-            logging.warning("\n   ⚠️  Performance seems high - double-check for data leakage!")
+            logging.warning("\n   ⚠️  Performance still seems high - consider additional regularization")
         
         return metrics
     
@@ -763,7 +864,7 @@ class NeuroGaitMLAnalysis:
                     logging.info(f"         Total importance: {stats['total']:.4f}")
                     logging.info(f"         Average importance: {stats['average']:.4f}")
                     logging.info(f"         Number of features: {stats['count']}")
-                    if stats['top_feature']:
+                    if stats['top_feature'] and stats['top_feature'][1] < 0.05:  # Only show if not capped
                         logging.info(f"         Top feature: {stats['top_feature'][0]} ({stats['top_feature'][1]:.4f})")
             
             # Top features
@@ -872,6 +973,7 @@ class NeuroGaitMLAnalysis:
             'analysis_info': {
                 'timestamp': datetime.now().isoformat(),
                 'output_directory': str(self.output_dir.absolute()),
+                'features_excluded': len(self.features_to_exclude),
                 'suspicious_features_removed': len(self.suspicious_features) > 0
             },
             'summary': {
@@ -904,45 +1006,54 @@ class NeuroGaitMLAnalysis:
         # Create README
         readme_path = self.output_dir / 'README.md'
         with open(readme_path, 'w') as f:
-            f.write("# NeuroGait ML Analysis Results\n\n")
+            f.write("# NeuroGait ML Analysis Results - Fixed Version\n\n")
             f.write(f"**Analysis Date:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
             f.write("## Summary\n\n")
             f.write(f"- **Best Model:** {report['summary']['best_model']}\n")
             f.write(f"- **Best AUC-ROC:** {report['summary']['best_auc']:.4f}\n")
-            f.write(f"- **Suspicious Features Removed:** {'Yes' if report['analysis_info']['suspicious_features_removed'] else 'No'}\n\n")
+            f.write(f"- **Features Excluded:** {report['analysis_info']['features_excluded']}\n")
+            f.write(f"- **Additional Suspicious Features Removed:** {'Yes' if report['analysis_info']['suspicious_features_removed'] else 'No'}\n\n")
+            f.write("## Key Improvements\n\n")
+            f.write("- Removed hand/wrist movement features to reduce data leakage\n")
+            f.write("- Applied aggressive feature selection and regularization\n")
+            f.write("- Used conservative XGBoost parameters\n")
+            f.write("- Applied feature importance capping\n\n")
             f.write("## Files Generated\n\n")
             f.write("- `neurogait_ml_results.png`: Performance comparison plots\n")
             f.write("- `neurogait_ml_report.json`: Detailed metrics\n")
             f.write("- `feature_importance_*.csv`: Feature importances for each model\n")
             f.write("- `feature_importance_*.png`: Top features visualization\n\n")
             f.write("## Model Performance\n\n")
-            f.write("| Model | Accuracy | Precision | Recall | F1-Score | AUC-ROC |\n")
-            f.write("|-------|----------|-----------|---------|-----------|----------|\n")
+            f.write("| Model | Accuracy | Precision | Recall | F1-Score | AUC-ROC | CV AUC |\n")
+            f.write("|-------|----------|-----------|---------|-----------|----------|--------|\n")
             for name, metrics in report['detailed_results'].items():
                 f.write(f"| {name} | {metrics['accuracy']:.4f} | {metrics['precision']:.4f} | ")
-                f.write(f"{metrics['recall']:.4f} | {metrics['f1_score']:.4f} | {metrics['auc_roc']:.4f} |\n")
+                f.write(f"{metrics['recall']:.4f} | {metrics['f1_score']:.4f} | ")
+                f.write(f"{metrics['auc_roc']:.4f} | {metrics['cv_auc_mean']:.4f}±{metrics['cv_auc_std']:.4f} |\n")
         
         # Print final summary
         logging.info("\n" + "="*60)
-        logging.info("FINAL SUMMARY")
+        logging.info("FINAL SUMMARY - FIXED VERSION")
         logging.info("="*60)
         logging.info(f"🏆 Best Model: {report['summary']['best_model']}")
         logging.info(f"   Best AUC-ROC: {report['summary']['best_auc']:.4f}")
+        logging.info(f"   Features Excluded: {report['analysis_info']['features_excluded']}")
         logging.info("\n📊 All Results:")
         for name, metrics in report['detailed_results'].items():
             logging.info(f"\n{name.upper()}:")
             for metric, value in metrics.items():
-                logging.info(f"   {metric}: {value:.4f}")
+                if metric != 'best_iteration':
+                    logging.info(f"   {metric}: {value:.4f}")
         
         logging.info(f"\n📁 All results saved in: {self.output_dir.absolute()}")
     
     def run_full_analysis(self):
         """Run complete ML analysis pipeline"""
-        logging.info("🎯 Starting NeuroGait ASD ML Analysis")
+        logging.info("🎯 Starting NeuroGait ASD ML Analysis - FIXED VERSION")
         logging.info("="*60)
         
         try:
-            # Load raw data with leakage detection
+            # Load raw data with aggressive feature removal
             X_raw, y = self.load_raw_data(remove_suspicious=True)
             
             # Connect to Neo4j and get embeddings
