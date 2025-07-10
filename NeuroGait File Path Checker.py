@@ -17,12 +17,12 @@ def check_file_paths():
     
     # Possible file paths to check
     possible_paths = [
-        "Final dataset.xlsx",
-        "GiorgosBouh/NeuroGait_ASD/Final dataset.xlsx", 
-        os.path.expanduser("~/NeuroGait_ASD/Final dataset.xlsx"),
-        os.path.expanduser("~/GiorgosBouh/NeuroGait_ASD/Final dataset.xlsx"),
-        "../Final dataset.xlsx",
-        "./Final dataset.xlsx"
+        "Final dataset.csv",
+        "GiorgosBouh/NeuroGait_ASD/Final dataset.csv", 
+        os.path.expanduser("~/NeuroGait_ASD/Final dataset.csv"),
+        os.path.expanduser("~/GiorgosBouh/NeuroGait_ASD/Final dataset.csv"),
+        "../Final dataset.csv",
+        "./Final dataset.csv"
     ]
     
     print(f"📁 Current directory: {os.getcwd()}")
@@ -83,7 +83,7 @@ def check_file_paths():
         print("❌ No valid Excel files found!")
         print()
         print("💡 Troubleshooting steps:")
-        print("1. Verify the file exists and is named 'Final dataset.xlsx'")
+        print("1. Verify the file exists and is named 'Final dataset.csv'")
         print("2. Check if you're in the correct directory")
         print("3. Ensure the file is not corrupted")
         print("4. Try using the absolute path to the file")

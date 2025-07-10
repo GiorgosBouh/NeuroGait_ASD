@@ -76,7 +76,7 @@ python neurogait_kg_query.py
 
 ```
 NeuroGait_ASD/
-├── 📄 Final dataset.xlsx              # Your gait analysis data
+├── 📄 Final dataset.csv              # Your gait analysis data
 ├── 🐍 neurogait_kg_builder.py         # Knowledge graph builder
 ├── 🔍 neurogait_kg_query.py           # Query and analysis interface
 ├── ⚙️ setup_neurogait_kg.sh           # Environment setup script
@@ -294,7 +294,7 @@ pip install -r requirements.txt --force-reinstall
 pwd  # Should show ~/NeuroGait_ASD or similar
 
 # Verify file exists
-ls -la "Final dataset.xlsx"
+ls -la "Final dataset.csv"
 
 # If file is elsewhere, update the path in neurogait_kg_builder.py
 ```
