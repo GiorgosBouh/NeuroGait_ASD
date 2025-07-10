@@ -3,6 +3,7 @@ NeuroGait ASD ML Analysis - Mean Features Only
 Eliminates redundancy by using only mean features
 Targets realistic clinical performance (75-85% AUC)
 XGBoost with Node2Vec embeddings
+Fixed to handle comma decimal separators
 """
 
 import pandas as pd
@@ -67,6 +68,15 @@ class NeuroGaitMLAnalysisMeanOnly:
             'mean-y-ThumbRight', 'mean-y-ThumbLeft',
             'mean-y-ElbowRight', 'mean-y-ElbowLeft'
         ]
+    
+    def convert_to_float(self, value):
+        """Convert string with comma decimal separator to float"""
+        if pd.isna(value):
+            return np.nan
+        if isinstance(value, (int, float)):
+            return float(value)
+        # Replace comma with dot for decimal separator
+        return float(str(value).replace(',', '.'))
         
     def connect_to_neo4j(self):
         """Connect to Neo4j database"""
@@ -88,8 +98,14 @@ class NeuroGaitMLAnalysisMeanOnly:
         """Load and process CSV data with mean features only"""
         logging.info("\n📊 Loading raw data (mean features only)...")
         
-        # Read CSV with semicolon delimiter
-        df = pd.read_csv(filepath, delimiter=';')
+        # Read CSV with semicolon delimiter and comma as decimal separator
+        df = pd.read_csv(filepath, delimiter=';', decimal=',')
+        
+        # If decimal parameter didn't work (older pandas), convert manually
+        numeric_columns = [col for col in df.columns if col != 'class']
+        for col in numeric_columns:
+            if df[col].dtype == 'object':
+                df[col] = df[col].apply(lambda x: self.convert_to_float(x) if pd.notna(x) else np.nan)
         
         # Map class labels
         df['class'] = df['class'].map({'A': 1, 'T': 0})  # ASD=1, Control=0

@@ -2,6 +2,7 @@
 NeuroGait ASD Knowledge Graph Builder - Mean Features Only
 Eliminates redundancy by using only mean features (not variance/std)
 Based on Kinect v2 3D skeletal data
+Fixed to handle comma decimal separators
 """
 
 import pandas as pd
@@ -67,6 +68,15 @@ class NeuroGaitGraphBuilderMeanOnly:
             'Velocity': 'Gait Velocity'
         }
         
+    def convert_to_float(self, value):
+        """Convert string with comma decimal separator to float"""
+        if pd.isna(value):
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        # Replace comma with dot for decimal separator
+        return float(str(value).replace(',', '.'))
+    
     def connect(self):
         """Connect to Neo4j database"""
         try:
@@ -212,8 +222,14 @@ class NeuroGaitGraphBuilderMeanOnly:
         """Load and process the CSV dataset with mean features only"""
         logging.info(f"Loading data from {filepath}")
         
-        # Read CSV with semicolon delimiter
-        df = pd.read_csv(filepath, delimiter=';')
+        # Read CSV with semicolon delimiter and comma as decimal separator
+        df = pd.read_csv(filepath, delimiter=';', decimal=',')
+        
+        # If decimal parameter didn't work (older pandas), convert manually
+        numeric_columns = [col for col in df.columns if col != 'class']
+        for col in numeric_columns:
+            if df[col].dtype == 'object':
+                df[col] = df[col].apply(lambda x: self.convert_to_float(x) if pd.notna(x) else np.nan)
         
         # Generate participant IDs
         df['participant_id'] = [f'P_{i:04d}' for i in range(1, len(df) + 1)]
@@ -353,16 +369,19 @@ class NeuroGaitGraphBuilderMeanOnly:
                     
                     if body_part_name:
                         measurement_id = f"{body_part_name}_{coord}_{stat_type}"
+                        value = row[feature]
                         
-                        batch_data.append({
-                            'session_id': session_id,
-                            'measurement_id': measurement_id,
-                            'value': float(row[feature]),
-                            'stat_type': stat_type,
-                            'body_part': body_part_name,
-                            'coordinate': coord,
-                            'measurement_type': 'position'
-                        })
+                        # Skip if value is NaN
+                        if pd.notna(value):
+                            batch_data.append({
+                                'session_id': session_id,
+                                'measurement_id': measurement_id,
+                                'value': float(value),  # Already converted during load
+                                'stat_type': stat_type,
+                                'body_part': body_part_name,
+                                'coordinate': coord,
+                                'measurement_type': 'position'
+                            })
                 
                 if len(batch_data) >= batch_size:
                     self._create_feature_batch(session, batch_data)
@@ -388,15 +407,17 @@ class NeuroGaitGraphBuilderMeanOnly:
                     if angle_code in feature:
                         stat_type = 'mean'
                         measurement_id = f"{angle_code}_{stat_type}"
+                        value = row[feature]
                         
-                        batch_data.append({
-                            'session_id': session_id,
-                            'measurement_id': measurement_id,
-                            'value': float(row[feature]),
-                            'stat_type': stat_type,
-                            'angle_code': angle_code,
-                            'measurement_type': 'angle'
-                        })
+                        if pd.notna(value):
+                            batch_data.append({
+                                'session_id': session_id,
+                                'measurement_id': measurement_id,
+                                'value': float(value),
+                                'stat_type': stat_type,
+                                'angle_code': angle_code,
+                                'measurement_type': 'angle'
+                            })
                         break
         
         if batch_data:
@@ -406,6 +427,9 @@ class NeuroGaitGraphBuilderMeanOnly:
         """Process distance features - mean only"""
         distance_features = [col for col in df.columns if col.strip().startswith('mean ') and 
                            len(col.strip().split()) == 2 and not col.strip().startswith('mean-')]
+        
+        # Exclude angle features that might match the pattern
+        distance_features = [f for f in distance_features if not any(angle in f for angle in self.angle_mappings.keys())]
         
         logging.info(f"Processing {len(distance_features)} mean distance features...")
         
@@ -419,15 +443,17 @@ class NeuroGaitGraphBuilderMeanOnly:
                 if len(parts) == 2:
                     stat_type, distance_code = parts
                     measurement_id = f"{distance_code}_{stat_type}"
+                    value = row[feature]
                     
-                    batch_data.append({
-                        'session_id': session_id,
-                        'measurement_id': measurement_id,
-                        'value': float(row[feature]),
-                        'stat_type': stat_type,
-                        'distance_code': distance_code,
-                        'measurement_type': 'distance'
-                    })
+                    if pd.notna(value):
+                        batch_data.append({
+                            'session_id': session_id,
+                            'measurement_id': measurement_id,
+                            'value': float(value),
+                            'stat_type': stat_type,
+                            'distance_code': distance_code,
+                            'measurement_type': 'distance'
+                        })
         
         if batch_data:
             self._create_distance_feature_batch(session, batch_data)
@@ -445,12 +471,15 @@ class NeuroGaitGraphBuilderMeanOnly:
             
             for feature in rom_features:
                 measurement_id = feature.strip()
-                batch_data.append({
-                    'session_id': session_id,
-                    'measurement_id': measurement_id,
-                    'value': float(row[feature]),
-                    'measurement_type': 'range_of_motion'
-                })
+                value = row[feature]
+                
+                if pd.notna(value):
+                    batch_data.append({
+                        'session_id': session_id,
+                        'measurement_id': measurement_id,
+                        'value': float(value),
+                        'measurement_type': 'range_of_motion'
+                    })
         
         if batch_data:
             session.run("""
@@ -664,6 +693,8 @@ class NeuroGaitGraphBuilderMeanOnly:
             
         except Exception as e:
             logging.error(f"Error building graph: {e}")
+            import traceback
+            logging.error(traceback.format_exc())
             return False
             
         finally:
