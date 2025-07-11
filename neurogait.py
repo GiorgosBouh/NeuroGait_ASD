@@ -139,7 +139,7 @@ class NeuroGaitAnalysis:
         corr_matrix = X.corr().abs()
         
         # Upper triangle of correlation matrix
-        upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool)
+        upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
         
         # Find features to drop
         to_drop = [col for col in upper.columns if any(upper[col] > threshold)]
