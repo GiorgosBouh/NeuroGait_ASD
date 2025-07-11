@@ -39,7 +39,7 @@ class NeuroGaitAnalysis:
         self.target_auc_min = 0.65  # Lowered for more realistic expectations
         self.target_auc_max = 0.80
         
-    def load_raw_data(self, csv_path='/home/ilab/NeuroGait_ASD/Final dataset.csv'):
+    def load_raw_data(self, csv_path='Final dataset.csv'):
         """Load raw data with mean features only"""
         logger.info("\n📊 Loading raw data (mean features only)...")
 
