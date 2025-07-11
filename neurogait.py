@@ -39,23 +39,87 @@ class NeuroGaitAnalysis:
         self.target_auc_min = 0.65  # Lowered for more realistic expectations
         self.target_auc_max = 0.80
         
-    def load_raw_data(self, csv_path='data/neurogait_features.csv'):
+    def load_raw_data(self, csv_path='Final dataset.csv'):
         """Load raw data with mean features only"""
         logger.info("\n📊 Loading raw data (mean features only)...")
         
-        try:
-            df = pd.read_csv(csv_path)
-        except:
-            # Generate synthetic data for testing
+        # Try multiple possible paths
+        possible_paths = [
+            csv_path,
+            'Final dataset.csv',
+            'data/Final dataset.csv',
+            '../Final dataset.csv',
+            'neurogait_features.csv',
+            'data/neurogait_features.csv'
+        ]
+        
+        df = None
+        for path in possible_paths:
+            if os.path.exists(path):
+                try:
+                    # Try reading with semicolon separator first
+                    df = pd.read_csv(path, sep=';')
+                    logger.info(f"✅ Loaded data from: {path} (semicolon-separated)")
+                    break
+                except Exception as e:
+                    try:
+                        # Try comma separator
+                        df = pd.read_csv(path)
+                        logger.info(f"✅ Loaded data from: {path} (comma-separated)")
+                        break
+                    except Exception as e2:
+                        logger.warning(f"Error loading {path}: {e2}")
+        
+        if df is None:
             logger.warning("Could not load data file, generating synthetic data...")
+            logger.info("💡 To use real data, place your CSV file in one of these locations:")
+            for path in possible_paths:
+                logger.info(f"   - {path}")
             df = self.generate_synthetic_data()
+            self._used_synthetic = True  # Mark that we used synthetic data
+        else:
+            # Check if 'class' column exists and rename it to 'diagnosis'
+            if 'class' in df.columns:
+                df = df.rename(columns={'class': 'diagnosis'})
+                logger.info("✅ Renamed 'class' column to 'diagnosis'")
+            
+            # Print some info about the data
+            logger.info(f"   Data shape: {df.shape}")
+            logger.info(f"   Columns: {len(df.columns)}")
+            
+            # Count mean features
+            mean_cols = [col for col in df.columns if 'mean' in col.lower()]
+            logger.info(f"   Mean features found: {len(mean_cols)}")
+            
+            # Check diagnosis distribution
+            if 'diagnosis' in df.columns:
+                logger.info(f"   Diagnosis distribution:")
+                logger.info(f"   {df['diagnosis'].value_counts().to_dict()}")
             
         # Keep only mean features to reduce redundancy
-        mean_cols = [col for col in df.columns if 'mean' in col.lower() or col == 'diagnosis']
-        df_mean = df[mean_cols]
-        
+        if df is not None and not hasattr(df, '_synthetic'):
+            mean_cols = [col for col in df.columns if 'mean' in col.lower() and col != 'diagnosis']
+            
+            # Also keep important non-mean columns like ROM, velocity, etc.
+            important_cols = [col for col in df.columns if any(
+                pattern in col for pattern in ['Rom', 'Velocity', 'MaxStLe', 'MaxStWi', 
+                                               'StrLe', 'GaCT', 'StaT', 'SwiT', 
+                                               'MaxDBFE', 'MinDBFE', 'Threshold']
+            )]
+            
+            # Combine and add diagnosis
+            all_cols = list(set(mean_cols + important_cols + ['diagnosis']))
+            df_mean = df[all_cols]
+            
+            logger.info(f"✅ Selected {len(mean_cols)} mean features + {len(important_cols)} other features")
+        else:
+            df_mean = df
+            
         logger.info(f"✅ Loaded {len(df_mean)} samples with {len(df_mean.columns)} total columns")
-        logger.info(f"   Class distribution: ASD={sum(df_mean['diagnosis']==1)}, Control={sum(df_mean['diagnosis']==0)}")
+        
+        if 'diagnosis' in df_mean.columns:
+            diag_counts = df_mean['diagnosis'].value_counts()
+            logger.info(f"   Class distribution: {dict(diag_counts)}")
         
         return df_mean
     
@@ -81,13 +145,29 @@ class NeuroGaitAnalysis:
         # Create target
         y = np.array([0] * 400 + [1] * 400)
         
-        # Add SUBTLE differences (not leakage)
-        # Only affect a few features slightly
-        for i in range(5):  # Only 5 features
-            X[y == 1, i] += np.random.normal(0.2, 0.05, sum(y == 1))
+        # Add more realistic differences between classes
+        # Affect 20-30 features with varying strength
+        important_features = np.random.choice(n_features, size=25, replace=False)
+        for idx in important_features:
+            effect_size = np.random.uniform(0.4, 0.8)
+            noise = np.random.normal(0, 0.1, sum(y == 1))
+            X[y == 1, idx] += effect_size + noise
+        
+        # Add some correlated features that differ between classes
+        for i in range(10):
+            base_idx = important_features[i]
+            new_idx = n_features - 10 + i
+            if new_idx < n_features:
+                X[:, new_idx] = X[:, base_idx] * 0.7 + np.random.randn(n_samples) * 0.3
+                X[y == 1, new_idx] += 0.3
+        
+        # Add subtle interaction effects
+        X[y == 1, 30] = X[y == 1, 0] * X[y == 1, 1] * 0.2
+        X[y == 0, 30] = X[y == 0, 0] * X[y == 0, 1] * 0.1
         
         df = pd.DataFrame(X, columns=feature_names)
         df['diagnosis'] = y
+        df._synthetic = True  # Mark as synthetic
         
         return df
     
@@ -325,13 +405,13 @@ class NeuroGaitAnalysis:
         
         # Train model with conservative parameters
         model = xgb.XGBClassifier(
-            n_estimators=100,
-            max_depth=3,  # Shallow trees
-            learning_rate=0.01,  # Low learning rate
+            n_estimators=200,    # Αυξημένο από 100
+            max_depth=4,         # Αυξημένο από 3
+            learning_rate=0.05,  # Αυξημένο από 0.01
             subsample=0.8,
             colsample_bytree=0.8,
-            reg_alpha=1.0,  # L1 regularization
-            reg_lambda=1.0,  # L2 regularization
+            reg_alpha=0.5,       # Μειωμένο από 1.0
+            reg_lambda=0.5,      # Μειωμένο από 1.0
             random_state=42,
             use_label_encoder=False,
             eval_metric='logloss'
@@ -447,17 +527,27 @@ class NeuroGaitAnalysis:
         
         # Prepare datasets
         logger.info("\n🔧 Preparing datasets...")
+        
+        # Create DataFrames for embeddings with string column names
+        embeddings_train_df = pd.DataFrame(
+            graph_features_train, 
+            columns=[f'emb_{i}' for i in range(graph_features_train.shape[1])]
+        )
+        embeddings_test_df = pd.DataFrame(
+            graph_features_test,
+            columns=[f'emb_{i}' for i in range(graph_features_test.shape[1])]
+        )
+        
+        # Reset index for concatenation
+        X_train_reset = X_train.reset_index(drop=True)
+        X_test_reset = X_test.reset_index(drop=True)
+        
         datasets = {
             'raw': (X_train, X_test),
-            'embeddings': (
-                pd.DataFrame(graph_features_train), 
-                pd.DataFrame(graph_features_test)
-            ),
+            'embeddings': (embeddings_train_df, embeddings_test_df),
             'combined': (
-                pd.concat([X_train.reset_index(drop=True), 
-                          pd.DataFrame(graph_features_train)], axis=1),
-                pd.concat([X_test.reset_index(drop=True), 
-                          pd.DataFrame(graph_features_test)], axis=1)
+                pd.concat([X_train_reset, embeddings_train_df], axis=1),
+                pd.concat([X_test_reset, embeddings_test_df], axis=1)
             )
         }
         
@@ -517,7 +607,9 @@ class NeuroGaitAnalysis:
             # McNemar's test
             if n01 + n10 > 0:
                 statistic = (abs(n01 - n10) - 1)**2 / (n01 + n10)
-                p_value = 1 - stats.chi2.cdf(statistic, 1)
+                # Use chi2 distribution with 1 degree of freedom
+                from scipy.stats import chi2
+                p_value = 1 - chi2.cdf(statistic, 1)
             else:
                 p_value = 1.0
                 
@@ -623,13 +715,22 @@ class NeuroGaitAnalysis:
 
 
 if __name__ == "__main__":
+    # Get Neo4j password from environment or use default
+    import os
+    neo4j_password = os.environ.get('NEO4J_PASSWORD', 'password')
+    
     # Run analysis
     analyzer = NeuroGaitAnalysis(
         neo4j_uri="bolt://localhost:7687",
         neo4j_user="neo4j",
-        neo4j_password="your_password_here"  # Change this!
+        neo4j_password=neo4j_password
     )
     
     results = analyzer.run_analysis()
     
-    logger.info("\n✅ Neo4j connection closed")
+    logger.info("\n✅ Analysis completed successfully!")
+    
+    # If using synthetic data, remind user
+    if hasattr(analyzer, '_used_synthetic'):
+        logger.info("\n💡 Note: This run used synthetic data.")
+        logger.info("   To use real data, ensure 'Final dataset.csv' is in the current directory.")
