@@ -58,7 +58,7 @@ class NeuroGaitAnalysis:
             if os.path.exists(path):
                 try:
                     # Try reading with semicolon separator first
-                    df = pd.read_csv(path, sep=';')
+                    df = pd.read_csv(path, sep=';', decimal=',')
                     logger.info(f"✅ Loaded data from: {path} (semicolon-separated)")
                     break
                 except Exception as e:
