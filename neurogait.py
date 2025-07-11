@@ -12,7 +12,7 @@ from sklearn.feature_selection import SelectKBest, f_classif
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, confusion_matrix
 from sklearn.pipeline import Pipeline
 import xgboost as xgb
-from scipy.stats import mcnemar
+from scipy import stats
 from neo4j import GraphDatabase
 import networkx as nx
 from node2vec import Node2Vec
