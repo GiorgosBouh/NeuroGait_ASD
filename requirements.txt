@@ -82,3 +82,4 @@ seaborn
 scipy
 python-dotenv
 openpyxl
+scipy==1.11.1
