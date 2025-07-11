@@ -458,7 +458,7 @@ class NeuroGaitAnalysis:
             [(name, res) for name, res in results.items() if 'auc' in res],
             key=lambda x: x[1]['auc'],
             default=(None, None)
-        
+        )
         if best_model[0]:
             logger.info(f"\n🏆 Best Model: {best_model[0].upper()}")
             logger.info(f"   AUC: {best_model[1]['auc']:.4f}")
