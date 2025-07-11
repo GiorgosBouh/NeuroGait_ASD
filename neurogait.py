@@ -40,88 +40,74 @@ class NeuroGaitAnalysis:
         self.target_auc_max = 0.80
         
     def load_raw_data(self, csv_path='Final dataset.csv'):
-        """Load raw data with mean features only"""
-        logger.info("\n📊 Loading raw data (mean features only)...")
-        
-        # Try multiple possible paths
-        possible_paths = [
-            csv_path,
-            'Final dataset.csv',
-            'data/Final dataset.csv',
-            '../Final dataset.csv',
-            'neurogait_features.csv',
-            'data/neurogait_features.csv'
-        ]
-        
-        df = None
-        for path in possible_paths:
-            if os.path.exists(path):
+    """Load raw data with mean features only"""
+    logger.info("\n📊 Loading raw data (mean features only)...")
+    
+    # Try multiple possible paths
+    possible_paths = [
+        csv_path,
+        'Final dataset.csv',
+        'data/Final dataset.csv',
+        '../Final dataset.csv',
+        'neurogait_features.csv',
+        'data/neurogait_features.csv'
+    ]
+    
+    df = None
+    for path in possible_paths:
+        if os.path.exists(path):
+            try:
+                # ✅ Handle semicolon-separated with comma decimal
+                df = pd.read_csv(path, sep=';', decimal=',')
+                logger.info(f"✅ Loaded data from: {path} (semicolon-separated, comma decimal)")
+                break
+            except Exception as e:
                 try:
-                    # Try reading with semicolon separator first
-                    df = pd.read_csv(path, sep=';', decimal=',')
-                    logger.info(f"✅ Loaded data from: {path} (semicolon-separated)")
+                    # fallback: comma-separated, still with comma decimal
+                    df = pd.read_csv(path, decimal=',')
+                    logger.info(f"✅ Loaded data from: {path} (comma-separated, comma decimal)")
                     break
-                except Exception as e:
-                    try:
-                        # Try comma separator
-                        df = pd.read_csv(path)
-                        logger.info(f"✅ Loaded data from: {path} (comma-separated)")
-                        break
-                    except Exception as e2:
-                        logger.warning(f"Error loading {path}: {e2}")
+                except Exception as e2:
+                    logger.warning(f"Error loading {path}: {e2}")
+    
+    if df is None:
+        raise FileNotFoundError("❌ Could not load real dataset. Please check the path or separator.")
+    else:
+        # Fix column name if needed
+        if 'class' in df.columns:
+            df = df.rename(columns={'class': 'diagnosis'})
+            logger.info("✅ Renamed 'class' column to 'diagnosis'")
         
-        if df is None:
-            logger.warning("Could not load data file, generating synthetic data...")
-            logger.info("💡 To use real data, place your CSV file in one of these locations:")
-            for path in possible_paths:
-                logger.info(f"   - {path}")
-            df = self.generate_synthetic_data()
-            self._used_synthetic = True  # Mark that we used synthetic data
-        else:
-            # Check if 'class' column exists and rename it to 'diagnosis'
-            if 'class' in df.columns:
-                df = df.rename(columns={'class': 'diagnosis'})
-                logger.info("✅ Renamed 'class' column to 'diagnosis'")
-            
-            # Print some info about the data
-            logger.info(f"   Data shape: {df.shape}")
-            logger.info(f"   Columns: {len(df.columns)}")
-            
-            # Count mean features
-            mean_cols = [col for col in df.columns if 'mean' in col.lower()]
-            logger.info(f"   Mean features found: {len(mean_cols)}")
-            
-            # Check diagnosis distribution
-            if 'diagnosis' in df.columns:
-                logger.info(f"   Diagnosis distribution:")
-                logger.info(f"   {df['diagnosis'].value_counts().to_dict()}")
-            
-        # Keep only mean features to reduce redundancy
-        if df is not None and not hasattr(df, '_synthetic'):
-            mean_cols = [col for col in df.columns if 'mean' in col.lower() and col != 'diagnosis']
-            
-            # Also keep important non-mean columns like ROM, velocity, etc.
-            important_cols = [col for col in df.columns if any(
-                pattern in col for pattern in ['Rom', 'Velocity', 'MaxStLe', 'MaxStWi', 
-                                               'StrLe', 'GaCT', 'StaT', 'SwiT', 
-                                               'MaxDBFE', 'MinDBFE', 'Threshold']
-            )]
-            
-            # Combine and add diagnosis
-            all_cols = list(set(mean_cols + important_cols + ['diagnosis']))
-            df_mean = df[all_cols]
-            
-            logger.info(f"✅ Selected {len(mean_cols)} mean features + {len(important_cols)} other features")
-        else:
-            df_mean = df
-            
-        logger.info(f"✅ Loaded {len(df_mean)} samples with {len(df_mean.columns)} total columns")
+        logger.info(f"   Data shape: {df.shape}")
+        logger.info(f"   Columns: {len(df.columns)}")
+        mean_cols = [col for col in df.columns if 'mean' in col.lower()]
+        logger.info(f"   Mean features found: {len(mean_cols)}")
         
-        if 'diagnosis' in df_mean.columns:
-            diag_counts = df_mean['diagnosis'].value_counts()
-            logger.info(f"   Class distribution: {dict(diag_counts)}")
+        if 'diagnosis' in df.columns:
+            logger.info(f"   Diagnosis distribution:")
+            logger.info(f"   {df['diagnosis'].value_counts().to_dict()}")
+
+    # Keep only selected columns
+    if df is not None and not hasattr(df, '_synthetic'):
+        mean_cols = [col for col in df.columns if 'mean' in col.lower() and col != 'diagnosis']
+        important_cols = [col for col in df.columns if any(
+            pattern in col for pattern in ['Rom', 'Velocity', 'MaxStLe', 'MaxStWi', 
+                                           'StrLe', 'GaCT', 'StaT', 'SwiT', 
+                                           'MaxDBFE', 'MinDBFE', 'Threshold']
+        )]
+        all_cols = list(set(mean_cols + important_cols + ['diagnosis']))
+        df_mean = df[all_cols]
+        logger.info(f"✅ Selected {len(mean_cols)} mean features + {len(important_cols)} other features")
+    else:
+        df_mean = df
         
-        return df_mean
+    logger.info(f"✅ Loaded {len(df_mean)} samples with {len(df_mean.columns)} total columns")
+    
+    if 'diagnosis' in df_mean.columns:
+        diag_counts = df_mean['diagnosis'].value_counts()
+        logger.info(f"   Class distribution: {dict(diag_counts)}")
+    
+    return df_mean
     
     def generate_synthetic_data(self):
         """Generate synthetic data for testing"""
