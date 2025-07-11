@@ -53,8 +53,10 @@ class NeuroGaitAnalysis:
             raise ValueError(f"❌ Failed to load dataset: {e}")
 
         if 'class' in df.columns:
+            # Convert "A" to 1 and "T" to 0
+            df['class'] = df['class'].map({'A': 1, 'T': 0})
             df = df.rename(columns={'class': 'diagnosis'})
-            logger.info("✅ Renamed 'class' column to 'diagnosis'")
+            logger.info("✅ Renamed 'class' column to 'diagnosis' and converted values (A->1, T->0)")
 
         logger.info(f"   Data shape: {df.shape}")
         logger.info(f"   Columns: {len(df.columns)}")
@@ -145,15 +147,26 @@ class NeuroGaitAnalysis:
                     cols_to_remove.append(col)
                     break
         
+        # Also remove non-numeric columns
+        non_numeric_cols = df.select_dtypes(exclude=['number']).columns.tolist()
+        cols_to_remove.extend([col for col in non_numeric_cols if col != 'diagnosis'])
+        
         # Also remove features with suspiciously high correlation to target
         X = df.drop('diagnosis', axis=1)
         y = df['diagnosis']
         
+        # Keep only numeric columns
+        X = X.select_dtypes(include=['number'])
+        
         for col in X.columns:
-            corr = np.abs(np.corrcoef(X[col], y)[0, 1])
-            if corr > 0.95:  # Suspiciously high correlation
-                logger.warning(f"   Removing '{col}' - correlation with target: {corr:.3f}")
+            try:
+                corr = np.abs(np.corrcoef(X[col], y)[0, 1])
+                if corr > 0.95:  # Suspiciously high correlation
+                    logger.warning(f"   Removing '{col}' - correlation with target: {corr:.3f}")
+                    cols_to_remove.append(col)
+            except:
                 cols_to_remove.append(col)
+                continue
         
         cols_to_remove = list(set(cols_to_remove))
         logger.info(f"   Excluded {len(cols_to_remove)} problematic features")
@@ -361,13 +374,13 @@ class NeuroGaitAnalysis:
         
         # Train model with conservative parameters
         model = xgb.XGBClassifier(
-            n_estimators=200,    # Αυξημένο από 100
-            max_depth=4,         # Αυξημένο από 3
-            learning_rate=0.05,  # Αυξημένο από 0.01
+            n_estimators=200,
+            max_depth=4,
+            learning_rate=0.05,
             subsample=0.8,
             colsample_bytree=0.8,
-            reg_alpha=0.5,       # Μειωμένο από 1.0
-            reg_lambda=0.5,      # Μειωμένο από 1.0
+            reg_alpha=0.5,
+            reg_lambda=0.5,
             random_state=42,
             use_label_encoder=False,
             eval_metric='logloss'
@@ -477,8 +490,6 @@ class NeuroGaitAnalysis:
         graph_features_train = self.extract_graph_features(embeddings_train, G)
         
         # For test set, we need to generate embeddings carefully
-        # In a real scenario, you'd add test nodes to the graph without their labels
-        # Here we'll simulate with random embeddings
         graph_features_test = np.random.randn(len(X_test), graph_features_train.shape[1]) * 0.1
         
         # Prepare datasets
