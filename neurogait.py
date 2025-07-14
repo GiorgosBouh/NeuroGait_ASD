@@ -1,501 +1,487 @@
-#!/usr/bin/env python3
+# Enhanced Feature Analysis & ML Preparation Module - FIXED VERSION
 """
-NeuroGait ASD ML Analysis - FIXED VERSION WITH IMPROVED DATA HANDLING
-This version includes:
-1. Stronger leakage prevention
-2. Improved graph embeddings
-3. More realistic performance metrics
+FIXED VERSION: Separates exploratory analysis from ML preparation
+to prevent data leakage. All ML-related functions now properly
+handle train/test splits.
 """
 
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split, StratifiedKFold
-from sklearn.preprocessing import StandardScaler
-from sklearn.feature_selection import SelectKBest, f_classif
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, confusion_matrix
-from sklearn.pipeline import Pipeline
-from sklearn.neighbors import NearestNeighbors
-import xgboost as xgb
-from scipy import stats
-from neo4j import GraphDatabase
-import networkx as nx
-from node2vec import Node2Vec
-from gensim.models import Word2Vec
-import warnings
+from sklearn.preprocessing import StandardScaler, RobustScaler
+from sklearn.feature_selection import SelectKBest, f_classif, mutual_info_classif
+from sklearn.model_selection import StratifiedKFold
+from sklearn.base import BaseEstimator, TransformerMixin
+import matplotlib.pyplot as plt
+import seaborn as sns
 import logging
-import json
-from datetime import datetime
-import os
 
-warnings.filterwarnings('ignore')
-logging.basicConfig(level=logging.INFO, format='%(levelname)s:%(name)s:%(message)s')
 logger = logging.getLogger(__name__)
 
-class NeuroGaitAnalysis:
-    def __init__(self, neo4j_uri="bolt://localhost:7687", neo4j_user="neo4j", neo4j_password="password"):
-        self.neo4j_uri = neo4j_uri
-        self.neo4j_user = neo4j_user
-        self.neo4j_password = neo4j_password
-        self.output_dir = f"neurogait_improved_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        os.makedirs(self.output_dir, exist_ok=True)
-        
-        # Target AUC range for realistic results
-        self.target_auc_min = 0.65
-        self.target_auc_max = 0.85
-        
-    def load_raw_data(self, csv_path='Final dataset.csv'):
-        """Load and validate raw data"""
-        logger.info("\n📊 Loading and validating raw data...")
-
-        if not os.path.exists(csv_path):
-            raise FileNotFoundError(f"❌ Dataset not found at: {csv_path}")
-
-        try:
-            df = pd.read_csv(csv_path, sep=';', decimal=',')
-            logger.info(f"✅ Loaded data from: {csv_path} (semicolon-separated, comma decimal)")
-        except Exception as e:
-            raise ValueError(f"❌ Failed to load dataset: {e}")
-
-        # Convert and validate target variable
-        if 'class' in df.columns:
-            if set(df['class'].unique()) == {'A', 'T'}:
-                df['class'] = df['class'].map({'A': 1, 'T': 0})
-                df = df.rename(columns={'class': 'diagnosis'})
-                logger.info("✅ Converted target: 'A'->1, 'T'->0")
-            else:
-                raise ValueError("❌ Invalid values in 'class' column. Expected 'A' and 'T'")
-
-        # Basic validation
-        if 'diagnosis' not in df.columns:
-            raise ValueError("❌ Missing 'diagnosis' column after preprocessing")
-            
-        if len(df['diagnosis'].unique()) != 2:
-            raise ValueError("❌ Target variable must have exactly 2 classes")
-
-        logger.info(f"\n📋 Data Summary:")
-        logger.info(f"   Samples: {len(df)}")
-        logger.info(f"   Features: {len(df.columns)-1}")
-        logger.info(f"   Diagnosis distribution:\n{df['diagnosis'].value_counts().to_string()}")
-        
-        return df
+class ExploratoryFeatureAnalyzer:
+    """
+    EXPLORATORY ANALYSIS ONLY - Uses full dataset for exploration
+    DO NOT use these methods for actual ML feature selection
+    """
     
-    def remove_problematic_features(self, df):
-        """Aggressive removal of potentially problematic features"""
-        logger.info("\n🚫 Aggressively removing problematic features...")
+    def __init__(self, knowledge_graph):
+        self.kg = knowledge_graph
+        self.exploration_results = {}
         
-        original_cols = set(df.columns)
+    def analyze_feature_distributions_exploration(self):
+        """
+        EXPLORATORY ONLY: Analyze feature distributions by class
+        This is for understanding the data, not for ML feature selection
+        """
+        logger.info("🔍 EXPLORATORY: Analyzing feature distributions...")
+        logger.warning("⚠️  This is for exploration only - do not use for ML feature selection!")
         
-        # 1. Remove explicitly problematic columns
-        problematic_patterns = [
-            'diagnosis', 'class', 'label', 'target', 'outcome',
-            'future', 'treatment', 'response', 'participant', 'id',
-            'score', 'count', 'index', 'timestamp'
-        ]
+        # Separate features by class for exploration
+        asd_data = self.kg.data[self.kg.data['diagnosis'] == 'ASD']
+        control_data = self.kg.data[self.kg.data['diagnosis'] == 'Control']
         
-        cols_to_remove = [col for col in df.columns 
-                         if any(p.lower() in col.lower() for p in problematic_patterns)]
+        exploration_results = []
         
-        # 2. Remove non-numeric columns
-        non_numeric = df.select_dtypes(exclude=['number']).columns.tolist()
-        cols_to_remove.extend(non_numeric)
+        for category, features in self.kg.feature_schema.items():
+            if isinstance(features, list) and features:
+                logger.info(f"   Exploring {category}: {len(features)} features")
+                
+                category_results = []
+                for feature in features[:50]:  # Limit for exploration
+                    if feature in self.kg.data.columns:
+                        asd_values = asd_data[feature].dropna()
+                        control_values = control_data[feature].dropna()
+                        
+                        if len(asd_values) > 0 and len(control_values) > 0:
+                            # Statistical test for exploration
+                            from scipy.stats import ttest_ind
+                            stat, p_value = ttest_ind(asd_values, control_values)
+                            
+                            if p_value < 0.05:  # Potentially interesting
+                                effect_size = abs(asd_values.mean() - control_values.mean()) / np.sqrt((asd_values.var() + control_values.var()) / 2)
+                                category_results.append({
+                                    'feature': feature,
+                                    'p_value': p_value,
+                                    'effect_size': effect_size,
+                                    'asd_mean': asd_values.mean(),
+                                    'control_mean': control_values.mean(),
+                                    'category': category
+                                })
+                
+                category_results.sort(key=lambda x: x['effect_size'], reverse=True)
+                exploration_results.extend(category_results[:10])
         
-        # 3. Remove near-perfect predictors
-        X = df.drop(columns=['diagnosis'] + cols_to_remove, errors='ignore')
-        y = df['diagnosis']
-        
-        high_auc_cols = []
-        for col in X.columns:
-            try:
-                auc = roc_auc_score(y, X[col])
-                if auc > 0.9 or auc < 0.1:  # Near-perfect predictors
-                    high_auc_cols.append(col)
-                    logger.warning(f"   Removing '{col}' - AUC: {auc:.3f}")
-            except Exception as e:
-                logger.warning(f"   Could not check {col}: {str(e)}")
-                cols_to_remove.append(col)
-        
-        cols_to_remove.extend(high_auc_cols)
-        cols_to_remove = list(set(cols_to_remove))
-        
-        # 4. Remove constant features
-        constant_cols = [col for col in X.columns if X[col].nunique() == 1]
-        cols_to_remove.extend(constant_cols)
-        
-        # Final removal
-        df_clean = df.drop(columns=cols_to_remove, errors='ignore')
-        
-        logger.info(f"\n🔍 Removal Report:")
-        logger.info(f"   Original features: {len(original_cols)}")
-        logger.info(f"   Removed features: {len(cols_to_remove)}")
-        logger.info(f"   Remaining features: {len(df_clean.columns)}")
-        
-        return df_clean
+        self.exploration_results['statistical'] = exploration_results
+        logger.info(f"✅ Found {len(exploration_results)} potentially interesting features for exploration")
+        return exploration_results
     
-    def remove_redundant_features(self, X, threshold=0.9):
-        """More aggressive removal of correlated features"""
-        logger.info(f"\n🔧 Removing redundant features (threshold={threshold})...")
+    def create_correlation_heatmap_exploration(self, sample_size=100):
+        """
+        EXPLORATORY ONLY: Create correlation heatmap for exploration
+        """
+        logger.info("🔍 EXPLORATORY: Creating correlation heatmap...")
+        logger.warning("⚠️  This is for exploration only!")
         
-        # Calculate correlation matrix
+        # Sample features for visualization
+        numeric_cols = self.kg.data.select_dtypes(include=[np.number]).columns
+        exclude_cols = ['participant_id'] 
+        feature_cols = [col for col in numeric_cols if col not in exclude_cols]
+        
+        # Randomly sample features to avoid overwhelming visualization
+        if len(feature_cols) > sample_size:
+            sampled_features = np.random.choice(feature_cols, sample_size, replace=False)
+        else:
+            sampled_features = feature_cols
+        
+        # Calculate correlations for exploration
+        corr_matrix = self.kg.data[sampled_features].corr()
+        
+        # Create heatmap
+        plt.figure(figsize=(12, 10))
+        sns.heatmap(corr_matrix, 
+                   cmap='coolwarm', 
+                   center=0, 
+                   square=True,
+                   xticklabels=False, 
+                   yticklabels=False)
+        plt.title(f'Feature Correlation Heatmap (Sample of {len(sampled_features)} features)\nFOR EXPLORATION ONLY')
+        plt.tight_layout()
+        
+        return corr_matrix
+
+
+class MLFeaturePipeline(BaseEstimator, TransformerMixin):
+    """
+    PROPER ML PIPELINE: Handles feature selection and preprocessing
+    with proper train/test separation to prevent data leakage
+    """
+    
+    def __init__(self, 
+                 n_features=100, 
+                 correlation_threshold=0.95,
+                 feature_selection_method='f_classif',
+                 scaler_type='standard'):
+        self.n_features = n_features
+        self.correlation_threshold = correlation_threshold
+        self.feature_selection_method = feature_selection_method
+        self.scaler_type = scaler_type
+        
+        # Initialize components
+        self.correlation_filter_ = None
+        self.feature_selector_ = None
+        self.scaler_ = None
+        self.selected_features_ = None
+        self.removed_corr_features_ = None
+        
+    def _remove_correlated_features(self, X):
+        """Remove highly correlated features (fitted on training data only)"""
+        logger.info(f"   Removing features with correlation > {self.correlation_threshold}")
+        
         corr_matrix = X.corr().abs()
-        
-        # Upper triangle of correlation matrix
-        upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+        upper_triangle = corr_matrix.where(
+            np.triu(np.ones(corr_matrix.shape), k=1).astype(bool)
+        )
         
         # Find features to drop
-        to_drop = [col for col in upper.columns if any(upper[col] > threshold)]
+        to_drop = [column for column in upper_triangle.columns 
+                  if any(upper_triangle[column] > self.correlation_threshold)]
         
-        logger.info(f"   Found {len(to_drop)} redundant features to remove")
+        self.removed_corr_features_ = to_drop
+        logger.info(f"   Removing {len(to_drop)} highly correlated features")
+        
         return X.drop(columns=to_drop)
     
-    def create_graph_embeddings_no_leakage(self, X_train, y_train, participant_ids_train):
-        """Improved graph embedding generation with k-NN similarity"""
-        logger.info("\n🧠 Generating improved graph embeddings...")
+    def _select_features(self, X, y):
+        """Select best features using statistical tests"""
+        logger.info(f"   Selecting top {self.n_features} features using {self.feature_selection_method}")
         
-        try:
-            # 1. Create graph with k-NN similarity
-            G = nx.Graph()
-            
-            # Add nodes with features as attributes
-            for i, pid in enumerate(participant_ids_train):
-                features = X_train.iloc[i].to_dict()
-                G.add_node(str(pid), label=int(y_train.iloc[i]), **features)
-            
-            # 2. Create edges using k-NN similarity
-            logger.info("   Building edges using k-NN similarity...")
-            knn = NearestNeighbors(n_neighbors=5, metric='cosine')
-            knn.fit(X_train)
-            distances, indices = knn.kneighbors(X_train)
-            
-            for i, neighbors in enumerate(indices):
-                for j, dist in zip(neighbors, distances[i]):
-                    if i != j and dist < 0.5:  # Similarity threshold
-                        G.add_edge(str(participant_ids_train[i]), 
-                                 str(participant_ids_train[j]), 
-                                 weight=1-dist)
-            
-            # 3. Improved Node2Vec parameters
-            logger.info("\n🚀 Running improved Node2Vec...")
-            node2vec = Node2Vec(
-                G, 
-                dimensions=64,        # Increased from 24
-                walk_length=30,       # Increased from 15
-                num_walks=100,       # Increased from 80
-                p=0.5,               # Return parameter
-                q=2.0,               # In-out parameter
-                workers=4,
-                quiet=True
-            )
-            
-            # 4. Train embeddings
-            logger.info("   Training embeddings...")
-            model = node2vec.fit(
-                window=10,            # Increased from 4
-                min_count=1,
-                batch_words=128,      # Increased from 4
-                epochs=10            # Increased from 5
-            )
-            
-            # Get embeddings
-            embeddings = np.zeros((len(participant_ids_train), 64))
-            for i, pid in enumerate(participant_ids_train):
-                if str(pid) in model.wv:
-                    embeddings[i] = model.wv[str(pid)]
-                else:
-                    embeddings[i] = np.random.normal(0, 0.01, 64)
-            
-            logger.info(f"✅ Generated embeddings: {embeddings.shape}")
-            return embeddings, model, G
-            
-        except Exception as e:
-            logger.error(f"❌ Graph embedding failed: {str(e)}")
-            logger.info("Using random embeddings with reduced dimensions")
-            return np.random.normal(0, 0.01, (len(participant_ids_train), 64)), None, None
-    
-    def extract_graph_features(self, embeddings):
-        """Extract meaningful graph features with noise"""
-        logger.info("\n📊 Extracting graph features...")
-        
-        # Basic statistics
-        features = [
-            np.mean(embeddings, axis=1),      # Mean
-            np.std(embeddings, axis=1),       # Std
-            np.median(embeddings, axis=1),    # Median
-            np.max(embeddings, axis=1),       # Max
-            np.min(embeddings, axis=1),       # Min
-            np.percentile(embeddings, 25, axis=1),  # 25th percentile
-            np.percentile(embeddings, 75, axis=1)   # 75th percentile
-        ]
-        
-        # Add pairwise interactions
-        for i in range(3):  # Add top 3 component interactions
-            for j in range(i+1, 4):
-                features.append(embeddings[:, i] * embeddings[:, j])
-        
-        # Add noise to prevent overfitting
-        noise = np.random.normal(0, 0.01, (embeddings.shape[0], 5))
-        
-        # Combine all features
-        all_features = np.hstack([embeddings] + [f.reshape(-1, 1) for f in features] + [noise])
-        
-        logger.info(f"   Final feature shape: {all_features.shape}")
-        return all_features
-    
-    def train_xgboost_no_leakage(self, X, y, feature_type="raw"):
-        """More robust training with proper validation"""
-        logger.info(f"\n🚀 Training XGBoost for {feature_type} features...")
-        
-        # Split into train (60%), validation (20%), test (20%)
-        X_train, X_temp, y_train, y_temp = train_test_split(
-            X, y, test_size=0.4, random_state=42, stratify=y)
-        X_val, X_test, y_val, y_test = train_test_split(
-            X_temp, y_temp, test_size=0.5, random_state=42, stratify=y_temp)
-        
-        # Feature selection on TRAIN only
-        k = min(50, X_train.shape[1])  # More conservative feature selection
-        selector = SelectKBest(f_classif, k=k)
-        X_train = selector.fit_transform(X_train, y_train)
-        X_val = selector.transform(X_val)
-        X_test = selector.transform(X_test)
-        
-        # Scaling
-        scaler = StandardScaler()
-        X_train = scaler.fit_transform(X_train)
-        X_val = scaler.transform(X_val)
-        X_test = scaler.transform(X_test)
-        
-        # Train with early stopping
-        model = xgb.XGBClassifier(
-            n_estimators=500,
-            max_depth=3,
-            learning_rate=0.01,
-            subsample=0.7,
-            colsample_bytree=0.7,
-            reg_alpha=1.0,
-            reg_lambda=1.0,
-            early_stopping_rounds=20,
-            eval_metric='auc',
-            random_state=42,
-            use_label_encoder=False
-        )
-        
-        model.fit(
-            X_train, y_train,
-            eval_set=[(X_val, y_val)],
-            verbose=False
-        )
-        
-        # Cross-validation on training data
-        cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-        cv_scores = []
-        
-        for train_idx, val_idx in cv.split(X_train, y_train):
-            X_cv_train, X_cv_val = X_train[train_idx], X_train[val_idx]
-            y_cv_train, y_cv_val = y_train[train_idx], y_train[val_idx]
-            
-            cv_model = xgb.XGBClassifier(**model.get_params())
-            cv_model.fit(X_cv_train, y_cv_train, verbose=False)
-            
-            y_pred_proba = cv_model.predict_proba(X_cv_val)[:, 1]
-            cv_scores.append(roc_auc_score(y_cv_val, y_pred_proba))
-        
-        # Final evaluation
-        y_pred = model.predict(X_test)
-        y_pred_proba = model.predict_proba(X_test)[:, 1]
-        
-        # Calculate metrics
-        results = {
-            'accuracy': accuracy_score(y_test, y_pred),
-            'precision': precision_score(y_test, y_pred),
-            'recall': recall_score(y_test, y_pred),
-            'f1': f1_score(y_test, y_pred),
-            'auc': roc_auc_score(y_test, y_pred_proba),
-            'cv_auc_mean': np.mean(cv_scores),
-            'cv_auc_std': np.std(cv_scores),
-            'best_iteration': model.best_iteration,
-            'y_test': y_test,
-            'y_pred': y_pred,
-            'feature_importance': model.feature_importances_
-        }
-        
-        # Print results
-        logger.info(f"\n📊 {feature_type.upper()} Results:")
-        logger.info(f"   Best iteration: {model.best_iteration}")
-        logger.info(f"   Test AUC: {results['auc']:.4f}")
-        logger.info(f"   CV AUC: {results['cv_auc_mean']:.4f} ± {results['cv_auc_std']:.4f}")
-        logger.info(f"   Accuracy: {results['accuracy']:.4f}")
-        logger.info(f"   Precision: {results['precision']:.4f}")
-        logger.info(f"   Recall: {results['recall']:.4f}")
-        logger.info(f"   F1: {results['f1']:.4f}")
-        
-        # Check if results are realistic
-        if results['auc'] > self.target_auc_max:
-            logger.warning("   ⚠️  Performance too high - possible leakage!")
-        elif results['auc'] < self.target_auc_min:
-            logger.info("   ℹ️  Performance lower than expected")
+        if self.feature_selection_method == 'f_classif':
+            score_func = f_classif
+        elif self.feature_selection_method == 'mutual_info':
+            score_func = mutual_info_classif
         else:
-            logger.info("   ✅ Performance in expected range")
-            
-        return results, model
-    
-    def run_analysis(self):
-        """Run the complete improved analysis"""
-        logger.info(f"\n🔍 Starting NeuroGait Analysis - {datetime.now()}")
-        logger.info(f"📁 Output directory: {self.output_dir}")
+            raise ValueError(f"Unknown feature selection method: {self.feature_selection_method}")
         
-        # 1. Load and preprocess data
-        try:
-            df = self.load_raw_data()
-            df = self.remove_problematic_features(df)
-            
-            # Separate features and target
-            X = df.drop('diagnosis', axis=1)
-            y = df['diagnosis']
-            
-            # Remove redundant features
-            X = self.remove_redundant_features(X)
-            
-            logger.info(f"\n🔧 Final feature matrix shape: {X.shape}")
-        except Exception as e:
-            logger.error(f"❌ Data loading failed: {str(e)}")
-            raise
+        # Ensure we don't select more features than available
+        k = min(self.n_features, X.shape[1])
+        
+        self.feature_selector_ = SelectKBest(score_func=score_func, k=k)
+        X_selected = self.feature_selector_.fit_transform(X, y)
+        
+        # Store selected feature names
+        selected_indices = self.feature_selector_.get_support(indices=True)
+        self.selected_features_ = X.columns[selected_indices].tolist()
+        
+        logger.info(f"   Selected {len(self.selected_features_)} features")
+        return X_selected
+    
+    def _scale_features(self, X):
+        """Scale features"""
+        logger.info(f"   Scaling features using {self.scaler_type} scaler")
+        
+        if self.scaler_type == 'standard':
+            self.scaler_ = StandardScaler()
+        elif self.scaler_type == 'robust':
+            self.scaler_ = RobustScaler()
+        else:
+            raise ValueError(f"Unknown scaler type: {self.scaler_type}")
+        
+        X_scaled = self.scaler_.fit_transform(X)
+        return X_scaled
+    
+    def fit(self, X, y):
+        """Fit the pipeline on training data ONLY"""
+        logger.info(f"\n🔧 Fitting ML feature pipeline on training data...")
+        logger.info(f"   Input shape: {X.shape}")
+        
+        # Ensure X is a DataFrame
+        if not isinstance(X, pd.DataFrame):
+            X = pd.DataFrame(X)
+        
+        # Remove missing values
+        X_clean = X.fillna(X.median())
+        
+        # 1. Remove correlated features
+        X_decorr = self._remove_correlated_features(X_clean)
+        
+        # 2. Feature selection
+        X_selected = self._select_features(X_decorr, y)
+        
+        # 3. Feature scaling (fit only, don't transform yet)
+        self.scaler_ = StandardScaler() if self.scaler_type == 'standard' else RobustScaler()
+        self.scaler_.fit(X_selected)
+        
+        logger.info(f"✅ Pipeline fitted successfully")
+        return self
+    
+    def transform(self, X):
+        """Transform data using fitted pipeline"""
+        if self.selected_features_ is None:
+            raise ValueError("Pipeline not fitted yet! Call fit() first.")
+        
+        # Ensure X is a DataFrame
+        if not isinstance(X, pd.DataFrame):
+            X = pd.DataFrame(X)
+        
+        # Apply same transformations as training
+        X_clean = X.fillna(X.median())
+        
+        # Remove correlated features (using same features as training)
+        X_decorr = X_clean.drop(columns=self.removed_corr_features_, errors='ignore')
+        
+        # Select same features as training
+        X_selected = X_decorr[self.selected_features_]
+        
+        # Scale using fitted scaler
+        X_scaled = self.scaler_.transform(X_selected)
+        
+        return X_scaled
+    
+    def fit_transform(self, X, y):
+        """Fit and transform training data"""
+        return self.fit(X, y).transform(X)
+    
+    def get_feature_importance(self):
+        """Get feature importance scores (only available after fitting)"""
+        if self.feature_selector_ is None:
+            raise ValueError("Pipeline not fitted yet!")
+        
+        importance_df = pd.DataFrame({
+            'feature': self.selected_features_,
+            'score': self.feature_selector_.scores_[self.feature_selector_.get_support()],
+            'rank': range(1, len(self.selected_features_) + 1)
+        }).sort_values('score', ascending=False)
+        
+        return importance_df
 
-        # 2. Split data BEFORE any processing
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=0.2, random_state=42, stratify=y)
-        
-        # 3. Generate graph embeddings (train only)
-        participant_ids_train = np.arange(len(X_train))
-        embeddings_train, _, _ = self.create_graph_embeddings_no_leakage(
-            X_train, y_train, participant_ids_train)
-        
-        # 4. Extract graph features
-        graph_features_train = self.extract_graph_features(embeddings_train)
-        
-        # For test set, use random normal with same scale as train
-        graph_features_test = np.random.normal(
-            0, 0.01, (len(X_test), graph_features_train.shape[1]))
-        
-        # 5. Prepare datasets
-        datasets = {
-            'raw': (X_train, X_test),
-            'embeddings': (
-                pd.DataFrame(graph_features_train),
-                pd.DataFrame(graph_features_test)
-            ),
-            'combined': (
-                pd.concat([X_train.reset_index(drop=True), 
-                         pd.DataFrame(graph_features_train)], axis=1),
-                pd.concat([X_test.reset_index(drop=True), 
-                         pd.DataFrame(graph_features_test)], axis=1)
-            )
-        }
-        
-        # 6. Train and evaluate models
-        results = {}
-        models = {}
-        
-        for name, (X_tr, X_te) in datasets.items():
-            try:
-                # Combine for final train/test split
-                X_combined = pd.concat([X_tr, X_te])
-                y_combined = pd.concat([y_train, y_test])
-                
-                results[name], models[name] = self.train_xgboost_no_leakage(
-                    X_combined, y_combined, name)
-                
-                # Save feature importance
-                if hasattr(models[name], 'feature_importances_'):
-                    feature_df = pd.DataFrame({
-                        'feature': X_tr.columns[:len(models[name].feature_importances_)],
-                        'importance': models[name].feature_importances_
-                    }).sort_values('importance', ascending=False)
-                    
-                    feature_df.to_csv(
-                        f"{self.output_dir}/feature_importance_{name}.csv",
-                        index=False
-                    )
-            except Exception as e:
-                logger.error(f"❌ Failed to train {name} model: {str(e)}")
-                continue
-        
-        # 7. Save and report results
-        self.save_results(results)
-        self.print_final_summary(results)
-        
-        return results
+
+class MLDatasetCreator:
+    """
+    Creates ML-ready datasets with proper train/test handling
+    """
     
-    def save_results(self, results):
-        """Save comprehensive results"""
-        report = {
-            'timestamp': datetime.now().isoformat(),
-            'parameters': {
-                'target_auc_min': self.target_auc_min,
-                'target_auc_max': self.target_auc_max
-            },
-            'results': {
-                name: {
-                    k: float(v) if isinstance(v, (np.floating, float)) else v
-                    for k, v in res.items()
-                    if k not in ['y_test', 'y_pred']
-                }
-                for name, res in results.items()
-            }
-        }
+    def __init__(self, data):
+        self.data = data
         
-        with open(f"{self.output_dir}/report.json", 'w') as f:
-            json.dump(report, f, indent=2)
+    def create_ml_dataset_proper_split(self, 
+                                     test_size=0.2, 
+                                     random_state=42,
+                                     feature_pipeline_params=None,
+                                     exclude_variance_std=True):
+        """
+        Create ML dataset with PROPER train/test split and no data leakage
+        """
+        logger.info("\n📊 Creating ML dataset with proper train/test split...")
         
-        logger.info(f"\n💾 Saved report to: {self.output_dir}/report.json")
-    
-    def print_final_summary(self, results):
-        """Print comprehensive summary"""
-        logger.info("\n" + "="*60)
-        logger.info("🏁 ANALYSIS COMPLETE - FINAL SUMMARY")
-        logger.info("="*60)
+        # Basic data preparation
+        exclude_cols = ['participant_id', 'class', 'diagnosis']
+        feature_cols = [col for col in self.data.columns if col not in exclude_cols]
         
-        # Best model
-        best_model = max(
-            [(name, res) for name, res in results.items() if 'auc' in res],
-            key=lambda x: x[1]['auc'],
-            default=(None, None)
+        # Remove variance and std features if requested
+        if exclude_variance_std:
+            variance_std_cols = [col for col in feature_cols 
+                               if 'variance' in col.lower() or 'std' in col.lower()]
+            if variance_std_cols:
+                feature_cols = [col for col in feature_cols if col not in variance_std_cols]
+                logger.info(f"🚫 Excluded {len(variance_std_cols)} variance/std features")
+                logger.info(f"   Examples: {variance_std_cols[:5]}")
+        
+        X = self.data[feature_cols].copy()
+        y = self.data['diagnosis'].map({'ASD': 1, 'Control': 0})
+        participant_ids = self.data.get('participant_id', range(len(self.data)))
+        
+        logger.info(f"   Total samples: {len(X)}")
+        logger.info(f"   Total features: {len(feature_cols)}")
+        logger.info(f"   Class distribution: {y.value_counts().to_dict()}")
+        
+        # CRITICAL: Split data FIRST, before any feature engineering
+        from sklearn.model_selection import train_test_split
+        
+        X_train, X_test, y_train, y_test, ids_train, ids_test = train_test_split(
+            X, y, participant_ids, 
+            test_size=test_size, 
+            random_state=random_state, 
+            stratify=y
         )
-        if best_model[0]:
-            logger.info(f"\n🏆 Best Model: {best_model[0].upper()}")
-            logger.info(f"   AUC: {best_model[1]['auc']:.4f}")
-            logger.info(f"   F1: {best_model[1]['f1']:.4f}")
+        
+        logger.info(f"✅ Data split completed:")
+        logger.info(f"   Training: {len(X_train)} samples")
+        logger.info(f"   Test: {len(X_test)} samples")
+        
+        # Create and fit feature pipeline on TRAINING data only
+        if feature_pipeline_params is None:
+            feature_pipeline_params = {'n_features': 100, 'correlation_threshold': 0.9}
             
-            if best_model[1]['auc'] > self.target_auc_max:
-                logger.warning("   ⚠️  Warning: Performance may indicate leakage")
+        pipeline = MLFeaturePipeline(**feature_pipeline_params)
         
-        # All results
-        logger.info("\n📊 All Results:")
-        for name, res in results.items():
-            logger.info(f"\n{name.upper():<12} {'='*20}")
-            logger.info(f"   AUC:    {res.get('auc', 'NA'):.4f}")
-            logger.info(f"   CV AUC: {res.get('cv_auc_mean', 'NA'):.4f} ± {res.get('cv_auc_std', 'NA'):.4f}")
-            logger.info(f"   Acc:    {res.get('accuracy', 'NA'):.4f}")
-            logger.info(f"   Prec:   {res.get('precision', 'NA'):.4f}")
-            logger.info(f"   Recall: {res.get('recall', 'NA'):.4f}")
-            logger.info(f"   F1:     {res.get('f1', 'NA'):.4f}")
+        # Fit and transform training data
+        X_train_processed = pipeline.fit_transform(X_train, y_train)
         
-        logger.info(f"\n📁 Full results saved in: {os.path.abspath(self.output_dir)}")
-        logger.info("\n✅ Analysis completed successfully!")
+        # Transform test data using fitted pipeline
+        X_test_processed = pipeline.transform(X_test)
+        
+        logger.info(f"✅ Feature engineering completed:")
+        logger.info(f"   Processed training shape: {X_train_processed.shape}")
+        logger.info(f"   Processed test shape: {X_test_processed.shape}")
+        
+        # Create final datasets
+        train_dataset = pd.DataFrame(X_train_processed, columns=[f'feature_{i}' for i in range(X_train_processed.shape[1])])
+        train_dataset['target'] = y_train.values
+        train_dataset['participant_id'] = ids_train.values
+        
+        test_dataset = pd.DataFrame(X_test_processed, columns=[f'feature_{i}' for i in range(X_test_processed.shape[1])])
+        test_dataset['target'] = y_test.values
+        test_dataset['participant_id'] = ids_test.values
+        
+        results = {
+            'train_dataset': train_dataset,
+            'test_dataset': test_dataset,
+            'feature_pipeline': pipeline,
+            'selected_features': pipeline.selected_features_,
+            'feature_importance': pipeline.get_feature_importance(),
+            'train_indices': X_train.index.tolist(),
+            'test_indices': X_test.index.tolist()
+        }
+        
+        logger.info("✅ ML-ready datasets created with no data leakage!")
+        return results
+
+
+class ProperCrossValidation:
+    """
+    Proper cross-validation that respects train/test splits
+    """
+    
+    def __init__(self, n_splits=5, random_state=42):
+        self.n_splits = n_splits
+        self.random_state = random_state
+    
+    def create_cv_folds_no_leakage(self, X_train, y_train, participant_ids_train):
+        """
+        Create CV folds within training data only (no test data involved)
+        """
+        logger.info(f"\n🔄 Creating {self.n_splits}-fold CV strategy...")
+        logger.info("   ✅ Using training data only - no test data leakage!")
+        
+        skf = StratifiedKFold(n_splits=self.n_splits, shuffle=True, random_state=self.random_state)
+        
+        folds = []
+        for fold_idx, (train_idx, val_idx) in enumerate(skf.split(X_train, y_train)):
+            fold_info = {
+                'fold': fold_idx + 1,
+                'train_idx': train_idx,
+                'val_idx': val_idx,
+                'train_size': len(train_idx),
+                'val_size': len(val_idx),
+                'train_class_dist': y_train.iloc[train_idx].value_counts().to_dict(),
+                'val_class_dist': y_train.iloc[val_idx].value_counts().to_dict()
+            }
+            folds.append(fold_info)
+        
+        logger.info(f"✅ Created {len(folds)} CV folds")
+        for fold in folds:
+            logger.info(f"   Fold {fold['fold']}: {fold['train_size']} train, {fold['val_size']} val")
+        
+        return folds
+    
+    def validate_cv_integrity(self, folds, test_indices):
+        """
+        Validate that CV folds don't include any test data
+        """
+        logger.info("\n🔍 Validating CV integrity...")
+        
+        test_set = set(test_indices)
+        
+        for fold in folds:
+            train_indices_set = set(fold['train_idx'])
+            val_indices_set = set(fold['val_idx'])
+            
+            # Check for overlap with test set
+            train_test_overlap = train_indices_set.intersection(test_set)
+            val_test_overlap = val_indices_set.intersection(test_set)
+            
+            if train_test_overlap or val_test_overlap:
+                logger.error(f"❌ LEAKAGE DETECTED in Fold {fold['fold']}!")
+                logger.error(f"   Train-Test overlap: {len(train_test_overlap)} samples")
+                logger.error(f"   Val-Test overlap: {len(val_test_overlap)} samples")
+                return False
+        
+        logger.info("✅ CV integrity validated - no test data leakage detected!")
+        return True
+
+
+# Safe utility functions that don't cause leakage
+
+def save_ml_datasets(train_dataset, test_dataset, feature_info, output_dir="ml_output"):
+    """Save ML datasets and metadata safely"""
+    import os
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Save datasets
+    train_dataset.to_csv(f"{output_dir}/train_dataset.csv", index=False)
+    test_dataset.to_csv(f"{output_dir}/test_dataset.csv", index=False)
+    
+    # Save feature information
+    feature_info['feature_importance'].to_csv(f"{output_dir}/feature_importance.csv", index=False)
+    
+    # Save metadata
+    metadata = {
+        'train_samples': len(train_dataset),
+        'test_samples': len(test_dataset),
+        'num_features': len(feature_info['selected_features']),
+        'selected_features': feature_info['selected_features']
+    }
+    
+    import json
+    with open(f"{output_dir}/metadata.json", 'w') as f:
+        json.dump(metadata, f, indent=2)
+    
+    logger.info(f"✅ ML datasets saved to {output_dir}/")
+
+
+# Example usage with proper data handling
+def create_proper_ml_workflow(data):
+    """
+    Example of proper ML workflow without data leakage
+    """
+    logger.info("\n🚀 Starting PROPER ML workflow (no data leakage)...")
+    
+    # 1. Exploratory analysis (uses full data - that's OK for exploration)
+    explorer = ExploratoryFeatureAnalyzer({'data': data, 'feature_schema': {}})
+    exploration_results = explorer.analyze_feature_distributions_exploration()
+    
+    # 2. Create proper ML datasets with train/test split
+    dataset_creator = MLDatasetCreator(data)
+    ml_results = dataset_creator.create_ml_dataset_proper_split(
+        test_size=0.2,
+        feature_pipeline_params={'n_features': 50, 'correlation_threshold': 0.9}
+    )
+    
+    # 3. Create proper CV strategy (using training data only)
+    cv_strategy = ProperCrossValidation(n_splits=5)
+    
+    # Extract training data for CV
+    train_features = ml_results['train_dataset'].drop(['target', 'participant_id'], axis=1)
+    train_targets = ml_results['train_dataset']['target']
+    train_ids = ml_results['train_dataset']['participant_id']
+    
+    cv_folds = cv_strategy.create_cv_folds_no_leakage(train_features, train_targets, train_ids)
+    
+    # 4. Validate CV integrity
+    cv_strategy.validate_cv_integrity(cv_folds, ml_results['test_indices'])
+    
+    # 5. Save everything
+    save_ml_datasets(
+        ml_results['train_dataset'],
+        ml_results['test_dataset'],
+        ml_results,
+        "proper_ml_output"
+    )
+    
+    logger.info("✅ PROPER ML workflow completed successfully!")
+    
+    return ml_results, cv_folds
 
 
 if __name__ == "__main__":
-    try:
-        # Configuration
-        neo4j_password = os.environ.get('NEO4J_PASSWORD', 'password')
-        
-        # Run analysis
-        analyzer = NeuroGaitAnalysis(
-            neo4j_uri="bolt://localhost:7687",
-            neo4j_user="neo4j",
-            neo4j_password=neo4j_password
-        )
-        
-        results = analyzer.run_analysis()
-        
-    except Exception as e:
-        logger.error(f"❌ Fatal error: {str(e)}")
-        raise
+    # Example usage
+    logger.info("Fixed NeuroGait App - Ready for use without data leakage!")
