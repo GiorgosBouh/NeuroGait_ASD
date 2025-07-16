@@ -1,9 +1,9 @@
 # Create the main analysis script
-cat > neurogait_analysis.py << 'EOF'
+#cat > neurogait_analysis.py << 'EOF'
 #!/usr/bin/env python3
-"""
-NeuroGait ASD ML Analysis - COMPLETE WORKING VERSION
-"""
+#"""
+#NeuroGait ASD ML Analysis - COMPLETE WORKING VERSION
+#"""
 
 import pandas as pd
 import numpy as np
