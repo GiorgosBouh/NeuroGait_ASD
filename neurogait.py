@@ -302,4 +302,3 @@ if __name__ == "__main__":
 EOF
 
 # Now run the complete analysis
-python neurogait_analysis.py
