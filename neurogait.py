@@ -1,12 +1,3 @@
-# Remove the problematic script
-rm neurogait.py
-
-# Create a clean, working version
-cat > neurogait_clean.py << 'ENDFILE'
-#!/usr/bin/env python3
-"""
-NeuroGait ASD ML Analysis - CLEAN VERSION WITH ADDITIONAL LEAKAGE PROTECTION
-"""
 
 import pandas as pd
 import numpy as np
@@ -289,7 +280,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-ENDFILE
-
-# Run the clean version
-python neurogait_clean.py
