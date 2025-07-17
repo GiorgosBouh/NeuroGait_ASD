@@ -117,10 +117,19 @@ class ParticipantLevelSplitter:
         unique_train_participants = np.unique(train_participants)
         participant_labels = []
         
+        # Create mapping from participant ID to label using the first sample of each participant
         for pid in unique_train_participants:
-            # Get label for this participant (all samples from same participant have same label)
-            pid_mask = self.participant_ids[:len(X_train)] == pid
-            participant_labels.append(y_train[pid_mask][0])
+            # Find samples belonging to this participant in the training set
+            train_participant_ids = self.participant_ids[:len(X_train)]
+            pid_mask = train_participant_ids == pid
+            
+            if np.any(pid_mask):
+                # Get the first occurrence's label
+                matching_indices = np.where(pid_mask)[0]
+                first_index = matching_indices[0]
+                participant_labels.append(y_train.iloc[first_index])
+            else:
+                raise ValueError(f"Participant {pid} not found in training data")
         
         participant_labels = np.array(participant_labels)
         
@@ -134,9 +143,10 @@ class ParticipantLevelSplitter:
             fold_train_pids = unique_train_participants[train_pids_idx]
             fold_val_pids = unique_train_participants[val_pids_idx]
             
-            # Get sample indices
-            fold_train_mask = np.isin(self.participant_ids[:len(X_train)], fold_train_pids)
-            fold_val_mask = np.isin(self.participant_ids[:len(X_train)], fold_val_pids)
+            # Get sample indices for the current training data
+            train_participant_ids = self.participant_ids[:len(X_train)]
+            fold_train_mask = np.isin(train_participant_ids, fold_train_pids)
+            fold_val_mask = np.isin(train_participant_ids, fold_val_pids)
             
             cv_folds.append({
                 'fold': fold_idx + 1,
