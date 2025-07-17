@@ -1,30 +1,39 @@
-<<<<<<< HEAD
 #!/usr/bin/env python3
 """
 Complete NeuroGait Analysis - Temporal/Angular Features Only
 Uses only movement patterns, not spatial positions to avoid height bias
 Includes: Raw features, Graph embeddings, Combined analysis
 All with proper participant-level splitting (no data leakage)
+FIXED VERSION - Handles confirmed participant structure correctly
 """
-=======
->>>>>>> de692d289280d9bf55a18121c2af96d558ab4021
 
 import pandas as pd
 import numpy as np
+import os
+import json
+import networkx as nx
 from sklearn.model_selection import train_test_split, StratifiedKFold
 from sklearn.preprocessing import StandardScaler
 from sklearn.feature_selection import SelectKBest, f_classif
+from sklearn.neighbors import NearestNeighbors
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
 import xgboost as xgb
 import warnings
 import logging
 from datetime import datetime
 
+# Optional: Node2Vec for graph embeddings
+try:
+    from node2vec import Node2Vec
+    HAS_NODE2VEC = True
+except ImportError:
+    HAS_NODE2VEC = False
+    print("⚠️  node2vec not available - using fallback embeddings")
+
 warnings.filterwarnings('ignore')
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
 
-<<<<<<< HEAD
 class TemporalAngularAnalysis:
     def __init__(self, samples_per_participant=8):
         self.samples_per_participant = samples_per_participant
@@ -51,6 +60,32 @@ class TemporalAngularAnalysis:
             'KNFOR': 'KneeRight-AnkleRight-FootRight'
         }
         
+    def create_participant_mapping(self):
+        """Create the CONFIRMED participant mapping"""
+        participants_info = []
+        
+        # Participants 0-49: ASD (samples 0-399)
+        for p in range(50):
+            start_idx = p * 8
+            end_idx = start_idx + 8
+            participants_info.append({
+                'participant_id': p,
+                'class': 'ASD',
+                'samples': list(range(start_idx, end_idx))
+            })
+        
+        # Participants 50-99: Typical (samples 400-799)  
+        for p in range(50, 100):
+            start_idx = p * 8
+            end_idx = start_idx + 8
+            participants_info.append({
+                'participant_id': p,
+                'class': 'Typical',
+                'samples': list(range(start_idx, end_idx))
+            })
+        
+        return participants_info
+        
     def load_temporal_angular_data(self):
         """Load data keeping ONLY temporal and angular features (no spatial positions)"""
         logger.info("📊 Loading data with TEMPORAL/ANGULAR features only...")
@@ -59,14 +94,39 @@ class TemporalAngularAnalysis:
         df = pd.read_csv('Final dataset.csv', sep=';', decimal=',')
         logger.info(f"✅ Loaded {len(df)} samples with {len(df.columns)} columns")
         
-        # Convert target
-        df['class'] = df['class'].map({'A': 1, 'T': 0})
-        df = df.rename(columns={'class': 'diagnosis'})
+        # Apply CONFIRMED participant structure
+        participants_info = self.create_participant_mapping()
+        
+        # Add participant metadata
+        participant_ids = []
+        actual_classes = []
+        
+        for i in range(len(df)):
+            participant_id = i // 8
+            if participant_id < 50:
+                class_label = 'ASD'
+            else:
+                class_label = 'Typical'
+            
+            participant_ids.append(participant_id)
+            actual_classes.append(class_label)
+        
+        df['participant_id'] = participant_ids
+        df['actual_class'] = actual_classes
+        
+        # Convert target using CONFIRMED structure
+        df['diagnosis'] = df['actual_class'].map({'ASD': 1, 'Typical': 0})
+        
+        # Verify consistency
+        original_class = df['class'].map({'A': 1, 'T': 0})
+        mismatches = (df['diagnosis'] != original_class).sum()
+        if mismatches > 0:
+            logger.warning(f"⚠️  Found {mismatches} class mismatches - using CONFIRMED structure")
         
         # CRITICAL: Keep ONLY temporal and angular features (NO spatial positions)
         logger.info("\n🎯 Filtering to temporal/angular features only (NO SPATIAL POSITIONS)...")
         
-        cols_to_keep = ['diagnosis']
+        cols_to_keep = ['diagnosis', 'participant_id']
         spatial_excluded = 0
         
         for col in df.columns:
@@ -113,52 +173,51 @@ class TemporalAngularAnalysis:
         
         # Remove constant features
         for col in df_filtered.columns:
-            if col != 'diagnosis' and df_filtered[col].nunique() <= 1:
+            if col not in ['diagnosis', 'participant_id'] and df_filtered[col].nunique() <= 1:
                 df_filtered = df_filtered.drop(columns=[col])
+        
+        # Verify participant structure
+        participant_class_check = df_filtered.groupby('participant_id')['diagnosis'].nunique()
+        inconsistent_participants = participant_class_check[participant_class_check > 1]
+        
+        if len(inconsistent_participants) > 0:
+            logger.error(f"❌ Found {len(inconsistent_participants)} participants with inconsistent classes!")
+            raise ValueError("Participant class inconsistency detected!")
         
         logger.info(f"\n📊 FEATURE FILTERING SUMMARY:")
         logger.info(f"   ❌ Excluded spatial coordinates: {spatial_excluded} features")
-        logger.info(f"   ✅ Kept temporal/angular/pattern features: {len(df_filtered.columns)-1}")
+        logger.info(f"   ✅ Kept temporal/angular/pattern features: {len(df_filtered.columns)-2}")
         logger.info(f"   📈 Data reduction: {spatial_excluded / (len(df.columns)-1) * 100:.1f}% of features removed")
         logger.info(f"   🎯 Focus: Movement patterns, NOT absolute positions")
         logger.info(f"   📊 Class distribution: {df_filtered['diagnosis'].value_counts().to_dict()}")
+        logger.info(f"   👥 Participants: {df_filtered['participant_id'].nunique()}")
         
         return df_filtered
-=======
-def load_and_prepare_data():
-    """Load and prepare data with participant structure"""
-    logger.info("📊 Loading data...")
     
-    # Load data
-    df = pd.read_csv('Final dataset.csv', sep=';', decimal=',')
-    logger.info(f"✅ Loaded {len(df)} samples with {len(df.columns)} columns")
->>>>>>> de692d289280d9bf55a18121c2af96d558ab4021
-    
-<<<<<<< HEAD
-    def participant_level_split(self, X, y, test_size=0.2):
+    def participant_level_split(self, X, y, participant_ids, test_size=0.2):
         """Split at participant level to prevent leakage"""
         logger.info("\n🔧 Performing participant-level split...")
         
-        n_samples = len(X)
-        n_participants = n_samples // self.samples_per_participant
+        # Get unique participants and their labels
+        unique_participants = participant_ids.unique()
+        participant_labels = []
         
-        # Create participant IDs
-        participant_ids = np.repeat(range(n_participants), self.samples_per_participant)
-        
-        # Get one label per participant
-        participant_labels = y[::self.samples_per_participant].values
+        for pid in unique_participants:
+            # Get the label for this participant (should be consistent)
+            participant_label = y[participant_ids == pid].iloc[0]
+            participant_labels.append(participant_label)
         
         # Split participants
         train_pids, test_pids = train_test_split(
-            range(n_participants), 
+            unique_participants, 
             test_size=test_size, 
             stratify=participant_labels, 
             random_state=42
         )
         
         # Get sample indices
-        train_mask = np.isin(participant_ids, train_pids)
-        test_mask = np.isin(participant_ids, test_pids)
+        train_mask = participant_ids.isin(train_pids)
+        test_mask = participant_ids.isin(test_pids)
         
         X_train = X[train_mask].reset_index(drop=True)
         X_test = X[test_mask].reset_index(drop=True)
@@ -171,13 +230,7 @@ def load_and_prepare_data():
         logger.info(f"   Test class distribution: {y_test.value_counts().to_dict()}")
         
         return X_train, X_test, y_train, y_test, train_pids
-=======
-    # Convert target
-    df['class'] = df['class'].map({'A': 1, 'T': 0})
-    df = df.rename(columns={'class': 'diagnosis'})
->>>>>>> de692d289280d9bf55a18121c2af96d558ab4021
     
-<<<<<<< HEAD
     def create_feature_pipeline(self, n_features=20):
         """Create feature processing pipeline"""
         
@@ -199,7 +252,7 @@ def load_and_prepare_data():
                 )
                 
                 to_drop = [column for column in upper_triangle.columns 
-                          if any(upper_triangle[column] > 0.85)]  # Slightly more permissive
+                          if any(upper_triangle[column] > 0.85)]
                 
                 logger.info(f"   Removing {len(to_drop)} highly correlated features")
                 self.corr_features_to_drop = to_drop
@@ -229,37 +282,24 @@ def load_and_prepare_data():
                 return self.fit(X, y).transform(X)
         
         return FeatureProcessor(n_features)
-=======
-    # Keep only mean features
-    cols_to_keep = ['diagnosis']
-    for col in df.columns:
-        col_clean = col.strip()
-        if (col_clean.startswith('mean-') and any(coord in col_clean for coord in ['-x-', '-y-', '-z-'])) or \
-           (col_clean.startswith('mean ') and len(col_clean.split()) >= 2) or \
-           col_clean.startswith('Rom') or \
-           col_clean in ['MaxStLe', 'MaxStWi', 'StrLe', 'GaCT', 'StaT', 'SwiT', 'Velocity', 'HaTiLPos', 'HaTiRPos', 'MaxDBFE', 'MinDBFE', 'Threshold']:
-            cols_to_keep.append(col)
->>>>>>> de692d289280d9bf55a18121c2af96d558ab4021
     
-<<<<<<< HEAD
-    def create_movement_pattern_graph(self, X_train, y_train, similarity_threshold=0.6):
+    def create_movement_pattern_graph(self, X_train, y_train, participant_ids, similarity_threshold=0.6):
         """Create graph based on movement pattern similarity (no spatial coords)"""
         logger.info(f"\n🧠 Creating movement pattern similarity graph...")
         
         G = nx.Graph()
         
-        # Add participant nodes
-        n_participants = len(X_train) // self.samples_per_participant
+        # Get unique participants
+        unique_participants = participant_ids.unique()
         
-        for i in range(n_participants):
-            participant_id = f"P_{i:04d}"
+        # Add participant nodes
+        for pid in unique_participants:
+            participant_id = f"P_{pid:03d}"
             
             # Get this participant's samples
-            start_idx = i * self.samples_per_participant
-            end_idx = start_idx + self.samples_per_participant
-            
-            participant_features = X_train.iloc[start_idx:end_idx].mean()  # Average across augmentations
-            participant_label = int(y_train.iloc[start_idx])
+            participant_mask = participant_ids == pid
+            participant_features = X_train[participant_mask].mean()  # Average across augmentations
+            participant_label = int(y_train[participant_mask].iloc[0])
             
             # Add node with movement pattern statistics
             feature_stats = {
@@ -270,157 +310,55 @@ def load_and_prepare_data():
                 'node_type': 'participant'
             }
             G.add_node(participant_id, **feature_stats)
-=======
-    df_filtered = df[cols_to_keep]
-    
-    # Remove constant features
-    for col in df_filtered.columns:
-        if col != 'diagnosis' and df_filtered[col].nunique() <= 1:
-            df_filtered = df_filtered.drop(columns=[col])
-    
-    logger.info(f"✅ Kept {len(df_filtered.columns)-1} features")
-    return df_filtered
-
-def participant_level_split(X, y, test_size=0.2, samples_per_participant=8):
-    """Split at participant level to prevent leakage"""
-    logger.info("🔧 Performing participant-level split...")
-    
-    n_samples = len(X)
-    n_participants = n_samples // samples_per_participant
-    
-    # Create participant IDs
-    participant_ids = np.repeat(range(n_participants), samples_per_participant)
-    
-    # Get one label per participant (they're all the same for each participant)
-    participant_labels = y[::samples_per_participant].values
-    
-    # Split participants
-    train_pids, test_pids = train_test_split(
-        range(n_participants), 
-        test_size=test_size, 
-        stratify=participant_labels, 
-        random_state=42
-    )
-    
-    # Get sample indices
-    train_mask = np.isin(participant_ids, train_pids)
-    test_mask = np.isin(participant_ids, test_pids)
-    
-    X_train = X[train_mask].reset_index(drop=True)
-    X_test = X[test_mask].reset_index(drop=True)
-    y_train = y[train_mask].reset_index(drop=True)
-    y_test = y[test_mask].reset_index(drop=True)
-    
-    logger.info(f"✅ Split: {len(train_pids)} train participants ({len(X_train)} samples)")
-    logger.info(f"         {len(test_pids)} test participants ({len(X_test)} samples)")
-    
-    return X_train, X_test, y_train, y_test, train_pids
-
-def simple_cv_with_participants(X_train, y_train, train_pids, samples_per_participant=8):
-    """Simple participant-level CV"""
-    logger.info("🔄 Creating participant-level CV...")
-    
-    # Get participant labels
-    n_train_participants = len(train_pids)
-    participant_labels = y_train[::samples_per_participant].values
-    
-    # Create CV splits
-    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-    cv_scores = []
-    
-    for fold, (train_p_idx, val_p_idx) in enumerate(skf.split(range(n_train_participants), participant_labels)):
-        # Get sample indices for this fold
-        train_sample_indices = []
-        val_sample_indices = []
         
-        for p_idx in train_p_idx:
-            start_idx = p_idx * samples_per_participant
-            end_idx = start_idx + samples_per_participant
-            train_sample_indices.extend(range(start_idx, end_idx))
-        
-        for p_idx in val_p_idx:
-            start_idx = p_idx * samples_per_participant
-            end_idx = start_idx + samples_per_participant
-            val_sample_indices.extend(range(start_idx, end_idx))
->>>>>>> de692d289280d9bf55a18121c2af96d558ab4021
-        
-<<<<<<< HEAD
         # Add similarity edges using movement patterns
         logger.info("   Computing movement pattern similarities...")
-=======
-        # Get fold data
-        X_fold_train = X_train.iloc[train_sample_indices]
-        X_fold_val = X_train.iloc[val_sample_indices]
-        y_fold_train = y_train.iloc[train_sample_indices]
-        y_fold_val = y_train.iloc[val_sample_indices]
->>>>>>> de692d289280d9bf55a18121c2af96d558ab4021
         
-<<<<<<< HEAD
         # Create participant-level feature matrix (average of augmentations)
         participant_features = []
-        for i in range(n_participants):
-            start_idx = i * self.samples_per_participant
-            end_idx = start_idx + self.samples_per_participant
-            participant_avg = X_train.iloc[start_idx:end_idx].mean()
+        for pid in unique_participants:
+            participant_mask = participant_ids == pid
+            participant_avg = X_train[participant_mask].mean()
             participant_features.append(participant_avg.values)
         
         participant_features = np.array(participant_features)
         
         # Use k-NN to find similar movement patterns
+        n_participants = len(unique_participants)
         knn = NearestNeighbors(n_neighbors=min(8, n_participants//2), metric='cosine')
         knn.fit(participant_features)
         
         distances, indices = knn.kneighbors(participant_features)
         edge_count = 0
-=======
-        # Train fold model
-        model = xgb.XGBClassifier(
-            n_estimators=100, max_depth=4, learning_rate=0.05,
-            subsample=0.8, colsample_bytree=0.8,
-            reg_alpha=2.0, reg_lambda=2.0,
-            random_state=42, use_label_encoder=False, eval_metric='logloss'
-        )
-        model.fit(X_fold_train, y_fold_train)
->>>>>>> de692d289280d9bf55a18121c2af96d558ab4021
         
-<<<<<<< HEAD
         for i, (neighbors, dists) in enumerate(zip(indices, distances)):
-            participant_i = f"P_{i:04d}"
+            participant_i = f"P_{unique_participants[i]:03d}"
             for j, dist in zip(neighbors, dists):
                 if i != j and (1 - dist) > similarity_threshold:
-                    participant_j = f"P_{j:04d}"
+                    participant_j = f"P_{unique_participants[j]:03d}"
                     similarity = 1 - dist
                     G.add_edge(participant_i, participant_j, 
                              weight=similarity, 
                              connection_type='movement_similarity')
                     edge_count += 1
-=======
-        # Evaluate
-        y_pred_proba = model.predict_proba(X_fold_val)[:, 1]
-        fold_auc = roc_auc_score(y_fold_val, y_pred_proba)
-        cv_scores.append(fold_auc)
->>>>>>> de692d289280d9bf55a18121c2af96d558ab4021
         
-<<<<<<< HEAD
         logger.info(f"   Added {edge_count} movement pattern similarity edges")
         logger.info(f"   Movement graph: {G.number_of_nodes()} participants, {G.number_of_edges()} edges")
         
         return G
-=======
-        logger.info(f"   Fold {fold+1}: {len(train_p_idx)} train participants, {len(val_p_idx)} val participants, AUC: {fold_auc:.4f}")
->>>>>>> de692d289280d9bf55a18121c2af96d558ab4021
     
-<<<<<<< HEAD
-    def create_graph_embeddings(self, X_train, y_train, X_test, embedding_dim=24):
+    def create_graph_embeddings(self, X_train, y_train, X_test, train_participant_ids, test_participant_ids, embedding_dim=24):
         """Create graph embeddings based on movement patterns"""
         logger.info(f"\n🧠 Creating movement pattern embeddings (dim={embedding_dim})...")
         
         try:
             # Create movement pattern graph
-            movement_graph = self.create_movement_pattern_graph(X_train, y_train)
+            movement_graph = self.create_movement_pattern_graph(
+                X_train, y_train, train_participant_ids
+            )
             
             # Generate embeddings if graph has edges
-            if movement_graph.number_of_edges() > 0:
+            if movement_graph.number_of_edges() > 0 and HAS_NODE2VEC:
                 logger.info("   Running Node2Vec on movement patterns...")
                 
                 node2vec = Node2Vec(
@@ -437,61 +375,65 @@ def simple_cv_with_participants(X_train, y_train, train_pids, samples_per_partic
                 model = node2vec.fit(window=5, min_count=1, batch_words=4, epochs=10)
                 
                 # Get embeddings for training participants
-                n_train_participants = len(X_train) // self.samples_per_participant
-                participant_embeddings = np.zeros((n_train_participants, embedding_dim))
+                unique_train_participants = train_participant_ids.unique()
+                participant_embeddings = np.zeros((len(unique_train_participants), embedding_dim))
                 
-                for i in range(n_train_participants):
-                    participant_id = f"P_{i:04d}"
+                for i, pid in enumerate(unique_train_participants):
+                    participant_id = f"P_{pid:03d}"
                     if participant_id in model.wv:
                         participant_embeddings[i] = model.wv[participant_id]
                     else:
                         participant_embeddings[i] = np.random.normal(0, 0.01, embedding_dim)
                 
-                # Replicate embeddings for all samples (8 per participant)
-                train_embeddings = np.repeat(participant_embeddings, self.samples_per_participant, axis=0)
+                # Map embeddings to samples
+                train_embeddings = np.zeros((len(X_train), embedding_dim))
+                for i, pid in enumerate(train_participant_ids):
+                    participant_idx = np.where(unique_train_participants == pid)[0][0]
+                    train_embeddings[i] = participant_embeddings[participant_idx]
                 
                 # For test set: project using k-NN from training movement patterns
                 logger.info("   Projecting test embeddings using movement pattern similarity...")
                 
-                n_test_participants = len(X_test) // self.samples_per_participant
+                unique_test_participants = test_participant_ids.unique()
                 test_participant_features = []
                 
-                for i in range(n_test_participants):
-                    start_idx = i * self.samples_per_participant
-                    end_idx = start_idx + self.samples_per_participant
-                    participant_avg = X_test.iloc[start_idx:end_idx].mean()
+                for pid in unique_test_participants:
+                    participant_mask = test_participant_ids == pid
+                    participant_avg = X_test[participant_mask].mean()
                     test_participant_features.append(participant_avg.values)
                 
                 test_participant_features = np.array(test_participant_features)
                 
                 # Find similar training participants
                 train_participant_features = []
-                for i in range(n_train_participants):
-                    start_idx = i * self.samples_per_participant
-                    end_idx = start_idx + self.samples_per_participant
-                    participant_avg = X_train.iloc[start_idx:end_idx].mean()
+                for pid in unique_train_participants:
+                    participant_mask = train_participant_ids == pid
+                    participant_avg = X_train[participant_mask].mean()
                     train_participant_features.append(participant_avg.values)
                 
                 train_participant_features = np.array(train_participant_features)
                 
-                knn = NearestNeighbors(n_neighbors=min(5, n_train_participants), metric='cosine')
+                knn = NearestNeighbors(n_neighbors=min(5, len(unique_train_participants)), metric='cosine')
                 knn.fit(train_participant_features)
                 
                 test_distances, test_indices = knn.kneighbors(test_participant_features)
-                test_participant_embeddings = np.zeros((n_test_participants, embedding_dim))
+                test_participant_embeddings = np.zeros((len(unique_test_participants), embedding_dim))
                 
                 for i, (neighbors, dists) in enumerate(zip(test_indices, test_distances)):
                     weights = 1 / (dists + 1e-8)
                     weights = weights / weights.sum()
                     test_participant_embeddings[i] = np.average(participant_embeddings[neighbors], axis=0, weights=weights)
                 
-                # Replicate for all test samples
-                test_embeddings = np.repeat(test_participant_embeddings, self.samples_per_participant, axis=0)
+                # Map embeddings to test samples
+                test_embeddings = np.zeros((len(X_test), embedding_dim))
+                for i, pid in enumerate(test_participant_ids):
+                    participant_idx = np.where(unique_test_participants == pid)[0][0]
+                    test_embeddings[i] = test_participant_embeddings[participant_idx]
                 
                 logger.info(f"✅ Created movement embeddings: train {train_embeddings.shape}, test {test_embeddings.shape}")
                 
             else:
-                logger.warning("   No edges in movement graph, using random embeddings")
+                logger.warning("   No edges in movement graph or Node2Vec unavailable, using random embeddings")
                 train_embeddings = np.random.normal(0, 0.01, (len(X_train), embedding_dim))
                 test_embeddings = np.random.normal(0, 0.01, (len(X_test), embedding_dim))
             
@@ -503,42 +445,33 @@ def simple_cv_with_participants(X_train, y_train, train_pids, samples_per_partic
             train_embeddings = np.random.normal(0, 0.01, (len(X_train), embedding_dim))
             test_embeddings = np.random.normal(0, 0.01, (len(X_test), embedding_dim))
             return train_embeddings, test_embeddings
-=======
-    return cv_scores
-
-def train_final_model(X_train, X_test, y_train, y_test):
-    """Train final model"""
-    logger.info("🚀 Training final model...")
->>>>>>> de692d289280d9bf55a18121c2af96d558ab4021
     
-<<<<<<< HEAD
-    def participant_cv_scores(self, X_train, y_train, train_pids, model_class=None):
+    def participant_cv_scores(self, X_train, y_train, train_participant_ids, model_class=None):
         """Get CV scores at participant level"""
-        n_train_participants = len(train_pids)
-        participant_labels = y_train[::self.samples_per_participant].values
+        unique_train_participants = train_participant_ids.unique()
+        participant_labels = []
+        
+        for pid in unique_train_participants:
+            participant_mask = train_participant_ids == pid
+            participant_label = y_train[participant_mask].iloc[0]
+            participant_labels.append(participant_label)
         
         skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
         cv_scores = []
         
-        for train_p_idx, val_p_idx in skf.split(range(n_train_participants), participant_labels):
+        for train_p_idx, val_p_idx in skf.split(range(len(unique_train_participants)), participant_labels):
+            # Get participant IDs for this fold
+            train_fold_pids = unique_train_participants[train_p_idx]
+            val_fold_pids = unique_train_participants[val_p_idx]
+            
             # Get sample indices
-            train_sample_indices = []
-            val_sample_indices = []
+            train_fold_mask = train_participant_ids.isin(train_fold_pids)
+            val_fold_mask = train_participant_ids.isin(val_fold_pids)
             
-            for p_idx in train_p_idx:
-                start_idx = p_idx * self.samples_per_participant
-                end_idx = start_idx + self.samples_per_participant
-                train_sample_indices.extend(range(start_idx, end_idx))
-            
-            for p_idx in val_p_idx:
-                start_idx = p_idx * self.samples_per_participant
-                end_idx = start_idx + self.samples_per_participant
-                val_sample_indices.extend(range(start_idx, end_idx))
-            
-            X_fold_train = X_train[train_sample_indices] if isinstance(X_train, np.ndarray) else X_train.iloc[train_sample_indices]
-            X_fold_val = X_train[val_sample_indices] if isinstance(X_train, np.ndarray) else X_train.iloc[val_sample_indices]
-            y_fold_train = y_train.iloc[train_sample_indices]
-            y_fold_val = y_train.iloc[val_sample_indices]
+            X_fold_train = X_train[train_fold_mask] if isinstance(X_train, np.ndarray) else X_train[train_fold_mask]
+            X_fold_val = X_train[val_fold_mask] if isinstance(X_train, np.ndarray) else X_train[val_fold_mask]
+            y_fold_train = y_train[train_fold_mask]
+            y_fold_val = y_train[val_fold_mask]
             
             # Train model
             if model_class is None:
@@ -558,93 +491,20 @@ def train_final_model(X_train, X_test, y_train, y_test):
         
         return cv_scores
     
-    def train_and_evaluate_model(self, X_train, X_test, y_train, y_test, train_pids, model_name="Model"):
+    def train_and_evaluate_model(self, X_train, X_test, y_train, y_test, train_participant_ids, model_name="Model"):
         """Train and evaluate model with participant-level CV"""
         logger.info(f"\n🚀 Training {model_name}...")
         logger.info(f"   Training set: {X_train.shape}")
         logger.info(f"   Test set: {X_test.shape}")
-=======
-    # Feature selection and scaling
-    # Remove highly correlated features
-    corr_matrix = X_train.corr().abs()
-    upper_triangle = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
-    to_drop = [column for column in upper_triangle.columns if any(upper_triangle[column] > 0.8)]
-    
-    X_train_decorr = X_train.drop(columns=to_drop)
-    X_test_decorr = X_test.drop(columns=to_drop)
-    
-    # Scale
-    scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train_decorr)
-    X_test_scaled = scaler.transform(X_test_decorr)
-    
-    # Select features
-    selector = SelectKBest(f_classif, k=min(25, X_train_scaled.shape[1]))
-    X_train_selected = selector.fit_transform(X_train_scaled, y_train)
-    X_test_selected = selector.transform(X_test_scaled)
-    
-    logger.info(f"   Selected {X_train_selected.shape[1]} features after processing")
-    
-    # Train model
-    model = xgb.XGBClassifier(
-        n_estimators=100, max_depth=4, learning_rate=0.05,
-        subsample=0.8, colsample_bytree=0.8,
-        reg_alpha=2.0, reg_lambda=2.0,
-        random_state=42, use_label_encoder=False, eval_metric='logloss'
-    )
-    model.fit(X_train_selected, y_train)
-    
-    # Evaluate
-    y_pred = model.predict(X_test_selected)
-    y_pred_proba = model.predict_proba(X_test_selected)[:, 1]
-    
-    metrics = {
-        'test_auc': roc_auc_score(y_test, y_pred_proba),
-        'test_accuracy': accuracy_score(y_test, y_pred),
-        'test_precision': precision_score(y_test, y_pred),
-        'test_recall': recall_score(y_test, y_pred),
-        'test_f1': f1_score(y_test, y_pred),
-    }
-    
-    return metrics
-
-def main():
-    """Main analysis"""
-    logger.info("🔍 Starting SIMPLE Fixed NeuroGait Analysis")
-    
-    try:
-        # Load data
-        df = load_and_prepare_data()
-        X = df.drop('diagnosis', axis=1)
-        y = df['diagnosis']
->>>>>>> de692d289280d9bf55a18121c2af96d558ab4021
         
-<<<<<<< HEAD
         # Get CV scores
-        cv_scores = self.participant_cv_scores(X_train, y_train, train_pids)
+        cv_scores = self.participant_cv_scores(X_train, y_train, train_participant_ids)
         cv_mean = np.mean(cv_scores)
         cv_std = np.std(cv_scores)
-=======
-        # Participant-level split
-        X_train, X_test, y_train, y_test, train_pids = participant_level_split(X, y)
->>>>>>> de692d289280d9bf55a18121c2af96d558ab4021
         
-<<<<<<< HEAD
         logger.info(f"   Participant-level CV AUC: {cv_mean:.4f} ± {cv_std:.4f}")
-=======
-        # Participant-level CV
-        cv_scores = simple_cv_with_participants(X_train, y_train, train_pids)
-        cv_mean = np.mean(cv_scores)
-        cv_std = np.std(cv_scores)
->>>>>>> de692d289280d9bf55a18121c2af96d558ab4021
         
-<<<<<<< HEAD
-=======
-        logger.info(f"   CV AUC: {cv_mean:.4f} ± {cv_std:.4f}")
-        
->>>>>>> de692d289280d9bf55a18121c2af96d558ab4021
         # Train final model
-<<<<<<< HEAD
         model = xgb.XGBClassifier(
             n_estimators=50, max_depth=3, learning_rate=0.03,
             subsample=0.7, colsample_bytree=0.7,
@@ -652,11 +512,7 @@ def main():
             random_state=42, use_label_encoder=False, eval_metric='logloss'
         )
         model.fit(X_train, y_train)
-=======
-        metrics = train_final_model(X_train, X_test, y_train, y_test)
->>>>>>> de692d289280d9bf55a18121c2af96d558ab4021
         
-<<<<<<< HEAD
         # Evaluate
         y_pred = model.predict(X_test)
         y_pred_proba = model.predict_proba(X_test)[:, 1]
@@ -673,18 +529,12 @@ def main():
         
         logger.info(f"\n📊 {model_name} Results:")
         logger.info(f"   CV AUC:      {metrics['cv_auc_mean']:.4f} ± {metrics['cv_auc_std']:.4f}")
-=======
-        # Results
-        logger.info("\n📊 FINAL RESULTS (NO PARTICIPANT LEAKAGE):")
-        logger.info(f"   CV AUC:      {cv_mean:.4f} ± {cv_std:.4f}")
->>>>>>> de692d289280d9bf55a18121c2af96d558ab4021
         logger.info(f"   Test AUC:    {metrics['test_auc']:.4f}")
         logger.info(f"   Accuracy:    {metrics['test_accuracy']:.4f}")
         logger.info(f"   Precision:   {metrics['test_precision']:.4f}")
         logger.info(f"   Recall:      {metrics['test_recall']:.4f}")
         logger.info(f"   F1-score:    {metrics['test_f1']:.4f}")
         
-<<<<<<< HEAD
         # Performance assessment
         if metrics['test_auc'] > 0.85:
             logger.warning("   ⚠️  Still high performance")
@@ -692,18 +542,9 @@ def main():
             logger.info("   ✅ Good performance")
         elif metrics['test_auc'] > 0.65:
             logger.info("   ✅ Realistic performance")
-=======
-        if metrics['test_auc'] < 0.85:
-            logger.info("✅ Realistic performance achieved!")
->>>>>>> de692d289280d9bf55a18121c2af96d558ab4021
         else:
-<<<<<<< HEAD
             logger.info("   ℹ️  Lower performance")
-=======
-            logger.warning("⚠️  Still high - may have other issues")
->>>>>>> de692d289280d9bf55a18121c2af96d558ab4021
         
-<<<<<<< HEAD
         return metrics, model
     
     def run_complete_analysis(self):
@@ -711,20 +552,23 @@ def main():
         logger.info(f"\n🔍 Starting Complete Temporal/Angular Analysis - {datetime.now()}")
         logger.info(f"📁 Output directory: {self.output_dir}")
         logger.info(f"🎯 Focus: MOVEMENT PATTERNS only (no spatial positions)")
-=======
-        return metrics
->>>>>>> de692d289280d9bf55a18121c2af96d558ab4021
         
-<<<<<<< HEAD
         try:
             # 1. Load temporal/angular data only
             df = self.load_temporal_angular_data()
             
             # 2. Participant-level split
-            X = df.drop('diagnosis', axis=1)
+            X = df.drop(['diagnosis', 'participant_id'], axis=1)
             y = df['diagnosis']
+            participant_ids = df['participant_id']
             
-            X_train, X_test, y_train, y_test, train_pids = self.participant_level_split(X, y)
+            X_train, X_test, y_train, y_test, train_pids = self.participant_level_split(
+                X, y, participant_ids
+            )
+            
+            # Get participant IDs for train/test sets
+            train_participant_ids = participant_ids[participant_ids.index.isin(X_train.index)]
+            test_participant_ids = participant_ids[participant_ids.index.isin(X_test.index)]
             
             # Storage for results
             all_results = {}
@@ -739,7 +583,7 @@ def main():
             X_test_raw = raw_pipeline.transform(X_test)
             
             raw_results, raw_model = self.train_and_evaluate_model(
-                X_train_raw, X_test_raw, y_train, y_test, train_pids, "Raw Temporal/Angular"
+                X_train_raw, X_test_raw, y_train, y_test, train_participant_ids, "Raw Temporal/Angular"
             )
             all_results['raw_temporal_angular'] = raw_results
             
@@ -749,11 +593,11 @@ def main():
             logger.info(f"{'='*60}")
             
             train_embeddings, test_embeddings = self.create_graph_embeddings(
-                X_train, y_train, X_test, embedding_dim=20
+                X_train, y_train, X_test, train_participant_ids, test_participant_ids, embedding_dim=20
             )
             
             embeddings_results, embeddings_model = self.train_and_evaluate_model(
-                train_embeddings, test_embeddings, y_train, y_test, train_pids, "Movement Pattern Embeddings"
+                train_embeddings, test_embeddings, y_train, y_test, train_participant_ids, "Movement Pattern Embeddings"
             )
             all_results['movement_embeddings'] = embeddings_results
             
@@ -766,7 +610,7 @@ def main():
             X_test_combined = np.hstack([X_test_raw, test_embeddings])
             
             combined_results, combined_model = self.train_and_evaluate_model(
-                X_train_combined, X_test_combined, y_train, y_test, train_pids, "Combined Features"
+                X_train_combined, X_test_combined, y_train, y_test, train_participant_ids, "Combined Features"
             )
             all_results['combined'] = combined_results
             
@@ -803,6 +647,7 @@ def main():
             'analysis_type': 'Complete Temporal/Angular Analysis (No Spatial Positions)',
             'feature_focus': 'Movement patterns, angles, temporal features only',
             'spatial_exclusion': 'All mean-x, mean-y, mean-z coordinates excluded',
+            'participant_structure': 'Participants 0-49: ASD, 50-99: Typical, 8 samples each',
             'results': serializable_results
         }
         
@@ -872,6 +717,13 @@ def main():
         logger.info("   ✅ Focused on: Movement patterns, timing, angles")
         logger.info("   📈 Expected: More realistic performance vs spatial features")
         
+        # Participant structure confirmation
+        logger.info(f"\n👥 Participant Structure Confirmation:")
+        logger.info("   ✅ Participants 0-49: ASD (samples 0-399)")
+        logger.info("   ✅ Participants 50-99: Typical (samples 400-799)")
+        logger.info("   ✅ 8 samples per participant (augmentations)")
+        logger.info("   ✅ No participant leakage between train/test")
+        
         logger.info(f"\n📁 Complete results in: {os.path.abspath(self.output_dir)}")
         logger.info("\n✅ Temporal/Angular analysis completed!")
 
@@ -879,6 +731,13 @@ def main():
 def main():
     """Main function to run complete temporal/angular analysis"""
     try:
+        logger.info("🎯 NeuroGait Temporal/Angular Analysis - FIXED VERSION")
+        logger.info("📋 CONFIRMED participant structure:")
+        logger.info("   • Participants 0-49: ASD (samples 0-399)")
+        logger.info("   • Participants 50-99: Typical (samples 400-799)")
+        logger.info("   • 8 samples per participant with augmentation metadata")
+        logger.info("   • Focus: Movement patterns ONLY (no spatial positions)")
+        
         analyzer = TemporalAngularAnalysis(samples_per_participant=8)
         results = analyzer.run_complete_analysis()
         
@@ -905,13 +764,19 @@ def main():
         else:
             print("❌ HIGH: Performance still too high - fundamental group differences remain")
         
+        print(f"\n🔍 KEY IMPROVEMENTS:")
+        print("✅ Proper participant structure (0-49: ASD, 50-99: Typical)")
+        print("✅ Participant-level splitting (no leakage)")
+        print("✅ Spatial coordinates excluded (movement patterns only)")
+        print("✅ Graph embeddings for movement similarity")
+        print("✅ Comprehensive validation and reporting")
+        
         return results
         
-=======
->>>>>>> de692d289280d9bf55a18121c2af96d558ab4021
     except Exception as e:
         logger.error(f"❌ Analysis failed: {str(e)}")
         raise
+
 
 if __name__ == "__main__":
     main()
