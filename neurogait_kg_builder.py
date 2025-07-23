@@ -28,7 +28,7 @@ class NeuroGaitGraphBuilderFixed:
     def __init__(self, samples_per_participant=8):
         self.uri = os.getenv('NEO4J_URI', 'bolt://localhost:7687')
         self.user = os.getenv('NEO4J_USER', 'neo4j')
-        self.password = os.getenv('NEO4J_PASSWORD', 'your_password')
+        self.password = os.getenv('NEO4J_PASSWORD', 'palatiou')
         self.driver = None
         self.samples_per_participant = samples_per_participant
         
