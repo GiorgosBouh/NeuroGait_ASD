@@ -271,14 +271,13 @@ class LeakageFreeNeuroGaitGraphBuilder:
         
         # 1. Feature selection (fit on train only)
         n_features_to_select = min(32, len(available_features))
-        y_train_for_selection = train_data['diagnosis'].map({'ASD': 1, 'Typical': 0})
-        
-        selector = SelectKBest(f_classif, k=n_features_to_select)
-        X_train_selected = selector.fit_transform(X_train, y_train_for_selection)
-        X_test_selected = selector.transform(X_test)
-        
-        selected_features = [available_features[i] for i in selector.get_support(indices=True)]
-        
+        # Simply take the first N features (no selection based on labels!)
+        X_train_selected = X_train[:, :n_features_to_select]
+        X_test_selected = X_test[:, :n_features_to_select]
+        selected_features = available_features[:n_features_to_select]
+
+        logger.info(f"  ✅ Selected {len(selected_features)} features (no label-based selection)")
+                
         # 2. Standardization (fit on train only)
         scaler = StandardScaler()
         X_train_scaled = scaler.fit_transform(X_train_selected)
