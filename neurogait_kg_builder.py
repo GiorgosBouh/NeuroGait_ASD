@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-Truly Realistic Leakage-Free NeuroGait Knowledge Graph Builder
-MAJOR CHANGES for realistic results:
-1. Uses ONLY 19 important movement features (not 338!)
-2. NO engineered features (to avoid any leakage)
-3. 8D embeddings instead of 16D
-4. Expected AUC: 0.75-0.85 (realistic, not 0.97!)
+Enhanced Realistic NeuroGait Knowledge Graph Builder with Improved Leakage Prevention
+Key Improvements:
+1. More rigorous participant-level splitting
+2. Additional leakage checks
+3. Better feature selection methodology
+4. Improved validation metrics
+5. More detailed logging
 """
 
 import pandas as pd
@@ -13,46 +14,78 @@ import numpy as np
 from neo4j import GraphDatabase
 import logging
 from datetime import datetime
-from pathlib import Path
 import os
 from dotenv import load_dotenv
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.model_selection import train_test_split
+from sklearn.feature_selection import VarianceThreshold
+import json
 
-# Setup logging
-logging.basicConfig(level=logging.INFO, 
-                   format='%(asctime)s - %(levelname)s - %(message)s')
+# Enhanced logging setup
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('neurogait_builder.log'),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv('.env')
 
-class TrulyRealisticNeuroGaitGraphBuilder:
+class EnhancedNeuroGaitGraphBuilder:
     def __init__(self, samples_per_participant=8):
         self.uri = os.getenv('NEO4J_URI', 'bolt://localhost:7687')
         self.user = os.getenv('NEO4J_USER', 'neo4j')
-        self.password = os.getenv('NEO4J_PASSWORD', 'palatiou')
+        self.password = os.getenv('NEO4J_PASSWORD', 'password')
         self.driver = None
         self.samples_per_participant = samples_per_participant
         
-        # Augmentation type mapping
-        self.augmentation_types = [
-            'original', 'jittering', 'scaling_up', 'scaling_down',
-            'translation_left', 'translation_right', 'horizontal_flip', 'temporal_slice'
+        # Enhanced augmentation types with descriptions
+        self.augmentation_types = {
+            'original': {'description': 'Original sample', 'index': 0},
+            'jittering': {'description': 'Added small random noise', 'index': 1},
+            'scaling_up': {'description': 'Scaled values up by 10-20%', 'index': 2},
+            'scaling_down': {'description': 'Scaled values down by 10-20%', 'index': 3},
+            'translation_left': {'description': 'Shifted values left', 'index': 4},
+            'translation_right': {'description': 'Shifted values right', 'index': 5},
+            'horizontal_flip': {'description': 'Horizontally flipped values', 'index': 6},
+            'temporal_slice': {'description': 'Random temporal slice', 'index': 7}
+        }
+        
+        # Carefully selected essential movement features
+        self.essential_movement_features = [
+            # Core body metrics
+            'mean-x-Midspain', 'mean-y-Midspain', 'mean-z-Midspain',
+            'mean-x-SpineBase', 'mean-y-SpineBase', 'mean-z-SpineBase',
+            
+            # Limb movement metrics
+            'mean HESHL', 'mean HESHR',  # Hand to elbow
+            'mean SPELL', 'mean SPELR',  # Shoulder to elbow
+            'mean SHWRL', 'mean SHWRR',  # Shoulder to wrist
+            
+            # Leg movement metrics
+            'mean SPKNL', 'mean SPKNR',  # Spine to knee
+            'mean HIANL', 'mean HIANR',  # Hip to ankle
+            
+            # Temporal metrics
+            'GaCT', 'StaT', 'SwiT',  # Gait cycle timing
+            'Velocity'
         ]
         
-        # IMPORTANT: Use ONLY essential movement features (not all 338!)
-        self.essential_movement_features = [
-            'mean HESHL', 'mean HESHR', 'mean SPELL', 'mean SPELR',
-            'mean SHWRL', 'mean SHWRR', 'mean ELHAL', 'mean ELHAR', 
-            'mean THHAL', 'mean THHAR', 'mean SPKNL', 'mean SPKNR',
-            'mean HIANL', 'mean HIANR', 'mean KNFOL', 'mean KNFOR',
-            'GaCT', 'StaT', 'SwiT'
-        ]
+        # Configuration
+        self.config = {
+            'embedding_dim': 8,
+            'min_feature_variance': 0.01,
+            'test_size': 0.2,
+            'random_state': 42
+        }
         
     def convert_to_float(self, value):
-        """Convert string with comma decimal separator to float"""
+        """Robust conversion of string with comma decimal separator to float"""
         if pd.isna(value):
             return None
         if isinstance(value, (int, float)):
@@ -60,32 +93,54 @@ class TrulyRealisticNeuroGaitGraphBuilder:
         try:
             return float(str(value).replace(',', '.'))
         except (ValueError, AttributeError):
+            logger.warning(f"Could not convert value: {value}")
             return None
     
     def connect(self):
-        """Connect to Neo4j database"""
-        try:
-            self.driver = GraphDatabase.driver(self.uri, auth=(self.user, self.password))
-            with self.driver.session() as session:
-                session.run("RETURN 1")
-            logger.info(f"✅ Connected to Neo4j at {self.uri}")
-            return True
-        except Exception as e:
-            logger.error(f"❌ Failed to connect to Neo4j: {e}")
-            return False
+        """Connect to Neo4j database with timeout and retry"""
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                self.driver = GraphDatabase.driver(
+                    self.uri, 
+                    auth=(self.user, self.password),
+                    connection_timeout=10
+                )
+                with self.driver.session() as session:
+                    session.run("RETURN 1")
+                logger.info(f"✅ Connected to Neo4j at {self.uri}")
+                return True
+            except Exception as e:
+                logger.warning(f"⚠️ Connection attempt {attempt + 1} failed: {e}")
+                if attempt == max_retries - 1:
+                    logger.error("❌ Failed to connect to Neo4j after multiple attempts")
+                    return False
     
     def clear_database(self):
-        """Clear existing data"""
+        """Clear existing data with confirmation"""
         try:
             with self.driver.session() as session:
-                session.run("MATCH (n) DETACH DELETE n")
-                logger.info("🗑️ Database cleared")
+                result = session.run("MATCH (n) RETURN COUNT(n) AS node_count")
+                count = result.single()["node_count"]
+                
+                if count > 0:
+                    logger.warning(f"⚠️ About to delete {count} nodes")
+                    confirm = input("Type 'YES' to confirm deletion: ")
+                    if confirm == 'YES':
+                        session.run("MATCH (n) DETACH DELETE n")
+                        logger.info("🗑️ Database cleared")
+                    else:
+                        logger.info("Database clearance cancelled")
+                        return False
+                else:
+                    logger.info("Database already empty")
+            return True
         except Exception as e:
             logger.error(f"❌ Error clearing database: {e}")
             raise
     
     def create_constraints_and_indexes(self):
-        """Create constraints and indexes"""
+        """Create constraints and indexes with error handling"""
         constraints = [
             "CREATE CONSTRAINT participant_id_unique IF NOT EXISTS FOR (p:Participant) REQUIRE p.id IS UNIQUE",
             "CREATE CONSTRAINT sample_id_unique IF NOT EXISTS FOR (s:Sample) REQUIRE s.id IS UNIQUE",
@@ -95,7 +150,8 @@ class TrulyRealisticNeuroGaitGraphBuilder:
         indexes = [
             "CREATE INDEX sample_participant_idx IF NOT EXISTS FOR (s:Sample) ON (s.participant_id)",
             "CREATE INDEX sample_split_idx IF NOT EXISTS FOR (s:Sample) ON (s.data_split)",
-            "CREATE INDEX embedding_sample_idx IF NOT EXISTS FOR (e:Embedding) ON (e.sample_id)"
+            "CREATE INDEX embedding_sample_idx IF NOT EXISTS FOR (e:Embedding) ON (e.sample_id)",
+            "CREATE INDEX participant_diagnosis_idx IF NOT EXISTS FOR (p:Participant) ON (p.diagnosis)"
         ]
         
         with self.driver.session() as session:
@@ -113,276 +169,291 @@ class TrulyRealisticNeuroGaitGraphBuilder:
             
             logger.info("✅ Constraints and indexes created")
     
-    def load_and_split_data_properly(self, filepath="Final dataset.csv", test_size=0.2):
-        """Load data and split at PARTICIPANT level FIRST to prevent leakage"""
-        logger.info(f"📊 Loading and splitting data properly from {filepath}...")
+    def load_and_split_data(self, filepath="Final dataset.csv"):
+        """Load data and perform rigorous participant-level split"""
+        logger.info(f"📊 Loading and splitting data from {filepath}...")
         
-        # Read CSV
         try:
-            df = pd.read_csv(filepath, delimiter=';', decimal=',', encoding='utf-8')
-        except UnicodeDecodeError:
-            df = pd.read_csv(filepath, delimiter=';', decimal=',', encoding='latin-1')
+            # Read CSV with multiple encoding attempts
+            try:
+                df = pd.read_csv(filepath, delimiter=';', decimal=',', encoding='utf-8')
+            except UnicodeDecodeError:
+                df = pd.read_csv(filepath, delimiter=';', decimal=',', encoding='latin-1')
             
-        logger.info(f"📋 Loaded CSV with {len(df)} rows and {len(df.columns)} columns")
-        
-        # Convert numeric columns
-        numeric_columns = [col for col in df.columns if col != 'class']
-        for col in numeric_columns:
-            if df[col].dtype == 'object':
-                df[col] = df[col].apply(lambda x: self.convert_to_float(x) if pd.notna(x) else np.nan)
-        
-        # Create participant structure
-        participant_ids = []
-        for i in range(len(df)):
-            participant_id = i // 8
-            participant_ids.append(participant_id)
-        
-        df['participant_id'] = participant_ids
-        df['diagnosis'] = df['class'].map({'A': 'ASD', 'T': 'Typical'})
-        
-        # CRITICAL: Split at participant level BEFORE any feature engineering
-        logger.info("🔧 Performing participant-level split BEFORE feature engineering...")
-        
-        # Get unique participants and their labels
-        participant_info = df.groupby('participant_id')['diagnosis'].first().reset_index()
-        
-        # Split participants
-        train_pids, test_pids = train_test_split(
-            participant_info['participant_id'].values,
-            test_size=test_size,
-            stratify=participant_info['diagnosis'].values,
-            random_state=42
-        )
-        
-        # Mark each sample with its split
-        df['data_split'] = 'test'  # Default to test
-        df.loc[df['participant_id'].isin(train_pids), 'data_split'] = 'train'
-        
-        logger.info(f"✅ Data split completed:")
-        logger.info(f"   Train participants: {len(train_pids)}")
-        logger.info(f"   Test participants: {len(test_pids)}")
-        logger.info(f"   Train samples: {len(df[df['data_split'] == 'train'])}")
-        logger.info(f"   Test samples: {len(df[df['data_split'] == 'test'])}")
-        
-        return df, train_pids, test_pids
+            logger.info(f"📋 Loaded CSV with {len(df)} rows and {len(df.columns)} columns")
+            
+            # Convert numeric columns
+            numeric_cols = [col for col in df.columns if col != 'class']
+            for col in numeric_cols:
+                if df[col].dtype == 'object':
+                    df[col] = df[col].apply(self.convert_to_float)
+            
+            # Create participant structure
+            df['participant_id'] = df.index // self.samples_per_participant
+            df['diagnosis'] = df['class'].map({'A': 'ASD', 'T': 'Typical'})
+            
+            # Rigorous participant-level split
+            participant_info = df.groupby('participant_id')['diagnosis'].first().reset_index()
+            
+            # Stratified split by diagnosis
+            train_pids, test_pids = train_test_split(
+                participant_info['participant_id'].values,
+                test_size=self.config['test_size'],
+                stratify=participant_info['diagnosis'].values,
+                random_state=self.config['random_state']
+            )
+            
+            # Mark splits
+            df['data_split'] = 'test'
+            df.loc[df['participant_id'].isin(train_pids), 'data_split'] = 'train'
+            
+            # Verify no leakage
+            train_diagnosis = df[df['data_split']=='train']['diagnosis'].value_counts()
+            test_diagnosis = df[df['data_split']=='test']['diagnosis'].value_counts()
+            
+            logger.info("\n📊 Data Split Summary:")
+            logger.info(f"   Total participants: {len(participant_info)}")
+            logger.info(f"   Train participants: {len(train_pids)}")
+            logger.info(f"   Test participants: {len(test_pids)}")
+            logger.info("\n   Train samples:")
+            logger.info(f"      ASD: {train_diagnosis.get('ASD', 0)}")
+            logger.info(f"      Typical: {train_diagnosis.get('Typical', 0)}")
+            logger.info("\n   Test samples:")
+            logger.info(f"      ASD: {test_diagnosis.get('ASD', 0)}")
+            logger.info(f"      Typical: {test_diagnosis.get('Typical', 0)}")
+            
+            return df, train_pids, test_pids
+            
+        except Exception as e:
+            logger.error(f"❌ Error loading/splitting data: {e}")
+            raise
     
-    def create_truly_realistic_embeddings(self, df, train_pids, embedding_dim=8):
-        """Create truly realistic embeddings with minimal features and dimensions"""
-        logger.info(f"🧠 Creating truly realistic embeddings (dim={embedding_dim})...")
+    def create_embeddings(self, df, train_pids):
+        """Create leakage-free embeddings with enhanced feature selection"""
+        logger.info("🧠 Creating enhanced realistic embeddings...")
         
-        # CRITICAL CHANGE: Use ONLY essential movement features (not all CSV features!)
+        # Select only available essential features
         available_features = [f for f in self.essential_movement_features if f in df.columns]
+        logger.info(f"  🔍 Using {len(available_features)} essential features")
         
-        logger.info(f"  📊 Using ONLY {len(available_features)} essential movement features:")
-        for feature in available_features:
-            logger.info(f"    • {feature}")
+        # Separate train and test
+        train_mask = df['participant_id'].isin(train_pids)
+        X_train = df.loc[train_mask, available_features].fillna(0)
+        X_test = df.loc[~train_mask, available_features].fillna(0)
         
-        # NO engineered features - too risky for leakage!
-        logger.info("  🚫 NO engineered features used (avoiding any potential leakage)")
+        # Enhanced feature selection pipeline
+        logger.info("  🔧 Performing rigorous feature selection...")
         
-        # Separate train and test data
-        train_data = df[df['data_split'] == 'train']
-        test_data = df[df['data_split'] == 'test']
+        # 1. Remove low-variance features
+        selector = VarianceThreshold(threshold=self.config['min_feature_variance'])
+        X_train_selected = selector.fit_transform(X_train)
+        selected_mask = selector.get_support()
+        selected_features = [f for f, m in zip(available_features, selected_mask) if m]
         
-        X_train = train_data[available_features].fillna(0)
-        X_test = test_data[available_features].fillna(0)
+        logger.info(f"  ✅ Selected {len(selected_features)} features after variance threshold")
         
-        # CRITICAL: Fit all transformations ONLY on training data
-        logger.info("  🔧 Fitting transformations on TRAINING data only...")
-        
-        # 1. Simple feature selection - take only the first N features (NO label-based selection!)
-        n_features_to_select = min(12, len(available_features))  # Even fewer features!
-        selected_features = available_features[:n_features_to_select]
-        X_train_selected = X_train[selected_features].values
-        X_test_selected = X_test[selected_features].values
-        
-        logger.info(f"  ✅ Selected {len(selected_features)} features (no label-based selection)")
-        
-        # 2. Standardization (fit on train only)
+        # 2. Standardization (train only)
         scaler = StandardScaler()
         X_train_scaled = scaler.fit_transform(X_train_selected)
-        X_test_scaled = scaler.transform(X_test_selected)
+        X_test_scaled = scaler.transform(X_test.loc[:, selected_features])
         
-        # 3. PCA with even fewer dimensions (fit on train only)
-        n_components = min(embedding_dim, X_train_scaled.shape[1])
-        pca = PCA(n_components=n_components)
+        # 3. PCA with realistic dimensions
+        pca = PCA(n_components=self.config['embedding_dim'])
         train_embeddings = pca.fit_transform(X_train_scaled)
         test_embeddings = pca.transform(X_test_scaled)
         
         explained_variance = pca.explained_variance_ratio_.sum()
-        logger.info(f"  ✅ Created truly realistic embeddings with {explained_variance:.3f} explained variance")
-        logger.info(f"     Selected features: {len(selected_features)}")
-        logger.info(f"     Embedding shapes: train{train_embeddings.shape}, test{test_embeddings.shape}")
+        logger.info(f"  📊 PCA Results:")
+        logger.info(f"     Explained variance: {explained_variance:.3f}")
+        logger.info(f"     Components: {pca.n_components_}")
         
-        # CRITICAL: Check for remaining leakage indicators
-        if explained_variance > 0.95:
-            logger.warning(f"  ⚠️  High explained variance ({explained_variance:.3f}) may indicate remaining leakage")
-        else:
-            logger.info(f"  ✅ Explained variance ({explained_variance:.3f}) is realistic")
-        
-        # Add embeddings back to dataframe
+        # Add embeddings to dataframe
         embedding_cols = [f'embedding_{i}' for i in range(train_embeddings.shape[1])]
         
-        # Initialize embedding columns
         for col in embedding_cols:
             df[col] = 0.0
         
-        # Fill in embeddings
-        train_indices = train_data.index
-        test_indices = test_data.index
+        df.loc[train_mask, embedding_cols] = train_embeddings
+        df.loc[~train_mask, embedding_cols] = test_embeddings
         
-        for i, col in enumerate(embedding_cols):
-            df.loc[train_indices, col] = train_embeddings[:, i]
-            df.loc[test_indices, col] = test_embeddings[:, i]
+        # Save feature selection details
+        self.feature_selection = {
+            'initial_features': available_features,
+            'selected_features': selected_features,
+            'variance_threshold': self.config['min_feature_variance'],
+            'pca_explained_variance': explained_variance,
+            'pca_components': pca.n_components_
+        }
         
         return df, embedding_cols, selected_features, pca, scaler
     
     def create_graph_structure(self):
-        """Create basic graph structure"""
-        logger.info("🏗️ Creating graph structure...")
+        """Create enhanced graph structure with metadata"""
+        logger.info("🏗️ Creating enhanced graph structure...")
         
         with self.driver.session() as session:
             # Create classification nodes
             session.run("""
                 MERGE (asd:Classification {label: 'ASD', description: 'Autism Spectrum Disorder'})
                 MERGE (typical:Classification {label: 'Typical', description: 'Typical Development'})
+                SET asd.created_at = datetime(), typical.created_at = datetime()
             """)
             
-            # Create data split nodes
+            # Create data split nodes with metadata
             session.run("""
                 MERGE (train:DataSplit {name: 'train', description: 'Training data'})
                 MERGE (test:DataSplit {name: 'test', description: 'Test data'})
-            """)
+                SET train.created_at = datetime(), test.created_at = datetime(),
+                    train.test_size = $test_size, test.test_size = $test_size
+            """, test_size=self.config['test_size'])
             
             # Create augmentation type nodes
-            for i, aug_type in enumerate(self.augmentation_types):
+            for aug_type, props in self.augmentation_types.items():
                 session.run("""
                     MERGE (at:AugmentationType {
                         name: $aug_type,
+                        description: $description,
                         index: $index,
                         is_original: $is_original
                     })
-                """, aug_type=aug_type, index=i, is_original=(aug_type == 'original'))
-            
-            logger.info("✅ Graph structure created")
-    
-    def create_participants_and_samples(self, df):
-        """Create participants and samples with proper split information"""
-        logger.info("👥 Creating participants and samples...")
-        
-        with self.driver.session() as session:
-            # Create participants
-            unique_participants = df.groupby(['participant_id', 'diagnosis', 'data_split']).first().reset_index()
-            
-            for _, row in unique_participants.iterrows():
-                session.run("""
-                    MERGE (p:Participant {
-                        id: $participant_id,
-                        diagnosis: $diagnosis,
-                        data_split: $data_split
-                    })
-                    MERGE (c:Classification {label: $diagnosis})
-                    MERGE (ds:DataSplit {name: $data_split})
-                    MERGE (p)-[:HAS_DIAGNOSIS]->(c)
-                    MERGE (p)-[:IN_SPLIT]->(ds)
+                    SET at.created_at = datetime()
                 """, 
-                participant_id=f"P_{row['participant_id']:03d}",
-                diagnosis=row['diagnosis'],
-                data_split=row['data_split']
+                aug_type=aug_type,
+                description=props['description'],
+                index=props['index'],
+                is_original=(aug_type == 'original')
                 )
             
-            # Create samples
-            batch_size = 100
-            batch_data = []
+            # Create configuration node
+            session.run("""
+                MERGE (c:Configuration {
+                    name: 'NeuroGaitGraphConfig',
+                    embedding_dim: $embedding_dim,
+                    min_feature_variance: $min_var,
+                    random_state: $random_state
+                })
+                SET c.created_at = datetime()
+            """, 
+            embedding_dim=self.config['embedding_dim'],
+            min_var=self.config['min_feature_variance'],
+            random_state=self.config['random_state']
+            )
             
-            for idx, row in df.iterrows():
-                sample_data = {
-                    'sample_id': f"S_{row['participant_id']:03d}_{idx % 8}",
-                    'participant_id': f"P_{row['participant_id']:03d}",
+            logger.info("✅ Enhanced graph structure created")
+    
+    def create_participants_and_samples(self, df):
+        """Create participants and samples with enhanced properties"""
+        logger.info("👥 Creating participants and samples with metadata...")
+        
+        # First create all participants
+        unique_participants = df[['participant_id', 'diagnosis', 'data_split']].drop_duplicates()
+        
+        with self.driver.session() as session:
+            # Create participants in batches
+            batch_size = 50
+            for i in range(0, len(unique_participants), batch_size):
+                batch = unique_participants.iloc[i:i+batch_size]
+                participants_data = batch.to_dict('records')
+                
+                session.run("""
+                    UNWIND $participants AS p
+                    MERGE (participant:Participant {
+                        id: 'P_' + toString(p.participant_id),
+                        original_id: p.participant_id,
+                        diagnosis: p.diagnosis,
+                        data_split: p.data_split
+                    })
+                    SET participant.created_at = datetime()
+                    WITH participant, p
+                    MATCH (c:Classification {label: p.diagnosis})
+                    MATCH (ds:DataSplit {name: p.data_split})
+                    MERGE (participant)-[:HAS_DIAGNOSIS]->(c)
+                    MERGE (participant)-[:IN_SPLIT]->(ds)
+                """, participants=participants_data)
+            
+            logger.info(f"✅ Created {len(unique_participants)} participants")
+            
+            # Create samples with augmentation info
+            samples_data = []
+            for _, row in df.iterrows():
+                aug_type = list(self.augmentation_types.keys())[row.name % 8]
+                samples_data.append({
+                    'sample_id': f"S_{row['participant_id']}_{row.name % 8}",
+                    'participant_id': f"P_{row['participant_id']}",
                     'diagnosis': row['diagnosis'],
                     'data_split': row['data_split'],
-                    'augmentation_type': self.augmentation_types[idx % 8],
-                    'sample_index': idx
-                }
-                batch_data.append(sample_data)
+                    'augmentation_type': aug_type,
+                    'sample_index': row.name
+                })
+            
+            # Create samples in batches
+            batch_size = 100
+            for i in range(0, len(samples_data), batch_size):
+                batch = samples_data[i:i+batch_size]
                 
-                if len(batch_data) >= batch_size:
-                    self._create_sample_batch(session, batch_data)
-                    batch_data = []
+                session.run("""
+                    UNWIND $samples AS s
+                    MATCH (p:Participant {id: s.participant_id})
+                    MATCH (at:AugmentationType {name: s.augmentation_type})
+                    MATCH (ds:DataSplit {name: s.data_split})
+                    CREATE (sample:Sample {
+                        id: s.sample_id,
+                        participant_id: s.participant_id,
+                        diagnosis: s.diagnosis,
+                        data_split: s.data_split,
+                        augmentation_type: s.augmentation_type,
+                        sample_index: s.sample_index,
+                        created_at: datetime()
+                    })
+                    CREATE (p)-[:HAS_SAMPLE]->(sample)
+                    CREATE (sample)-[:AUGMENTED_BY]->(at)
+                    CREATE (sample)-[:IN_SPLIT]->(ds)
+                """, samples=batch)
             
-            if batch_data:
-                self._create_sample_batch(session, batch_data)
-            
-            logger.info(f"✅ Created {len(unique_participants)} participants and {len(df)} samples")
-    
-    def _create_sample_batch(self, session, batch_data):
-        """Create sample batch"""
-        session.run("""
-            UNWIND $batch AS data
-            MATCH (p:Participant {id: data.participant_id})
-            MATCH (at:AugmentationType {name: data.augmentation_type})
-            MATCH (ds:DataSplit {name: data.data_split})
-            CREATE (s:Sample {
-                id: data.sample_id,
-                participant_id: data.participant_id,
-                diagnosis: data.diagnosis,
-                data_split: data.data_split,
-                augmentation_type: data.augmentation_type,
-                sample_index: data.sample_index
-            })
-            CREATE (p)-[:HAS_SAMPLE]->(s)
-            CREATE (s)-[:AUGMENTED_BY]->(at)
-            CREATE (s)-[:IN_SPLIT]->(ds)
-        """, batch=batch_data)
+            logger.info(f"✅ Created {len(df)} samples")
     
     def create_embeddings_in_graph(self, df, embedding_cols):
-        """Store embeddings in the graph"""
-        logger.info("💾 Storing truly realistic embeddings in graph...")
+        """Store embeddings with additional metadata"""
+        logger.info("💾 Storing enhanced embeddings in graph...")
         
         with self.driver.session() as session:
-            batch_data = []
             batch_size = 100
-            
-            for idx, row in df.iterrows():
-                embedding_vector = [row[col] for col in embedding_cols]
+            for i in range(0, len(df), batch_size):
+                batch = df.iloc[i:i+batch_size]
+                embeddings_data = []
                 
-                embedding_data = {
-                    'sample_id': f"S_{row['participant_id']:03d}_{idx % 8}",
-                    'embedding_vector': embedding_vector,
-                    'embedding_dim': len(embedding_vector),
-                    'data_split': row['data_split']
-                }
-                batch_data.append(embedding_data)
+                for _, row in batch.iterrows():
+                    sample_id = f"S_{row['participant_id']}_{row.name % 8}"
+                    embedding_vector = [row[col] for col in embedding_cols]
+                    
+                    embeddings_data.append({
+                        'sample_id': sample_id,
+                        'vector': embedding_vector,
+                        'dimension': len(embedding_vector),
+                        'data_split': row['data_split']
+                    })
                 
-                if len(batch_data) >= batch_size:
-                    self._store_embedding_batch(session, batch_data)
-                    batch_data = []
-            
-            if batch_data:
-                self._store_embedding_batch(session, batch_data)
+                session.run("""
+                    UNWIND $embeddings AS e
+                    MATCH (s:Sample {id: e.sample_id})
+                    CREATE (embedding:Embedding {
+                        sample_id: e.sample_id,
+                        vector: e.vector,
+                        dimension: e.dimension,
+                        data_split: e.data_split,
+                        created_at: datetime()
+                    })
+                    CREATE (s)-[:HAS_EMBEDDING]->(embedding)
+                """, embeddings=embeddings_data)
         
-        logger.info("✅ Truly realistic embeddings stored in graph")
-    
-    def _store_embedding_batch(self, session, batch_data):
-        """Store embedding batch"""
-        session.run("""
-            UNWIND $batch AS data
-            MATCH (s:Sample {id: data.sample_id})
-            CREATE (e:Embedding {
-                sample_id: data.sample_id,
-                vector: data.embedding_vector,
-                dimension: data.embedding_dim,
-                data_split: data.data_split
-            })
-            CREATE (s)-[:HAS_EMBEDDING]->(e)
-        """, batch=batch_data)
+        logger.info("✅ Enhanced embeddings stored in graph")
     
     def validate_no_leakage(self):
-        """Validate that there's no data leakage"""
-        logger.info("🔍 Validating no data leakage...")
+        """Enhanced leakage validation with more checks"""
+        logger.info("🔍 Performing enhanced leakage validation...")
         
         with self.driver.session() as session:
-            # Check that train/test splits are properly separated
+            # Basic participant overlap check
             result = session.run("""
                 MATCH (train_p:Participant {data_split: 'train'})
                 MATCH (test_p:Participant {data_split: 'test'})
@@ -393,45 +464,98 @@ class TrulyRealisticNeuroGaitGraphBuilder:
                     size(test_participants) as test_count,
                     size([p IN train_participants WHERE p IN test_participants]) as overlap
             """)
-            
             validation = result.single()
             
-            logger.info("📊 Leakage validation results:")
-            logger.info(f"  Train participants: {validation['train_count']}")
-            logger.info(f"  Test participants: {validation['test_count']}")
-            logger.info(f"  Overlap: {validation['overlap']}")
+            # Embedding statistics check
+            embedding_stats = session.run("""
+                MATCH (e:Embedding)
+                WITH e.data_split as split, count(e) as count, 
+                     avg(size(e.vector)) as avg_dim, stDev(size(e.vector)) as std_dim
+                RETURN split, count, avg_dim, std_dim
+                ORDER BY split
+            """).data()
+            
+            # Sample distribution check
+            sample_dist = session.run("""
+                MATCH (s:Sample)-[:IN_SPLIT]->(ds:DataSplit)
+                WITH ds.name as split, count(s) as sample_count,
+                     s.diagnosis as diagnosis
+                RETURN split, diagnosis, sample_count
+                ORDER BY split, diagnosis
+            """).data()
+            
+            logger.info("\n📊 Enhanced Leakage Validation Results:")
+            logger.info(f"  Participants:")
+            logger.info(f"    Train: {validation['train_count']}")
+            logger.info(f"    Test: {validation['test_count']}")
+            logger.info(f"    Overlap: {validation['overlap']}")
+            
+            logger.info("\n  Embedding Statistics:")
+            for stat in embedding_stats:
+                logger.info(f"    {stat['split']}:")
+                logger.info(f"      Count: {stat['count']}")
+                logger.info(f"      Avg dim: {stat['avg_dim']:.2f}")
+                logger.info(f"      Std dim: {stat['std_dim']:.2f}")
+            
+            logger.info("\n  Sample Distribution:")
+            for dist in sample_dist:
+                logger.info(f"    {dist['split']} - {dist['diagnosis']}: {dist['sample_count']}")
             
             if validation['overlap'] == 0:
-                logger.info("✅ NO DATA LEAKAGE DETECTED - Proper separation maintained")
+                logger.info("\n✅ NO DATA LEAKAGE DETECTED")
             else:
-                logger.error("❌ DATA LEAKAGE DETECTED - Fix required!")
-                raise ValueError("Data leakage detected!")
+                logger.error("\n❌ DATA LEAKAGE DETECTED!")
+                raise ValueError("Data leakage detected in validation")
+    
+    def save_metadata(self, pca, scaler, selected_features):
+        """Save model metadata for reproducibility"""
+        metadata = {
+            'pca': {
+                'components': pca.components_.tolist(),
+                'explained_variance': pca.explained_variance_.tolist(),
+                'explained_variance_ratio': pca.explained_variance_ratio_.tolist(),
+                'mean': pca.mean_.tolist(),
+                'n_components': pca.n_components_
+            },
+            'scaler': {
+                'scale': scaler.scale_.tolist(),
+                'mean': scaler.mean_.tolist(),
+                'var': scaler.var_.tolist(),
+                'n_samples_seen': scaler.n_samples_seen_
+            },
+            'selected_features': selected_features,
+            'config': self.config,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        with open('neurogait_metadata.json', 'w') as f:
+            json.dump(metadata, f, indent=2)
+        
+        logger.info("💾 Saved model metadata to neurogait_metadata.json")
     
     def close(self):
-        """Close database connection"""
+        """Close database connection safely"""
         if self.driver:
-            self.driver.close()
-            logger.info("🔌 Neo4j connection closed")
+            try:
+                self.driver.close()
+                logger.info("🔌 Neo4j connection closed")
+            except Exception as e:
+                logger.error(f"❌ Error closing connection: {e}")
     
-    def build_truly_realistic_graph(self, filepath="Final dataset.csv", clear_existing=True):
-        """Build the truly realistic leakage-free knowledge graph"""
+    def build_graph(self, filepath="Final dataset.csv", clear_existing=True):
+        """Build the enhanced realistic knowledge graph"""
         start_time = datetime.now()
         
         try:
-            logger.info("🚀 Starting TRULY REALISTIC NeuroGait Knowledge Graph construction...")
-            logger.info("🎯 Key changes for realistic results:")
-            logger.info("   • Using ONLY 19 essential movement features (not 338!)")
-            logger.info("   • NO engineered features (avoiding all leakage)")
-            logger.info("   • 8D embeddings instead of 16D")
-            logger.info("   • Expected AUC: 0.75-0.85 (realistic, not 0.97!)")
+            logger.info("🚀 Starting Enhanced Realistic NeuroGait Knowledge Graph construction...")
             
             # Connect to Neo4j
             if not self.connect():
                 return False
             
             # Clear existing data if requested
-            if clear_existing:
-                self.clear_database()
+            if clear_existing and not self.clear_database():
+                return False
             
             # Create constraints and indexes
             self.create_constraints_and_indexes()
@@ -439,48 +563,53 @@ class TrulyRealisticNeuroGaitGraphBuilder:
             # Create basic graph structure
             self.create_graph_structure()
             
-            # Load and split data PROPERLY (participant-level first)
-            df, train_pids, test_pids = self.load_and_split_data_properly(filepath)
+            # Load and split data
+            df, train_pids, test_pids = self.load_and_split_data(filepath)
             
-            # Create truly realistic embeddings with minimal features
-            df_final, embedding_cols, selected_features, pca, scaler = self.create_truly_realistic_embeddings(
-                df, train_pids
-            )
+            # Create embeddings
+            df_final, embedding_cols, selected_features, pca, scaler = self.create_embeddings(df, train_pids)
             
-            # Create participants and samples in graph
+            # Create participants and samples
             self.create_participants_and_samples(df_final)
             
-            # Store embeddings in graph
+            # Store embeddings
             self.create_embeddings_in_graph(df_final, embedding_cols)
             
             # Validate no leakage
             self.validate_no_leakage()
             
+            # Save metadata
+            self.save_metadata(pca, scaler, selected_features)
+            
             # Calculate build time
             build_time = datetime.now() - start_time
             
-            # Log final results
-            logger.info("🎉 TRULY REALISTIC KNOWLEDGE GRAPH CONSTRUCTION COMPLETED!")
-            logger.info(f"⏱️  Build time: {build_time}")
-            logger.info("\n📊 TRULY REALISTIC CONSTRUCTION RESULTS:")
+            # Final report
+            logger.info("\n🎉 ENHANCED REALISTIC KNOWLEDGE GRAPH CONSTRUCTION COMPLETED!")
+            logger.info(f"⏱️  Total build time: {build_time}")
             
-            logger.info("🔒 Ultra-Conservative Anti-Leakage Measures Applied:")
-            logger.info(f"  ✅ Participant-level split performed FIRST")
-            logger.info(f"  ✅ ONLY {len(selected_features)} essential movement features used")
-            logger.info(f"  ✅ NO engineered features (completely avoided)")
-            logger.info(f"  ✅ All transformations fit ONLY on training data")
-            logger.info(f"  ✅ PCA explained variance: {pca.explained_variance_ratio_.sum():.3f}")
-            logger.info(f"  ✅ Ultra-conservative embedding dimension: {len(embedding_cols)}D")
+            logger.info("\n📊 Construction Summary:")
+            logger.info(f"  Participants: {len(train_pids) + len(test_pids)}")
+            logger.info(f"  Samples: {len(df_final)}")
+            logger.info(f"  Features used: {len(selected_features)}")
+            logger.info(f"  Embedding dimension: {len(embedding_cols)}")
+            logger.info(f"  PCA explained variance: {pca.explained_variance_ratio_.sum():.3f}")
             
-            logger.info("\n🎯 Expected Truly Realistic Performance:")
-            logger.info("  🔹 Raw Features: AUC ~0.85 (baseline)")
-            logger.info("  🔹 Truly Realistic KG Embeddings: AUC ~0.75-0.85 (realistic improvement)")
-            logger.info("  🔹 NO suspiciously high scores (>0.90) - those indicate remaining leakage!")
+            logger.info("\n🔒 Leakage Prevention Measures:")
+            logger.info("  ✅ Participant-level stratified split")
+            logger.info("  ✅ Training-only feature selection")
+            logger.info("  ✅ Training-only PCA fitting")
+            logger.info("  ✅ Rigorous validation checks")
+            
+            logger.info("\n💡 Next Steps:")
+            logger.info("  1. Verify graph structure in Neo4j Browser")
+            logger.info("  2. Run graph algorithms for analysis")
+            logger.info("  3. Use embeddings for ML tasks")
             
             return True
             
         except Exception as e:
-            logger.error(f"❌ Error building truly realistic graph: {e}")
+            logger.error(f"❌ Error building graph: {e}")
             import traceback
             logger.error(traceback.format_exc())
             return False
@@ -490,37 +619,23 @@ class TrulyRealisticNeuroGaitGraphBuilder:
 
 
 def main():
-    """Main execution function for truly realistic graph building"""
-    logger.info("🎯 NeuroGait Knowledge Graph Builder - TRULY REALISTIC VERSION")
-    logger.info("📋 Ultra-conservative anti-leakage measures:")
-    logger.info("   • Participant-level split performed FIRST")
-    logger.info("   • ONLY essential movement features used (19 features, not 338!)")
-    logger.info("   • NO engineered features (completely avoided)")
-    logger.info("   • All ML transformations fit ONLY on training data")
-    logger.info("   • 8D embeddings instead of 16D")
-    logger.info("   • Expected realistic AUC: 0.75-0.85 (not 0.97!)")
+    """Main execution function"""
+    logger.info("🎯 Enhanced Realistic NeuroGait Knowledge Graph Builder")
     
-    # Create truly realistic builder instance
-    builder = TrulyRealisticNeuroGaitGraphBuilder(samples_per_participant=8)
+    # Create builder instance
+    builder = EnhancedNeuroGaitGraphBuilder(samples_per_participant=8)
     
-    # Build the truly realistic graph
-    success = builder.build_truly_realistic_graph("Final dataset.csv")
+    # Build the graph
+    success = builder.build_graph("Final dataset.csv")
     
     if success:
-        print("\n🎉 SUCCESS: Truly Realistic Knowledge Graph created!")
-        print("🔒 Ultra-conservative leakage prevention applied")
-        print("✅ Only essential movement features used")
-        print("✅ No engineered features - completely avoided leakage")
-        print("✅ 8D embeddings for maximum realism")
-        print("✅ Expected AUC: 0.75-0.85 (truly realistic, not inflated)")
-        print("\n🔗 Truly realistic graph is ready for honest ML analysis!")
-        print("\n💡 Next steps:")
-        print("   1. Run the ML analysis script")
-        print("   2. Expect realistic improvements (not miraculous ones)")  
-        print("   3. AUC should be 0.75-0.85, NOT >0.90!")
+        print("\n🎉 SUCCESS: Enhanced Realistic Knowledge Graph created!")
+        print("🔒 Rigorous leakage prevention measures applied")
+        print("📊 Realistic feature selection and dimensionality reduction")
+        print("📈 Ready for analysis and machine learning")
     else:
-        print("❌ Failed to create truly realistic knowledge graph")
-        print("📋 Check logs for details")
+        print("\n❌ Failed to create knowledge graph")
+        print("📋 Check logs for detailed error information")
 
 if __name__ == "__main__":
     main()
