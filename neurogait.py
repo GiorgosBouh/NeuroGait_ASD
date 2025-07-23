@@ -199,7 +199,7 @@ class ComprehensiveMLAnalysis:
             
             # For each sample, get its features from KG
             for _, row in train_data.iterrows():
-                pid = f"P_{row['participant_id']:03d}"
+                pid = f"P_{int(row['participant_id']):03d}"
                 sample_idx = row.name % 8  # augmentation index
                 sample_id = f"S_{row['participant_id']:03d}_{sample_idx}"
                 
@@ -220,7 +220,7 @@ class ComprehensiveMLAnalysis:
             
             # Same for test data
             for _, row in test_data.iterrows():
-                pid = f"P_{row['participant_id']:03d}"
+                pid = f"P_{int(row['participant_id']):03d}"
                 sample_idx = row.name % 8  # augmentation index
                 sample_id = f"S_{row['participant_id']:03d}_{sample_idx}"
                 
