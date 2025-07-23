@@ -769,8 +769,9 @@ class NeuroGaitGraphBuilderFixed:
             # Augmentation distribution
             result = session.run("""
                 MATCH (s:GaitSample)-[:AUGMENTED_BY]->(at:AugmentationType)
-                RETURN at.name as augmentation, count(s) as count
-                ORDER BY at.index
+                WITH at.name as augmentation, at.index as aug_index, count(s) as count
+                RETURN augmentation, count
+                ORDER BY aug_index
             """)
             aug_dist = {record['augmentation']: record['count'] for record in result}
             stats['augmentation_distribution'] = aug_dist
