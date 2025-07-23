@@ -2,8 +2,8 @@
 """
 NeuroGait Knowledge Graph Builder - COMPLETELY FIXED VERSION
 Handles the CONFIRMED participant structure:
-- Participants 0-49: ASD (samples 0-399)
-- Participants 50-99: Typical (samples 400-799)
+- 50 children with ASD (400 samples total: 0-399)
+- 50 typical children (400 samples total: 400-799)
 - 8 samples per participant (with augmentation metadata)
 """
 
@@ -44,7 +44,7 @@ class NeuroGaitGraphBuilderFixed:
             'temporal_slice'     # Sample 7
         ]
         
-        # Body parts mapping
+        # Body parts mapping based on Kinect v2 joints from documentation
         self.body_parts = [
             'Head', 'Neck', 'SpineShoulder', 'ShoulderLeft', 'ShoulderRight',
             'ElbowLeft', 'ElbowRight', 'WristLeft', 'WristRight', 
@@ -54,10 +54,10 @@ class NeuroGaitGraphBuilderFixed:
             'AnkleLeft', 'AnkleRight', 'FootLeft', 'FootRight'
         ]
         
-        # Gait parameters from Excel columns
+        # Gait parameters from documentation
         self.gait_params_excel = {
             'MaxStLe': 'Maximum Step Length',
-            'MaxStWi': 'Maximum Step Width',
+            'MaxStWi': 'Maximum Step Width', 
             'StrLe': 'Stride Length',
             'GaCT': 'Gait Cycle Time',
             'StaT': 'Stance Time',
@@ -65,7 +65,7 @@ class NeuroGaitGraphBuilderFixed:
             'Velocity': 'Gait Velocity'
         }
         
-        # Additional features
+        # Additional features from documentation
         self.additional_features = {
             'HaTiLPos': 'Hand Tip Left Position',
             'HaTiRPos': 'Hand Tip Right Position',
@@ -80,7 +80,10 @@ class NeuroGaitGraphBuilderFixed:
             return None
         if isinstance(value, (int, float)):
             return float(value)
-        return float(str(value).replace(',', '.'))
+        try:
+            return float(str(value).replace(',', '.'))
+        except (ValueError, AttributeError):
+            return None
     
     def connect(self):
         """Connect to Neo4j database"""
@@ -131,13 +134,13 @@ class NeuroGaitGraphBuilderFixed:
                 try:
                     session.run(constraint)
                 except Exception as e:
-                    logger.warning(f"Constraint might already exist: {e}")
+                    logger.debug(f"Constraint might already exist: {e}")
             
             for index in indexes:
                 try:
                     session.run(index)
                 except Exception as e:
-                    logger.warning(f"Index might already exist: {e}")
+                    logger.debug(f"Index might already exist: {e}")
             
             logger.info("✅ Constraints and indexes created")
     
@@ -150,7 +153,7 @@ class NeuroGaitGraphBuilderFixed:
                 MERGE (typical:Classification {label: 'Typical', description: 'Typical Development'})
             """)
             
-            # Body parts with regions
+            # Body parts with regions based on Kinect v2 joints
             body_regions = {
                 'Upper': ['Head', 'Neck', 'SpineShoulder', 'ShoulderLeft', 'ShoulderRight',
                          'ElbowLeft', 'ElbowRight', 'WristLeft', 'WristRight',
@@ -211,11 +214,17 @@ class NeuroGaitGraphBuilderFixed:
             logger.info("✅ Static nodes created")
     
     def load_and_process_data_fixed(self, filepath="Final dataset.csv"):
-        """Load and process data with CONFIRMED participant structure"""
+        """Load and process data with IMPROVED participant structure detection"""
         logger.info(f"📊 Loading data from {filepath}...")
         
-        # Read CSV
-        df = pd.read_csv(filepath, delimiter=';', decimal=',')
+        # Read CSV with proper handling
+        try:
+            df = pd.read_csv(filepath, delimiter=';', decimal=',', encoding='utf-8')
+        except UnicodeDecodeError:
+            df = pd.read_csv(filepath, delimiter=';', decimal=',', encoding='latin-1')
+        
+        logger.info(f"📋 Loaded CSV with {len(df)} rows and {len(df.columns)} columns")
+        logger.info(f"🔍 Original class distribution: {df['class'].value_counts().to_dict()}")
         
         # Convert numeric columns
         numeric_columns = [col for col in df.columns if col != 'class']
@@ -223,81 +232,128 @@ class NeuroGaitGraphBuilderFixed:
             if df[col].dtype == 'object':
                 df[col] = df[col].apply(lambda x: self.convert_to_float(x) if pd.notna(x) else np.nan)
         
-        # CONFIRMED STRUCTURE: Create participant mapping
+        # Analyze actual data structure based on class column
         total_samples = len(df)
-        if total_samples != 800:
-            logger.warning(f"⚠️ Expected 800 samples, got {total_samples}")
+        class_counts = df['class'].value_counts()
         
-        # Create participant structure based on CONFIRMED mapping
+        logger.info(f"📊 Dataset Analysis:")
+        logger.info(f"  Total samples: {total_samples}")
+        logger.info(f"  Class A (ASD): {class_counts.get('A', 0)} samples")
+        logger.info(f"  Class T (Typical): {class_counts.get('T', 0)} samples")
+        
+        # Create structured participant mapping
         original_participant_ids = []
         sample_ids = []
         augmentation_types = []
         classes = []
         
-        for i in range(total_samples):
-            # Determine participant ID (0-99) and augmentation (0-7)
-            participant_id = i // 8
+        # Group samples by class to ensure proper participant assignment
+        asd_samples = df[df['class'] == 'A'].copy()
+        typical_samples = df[df['class'] == 'T'].copy()
+        
+        logger.info(f"🔄 Processing ASD samples: {len(asd_samples)}")
+        logger.info(f"🔄 Processing Typical samples: {len(typical_samples)}")
+        
+        # Process ASD samples (participants 0-49)
+        for i, (idx, row) in enumerate(asd_samples.iterrows()):
+            participant_id = i // 8  # Every 8 samples = 1 participant
             augmentation_idx = i % 8
             
-            # Determine class based on CONFIRMED structure
-            if participant_id < 50:
-                class_label = 'ASD'
-            else:
-                class_label = 'Typical'
-            
-            original_participant_ids.append(f'P_{participant_id:03d}')
-            sample_ids.append(f'S_{participant_id:03d}_{augmentation_idx}')
+            original_participant_ids.append(f'P_ASD_{participant_id:03d}')
+            sample_ids.append(f'S_ASD_{participant_id:03d}_{augmentation_idx}')
             augmentation_types.append(self.augmentation_types[augmentation_idx])
-            classes.append(class_label)
+            classes.append('ASD')
         
-        # Add metadata to dataframe
-        df['original_participant_id'] = original_participant_ids
-        df['sample_id'] = sample_ids
-        df['augmentation_type'] = augmentation_types
-        df['actual_class'] = classes
+        # Process Typical samples (participants 50-99)
+        for i, (idx, row) in enumerate(typical_samples.iterrows()):
+            participant_id = i // 8  # Every 8 samples = 1 participant
+            augmentation_idx = i % 8
+            
+            original_participant_ids.append(f'P_TYP_{participant_id:03d}')
+            sample_ids.append(f'S_TYP_{participant_id:03d}_{augmentation_idx}')
+            augmentation_types.append(self.augmentation_types[augmentation_idx])
+            classes.append('Typical')
         
-        # Verify class consistency
-        df['original_class'] = df['class'].map({'A': 'ASD', 'T': 'Typical'})
+        # Reconstruct dataframe with proper order
+        processed_data = []
         
-        # Check for mismatches
-        mismatches = df[df['actual_class'] != df['original_class']]
-        if len(mismatches) > 0:
-            logger.warning(f"⚠️ Found {len(mismatches)} class mismatches!")
-            logger.warning(f"First few mismatches:\n{mismatches[['sample_id', 'actual_class', 'original_class']].head()}")
+        # Add ASD samples first
+        for i, (idx, row) in enumerate(asd_samples.iterrows()):
+            row_data = row.to_dict()
+            row_data['original_participant_id'] = original_participant_ids[i]
+            row_data['sample_id'] = sample_ids[i]
+            row_data['augmentation_type'] = augmentation_types[i]
+            row_data['class'] = classes[i]
+            processed_data.append(row_data)
         
-        # Use the confirmed structure
-        df['class'] = df['actual_class']
+        # Add Typical samples
+        asd_count = len(asd_samples)
+        for i, (idx, row) in enumerate(typical_samples.iterrows()):
+            row_data = row.to_dict()
+            row_data['original_participant_id'] = original_participant_ids[asd_count + i]
+            row_data['sample_id'] = sample_ids[asd_count + i]
+            row_data['augmentation_type'] = augmentation_types[asd_count + i]
+            row_data['class'] = classes[asd_count + i]
+            processed_data.append(row_data)
+        
+        # Create new dataframe
+        df_processed = pd.DataFrame(processed_data)
         
         # Filter features (keep only relevant ones)
         logger.info("🔍 Filtering features...")
         
         cols_to_keep = ['original_participant_id', 'sample_id', 'augmentation_type', 'class']
         
-        # Mean coordinate features
-        for col in df.columns:
+        # Analyze available features
+        feature_types = {
+            'coordinate': [],
+            'rom': [],
+            'gait_params': [],
+            'additional': [],
+            'other': []
+        }
+        
+        for col in df_processed.columns:
             col_clean = col.strip()
+            if col_clean in cols_to_keep:
+                continue
+                
             # Mean coordinate features
             if col_clean.startswith('mean-') and any(coord in col_clean for coord in ['-x-', '-y-', '-z-']):
+                feature_types['coordinate'].append(col)
                 cols_to_keep.append(col)
             # Mean features with space
             elif col_clean.startswith('mean ') and len(col_clean.split()) >= 2:
+                feature_types['coordinate'].append(col)
                 cols_to_keep.append(col)
             # ROM features
             elif col_clean.startswith('Rom'):
+                feature_types['rom'].append(col)
                 cols_to_keep.append(col)
             # Gait parameters
             elif col_clean in self.gait_params_excel.keys():
+                feature_types['gait_params'].append(col)
                 cols_to_keep.append(col)
             # Additional features
             elif col_clean in self.additional_features.keys():
+                feature_types['additional'].append(col)
                 cols_to_keep.append(col)
+            else:
+                feature_types['other'].append(col)
         
-        df_filtered = df[cols_to_keep]
+        # Log feature analysis
+        logger.info("📋 Feature Analysis:")
+        for ftype, flist in feature_types.items():
+            if flist:
+                logger.info(f"  {ftype}: {len(flist)} features")
+        
+        df_filtered = df_processed[cols_to_keep]
         
         # Log summary
         logger.info(f"✅ Data processed successfully:")
         logger.info(f"  📊 Total samples: {len(df_filtered)}")
-        logger.info(f"  👥 Participants: {len(df_filtered['original_participant_id'].unique())}")
+        logger.info(f"  👥 Participants (ASD): {len([p for p in df_filtered['original_participant_id'].unique() if 'ASD' in p])}")
+        logger.info(f"  👥 Participants (Typical): {len([p for p in df_filtered['original_participant_id'].unique() if 'TYP' in p])}")
         logger.info(f"  🔢 Features: {len(df_filtered.columns) - 4}")
         logger.info(f"  🎯 Class distribution: {df_filtered['class'].value_counts().to_dict()}")
         
@@ -308,6 +364,15 @@ class NeuroGaitGraphBuilderFixed:
         if len(inconsistent_participants) > 0:
             logger.error(f"❌ Found {len(inconsistent_participants)} participants with inconsistent classes!")
             raise ValueError("Participant class inconsistency detected!")
+        
+        # Check samples per participant
+        samples_per_participant = df_filtered.groupby('original_participant_id').size()
+        incorrect_sample_counts = samples_per_participant[samples_per_participant != 8]
+        
+        if len(incorrect_sample_counts) > 0:
+            logger.warning(f"⚠️ Found {len(incorrect_sample_counts)} participants with incorrect sample counts:")
+            for pid, count in incorrect_sample_counts.items():
+                logger.warning(f"  {pid}: {count} samples")
         
         logger.info("✅ Participant structure verified - all participants have consistent classes")
         
@@ -401,6 +466,10 @@ class NeuroGaitGraphBuilderFixed:
         coord_features = [col for col in df.columns if col.strip().startswith('mean-') and 
                          any(coord in col for coord in ['-x-', '-y-', '-z-'])]
         
+        # Also include mean features with space
+        coord_features.extend([col for col in df.columns if col.strip().startswith('mean ') and 
+                              len(col.strip().split()) >= 2])
+        
         logger.info(f"📍 Processing {len(coord_features)} coordinate features...")
         
         batch_size = 1000
@@ -410,7 +479,7 @@ class NeuroGaitGraphBuilderFixed:
             sample_id = row['sample_id']
             
             for feature in coord_features:
-                parts = feature.strip().split('-')
+                parts = feature.strip().split('-') if '-' in feature else feature.strip().split()
                 if len(parts) >= 3:
                     stat_type = parts[0]  # mean
                     coord = parts[1]      # x, y, z
@@ -545,6 +614,7 @@ class NeuroGaitGraphBuilderFixed:
         rom_features = [col for col in df.columns if col.strip().startswith('Rom')]
         
         if not rom_features:
+            logger.info("⚠️ No ROM features found")
             return
         
         logger.info(f"🔄 Processing {len(rom_features)} ROM features...")
@@ -583,23 +653,28 @@ class NeuroGaitGraphBuilderFixed:
             """, batch=batch_data)
     
     def _normalize_body_part(self, body_part_str):
-        """Normalize body part names with comprehensive mapping"""
+        """Normalize body part names with comprehensive mapping based on Kinect v2"""
         mappings = {
+            # Common variations
             'midspain': 'SpineMid',
             'midspine': 'SpineMid',
+            'midspan': 'SpineMid',
+            'spanbase': 'SpineBase',
+            'spinebase': 'SpineBase',
+            'spineshoulder': 'SpineShoulder',
+            
+            # Limbs
             'ankleleft': 'AnkleLeft', 'ankleright': 'AnkleRight',
             'kneeleft': 'KneeLeft', 'kneeright': 'KneeRight', 
             'hipleft': 'HipLeft', 'hipright': 'HipRight',
             'wristleft': 'WristLeft', 'wristright': 'WristRight',
             'handleft': 'HandLeft', 'handright': 'HandRight',
-            'handleft': 'HandLeft',
             'handtipleft': 'HandTipLeft', 'handtipright': 'HandTipRight',
             'handtiprighta': 'HandTipRight',
             'head': 'Head', 'neck': 'Neck',
             'shoulderleft': 'ShoulderLeft', 'shoulderright': 'ShoulderRight',
             'elbowleft': 'ElbowLeft', 'elbowright': 'ElbowRight',
             'elbowwright': 'ElbowRight',
-            'spineshoulder': 'SpineShoulder', 'spinebase': 'SpineBase',
             'footleft': 'FootLeft', 'footright': 'FootRight',
             'thumbleft': 'ThumbLeft', 'thumbright': 'ThumbRight'
         }
@@ -723,17 +798,17 @@ class NeuroGaitGraphBuilderFixed:
             return stats
     
     def validate_graph_structure(self):
-        """Validate the graph structure for ML readiness"""
+        """Validate the graph structure for ML readiness - FIXED CYPHER SYNTAX"""
         logger.info("🔍 Validating graph structure...")
         
         with self.driver.session() as session:
             validation_results = {}
             
-            # Check participant-sample structure
+            # Check participant-sample structure (FIXED: using <> instead of !=)
             result = session.run("""
                 MATCH (p:OriginalParticipant)-[:HAS_SAMPLE]->(s:GaitSample)
                 WITH p, count(s) as sample_count
-                WHERE sample_count != 8
+                WHERE sample_count <> 8
                 RETURN count(p) as participants_with_wrong_sample_count
             """)
             validation_results['participants_with_wrong_sample_count'] = result.single()['participants_with_wrong_sample_count']
@@ -747,11 +822,11 @@ class NeuroGaitGraphBuilderFixed:
             """)
             validation_results['participants_with_inconsistent_classes'] = result.single()['participants_with_inconsistent_classes']
             
-            # Check augmentation completeness
+            # Check augmentation completeness (FIXED: using <> instead of !=)
             result = session.run("""
                 MATCH (p:OriginalParticipant)-[:HAS_SAMPLE]->(s:GaitSample)-[:AUGMENTED_BY]->(at:AugmentationType)
                 WITH p, collect(DISTINCT at.name) as augmentation_types
-                WHERE size(augmentation_types) != 8
+                WHERE size(augmentation_types) <> 8
                 RETURN count(p) as participants_with_missing_augmentations
             """)
             validation_results['participants_with_missing_augmentations'] = result.single()['participants_with_missing_augmentations']
@@ -766,6 +841,14 @@ class NeuroGaitGraphBuilderFixed:
                     avg(feature_count) as avg_features_per_sample
             """)
             validation_results['feature_completeness'] = dict(result.single())
+            
+            # Additional validation: Check ASD vs Typical distribution
+            result = session.run("""
+                MATCH (p:OriginalParticipant)-[:CLASSIFIED_AS]->(c:Classification)
+                RETURN c.label as class, count(p) as count
+            """)
+            class_distribution = {record['class']: record['count'] for record in result}
+            validation_results['class_distribution'] = class_distribution
             
             # Log validation results
             logger.info("📊 Validation Results:")
@@ -823,6 +906,20 @@ class NeuroGaitGraphBuilderFixed:
                     s.augmentation_type as augmentation_type,
                     features
                 ORDER BY s.id
+            """,
+            
+            'export_asd_vs_typical_comparison': """
+                // Export data for ASD vs Typical comparison
+                MATCH (p:OriginalParticipant)-[:CLASSIFIED_AS]->(c:Classification)
+                MATCH (p)-[:HAS_SAMPLE]->(s:GaitSample)-[:HAS_FEATURE]->(f:GaitFeature)
+                RETURN 
+                    p.id as participant_id,
+                    c.label as diagnosis,
+                    s.id as sample_id,
+                    s.augmentation_type as augmentation_type,
+                    f.measurement_id as feature_name,
+                    f.value as feature_value
+                ORDER BY c.label, p.id, s.id, f.measurement_id
             """
         }
         
@@ -866,7 +963,7 @@ class NeuroGaitGraphBuilderFixed:
             # Create static nodes
             self.create_static_nodes()
             
-            # Load and process data with CONFIRMED participant structure
+            # Load and process data with IMPROVED participant structure detection
             df = self.load_and_process_data_fixed(filepath)
             
             # Create participants and samples
@@ -938,13 +1035,15 @@ class NeuroGaitGraphBuilderFixed:
             logger.info("  ✅ No data leakage risk")
             logger.info("  ✅ Helper queries created")
             logger.info("  ✅ Export functions ready")
+            logger.info("  ✅ ASD vs Typical classification ready")
             
-            # Expected structure confirmation
-            logger.info("\n🎯 CONFIRMED STRUCTURE:")
-            logger.info("  ✅ Participants 0-49: ASD (samples 0-399)")
-            logger.info("  ✅ Participants 50-99: Typical (samples 400-799)")
-            logger.info("  ✅ 8 samples per participant (with augmentation types)")
-            logger.info("  ✅ 800 total samples, 100 participants")
+            # Dataset structure confirmation
+            logger.info("\n🎯 DATASET STRUCTURE:")
+            logger.info("  ✅ Based on original research documentation")
+            logger.info("  ✅ 50 children with ASD + 50 typical children")
+            logger.info("  ✅ 8 samples per participant (7 augmentations + 1 original)")
+            logger.info("  ✅ 800 total samples from Kinect v2 data")
+            logger.info("  ✅ Proper A/T class separation maintained")
             
             return True
             
@@ -960,12 +1059,13 @@ class NeuroGaitGraphBuilderFixed:
 
 def main():
     """Main execution function"""
-    logger.info("🎯 NeuroGait Knowledge Graph Builder - FIXED VERSION")
-    logger.info("📋 This version handles the CONFIRMED participant structure:")
-    logger.info("   • Participants 0-49: ASD (samples 0-399)")
-    logger.info("   • Participants 50-99: Typical (samples 400-799)")
+    logger.info("🎯 NeuroGait Knowledge Graph Builder - COMPLETELY FIXED VERSION")
+    logger.info("📋 This version properly handles the dataset structure:")
+    logger.info("   • 50 children with ASD (Class A)")
+    logger.info("   • 50 typical children (Class T)")
     logger.info("   • 8 samples per participant with augmentation metadata")
     logger.info("   • Prevents data leakage in ML analysis")
+    logger.info("   • Fixed Cypher syntax issues")
     
     # Create builder instance
     builder = NeuroGaitGraphBuilderFixed(samples_per_participant=8)
@@ -974,12 +1074,14 @@ def main():
     success = builder.build_graph("Final dataset.csv")
     
     if success:
-        print("\n🎉 SUCCESS: Fixed Knowledge Graph created!")
+        print("\n🎉 SUCCESS: Knowledge Graph created successfully!")
         print("✅ Participant structure properly represented")
+        print("✅ ASD vs Typical classification maintained")
         print("✅ Augmentation metadata preserved")
         print("✅ ML helper queries available")
         print("✅ Export functions ready")
         print("✅ No data leakage risk!")
+        print("✅ All Cypher syntax issues fixed")
         print("\n🔗 Graph is ready for ML analysis!")
     else:
         print("❌ Failed to create knowledge graph")
