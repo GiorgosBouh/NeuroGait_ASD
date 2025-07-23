@@ -50,7 +50,7 @@ class ComprehensiveMLAnalysis:
             try:
                 self.neo4j_driver = GraphDatabase.driver(
                     "bolt://localhost:7687", 
-                    auth=("neo4j", "your_password")
+                    auth=("neo4j", "palatiou")
                 )
                 print("✅ Connected to Neo4j")
             except Exception as e:
