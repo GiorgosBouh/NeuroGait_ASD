@@ -269,14 +269,11 @@ class LeakageFreeNeuroGaitGraphBuilder:
         # CRITICAL: Fit all transformations ONLY on training data
         logger.info("  🔧 Fitting transformations on TRAINING data only...")
         
-        # 1. Feature selection (fit on train only)
+        # 1. Feature selection (LEAKAGE-FREE)
         n_features_to_select = min(32, len(available_features))
-        # Simply take the first N features (no selection based on labels!)
-        X_train_selected = X_train[:, :n_features_to_select]
-        X_test_selected = X_test[:, :n_features_to_select]
         selected_features = available_features[:n_features_to_select]
-
-        logger.info(f"  ✅ Selected {len(selected_features)} features (no label-based selection)")
+        X_train_selected = X_train[selected_features].values  # ✅ Pandas + numpy conversion
+        X_test_selected = X_test[selected_features].values
                 
         # 2. Standardization (fit on train only)
         scaler = StandardScaler()
