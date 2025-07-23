@@ -3,7 +3,7 @@
 Complete ML Analysis: Raw Features vs Knowledge Graph Embeddings
 Compares raw movement patterns with graph-based embeddings from Neo4j
 Includes comprehensive statistical analysis and visualization
-COMPLETE VERSION
+FIXED VERSION - Compatible with NeuroGait Knowledge Graph
 """
 
 import pandas as pd
@@ -32,6 +32,8 @@ from scipy.stats import ttest_ind
 # Neo4j connection
 try:
     from neo4j import GraphDatabase
+    from dotenv import load_dotenv
+    load_dotenv('.env')
     HAS_NEO4J = True
 except ImportError:
     HAS_NEO4J = False
@@ -39,7 +41,7 @@ except ImportError:
 
 warnings.filterwarnings('ignore')
 
-class ComprehensiveMLAnalysis:
+class NeuroGaitMLAnalysis:
     def __init__(self):
         self.output_dir = f"ml_comparison_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         os.makedirs(self.output_dir, exist_ok=True)
@@ -48,9 +50,13 @@ class ComprehensiveMLAnalysis:
         self.neo4j_driver = None
         if HAS_NEO4J:
             try:
+                neo4j_uri = os.getenv('NEO4J_URI', 'bolt://localhost:7687')
+                neo4j_user = os.getenv('NEO4J_USER', 'neo4j')
+                neo4j_password = os.getenv('NEO4J_PASSWORD', 'palatiou')
+                
                 self.neo4j_driver = GraphDatabase.driver(
-                    "bolt://localhost:7687", 
-                    auth=("neo4j", "palatiou")
+                    neo4j_uri, 
+                    auth=(neo4j_user, neo4j_password)
                 )
                 print("✅ Connected to Neo4j")
             except Exception as e:
@@ -66,10 +72,14 @@ class ComprehensiveMLAnalysis:
         print("📊 Loading NeuroGait dataset...")
         
         # Load CSV
-        df = pd.read_csv('Final dataset.csv', sep=';', decimal=',')
+        try:
+            df = pd.read_csv('Final dataset.csv', sep=';', decimal=',', encoding='utf-8')
+        except UnicodeDecodeError:
+            df = pd.read_csv('Final dataset.csv', sep=';', decimal=',', encoding='latin-1')
+            
         print(f"✅ Loaded {len(df)} samples with {len(df.columns)} columns")
         
-        # Create participant mapping (CONFIRMED structure)
+        # Create participant mapping based on the ACTUAL structure we used in KG
         participant_ids = []
         for i in range(len(df)):
             participant_id = i // 8  # 8 samples per participant
@@ -78,7 +88,7 @@ class ComprehensiveMLAnalysis:
         df['participant_id'] = participant_ids
         df['diagnosis'] = df['class'].map({'A': 1, 'T': 0})  # ASD=1, Typical=0
         
-        # Filter to movement patterns only (as established in previous analysis)
+        # Filter to movement patterns (as established in previous analysis)
         angle_features = [
             'mean HESHL', 'mean HESHR', 'mean SPELL', 'mean SPELR',
             'mean SHWRL', 'mean SHWRR', 'mean ELHAL', 'mean ELHAR',
@@ -141,8 +151,8 @@ class ComprehensiveMLAnalysis:
         
         return train_data, test_data, train_pids, test_pids
     
-    def get_kg_embeddings(self, train_data, test_data, embedding_dim=32):
-        """Get embeddings from Knowledge Graph - NO MOCK EMBEDDINGS"""
+    def get_kg_embeddings(self, train_data, test_data, embedding_dim=64):
+        """Get embeddings from Knowledge Graph - FIXED VERSION"""
         print(f"\n🧠 Attempting to extract Knowledge Graph embeddings (dim={embedding_dim})...")
         
         if not self.neo4j_driver:
@@ -161,24 +171,27 @@ class ComprehensiveMLAnalysis:
             print("💡 Make sure Knowledge Graph is populated with data")
             print("   Run: python neurogait_kg_builder.py")
             print("\n🚫 Skipping KG embedding analysis...")
+            import traceback
+            traceback.print_exc()
             return None, None
     
     def _get_real_kg_embeddings(self, train_data, test_data, embedding_dim):
-        """Extract real embeddings from your existing Neo4j Knowledge Graph"""
+        """Extract real embeddings from NeuroGait Knowledge Graph - FIXED MAPPING"""
         print("   📊 Extracting embeddings from existing NeuroGait Knowledge Graph...")
         
         with self.neo4j_driver.session() as session:
-            # Use the structure from your existing KG builder
+            # Get ALL samples with their features from KG
             query = """
-            MATCH (p:OriginalParticipant)-[:HAS_SAMPLE]->(s:GaitSample)-[:HAS_FEATURE]->(f:GaitFeature)
-            WITH p, s, collect({feature: f.measurement_id, value: f.value}) as features
+            MATCH (s:GaitSample)-[:HAS_FEATURE]->(f:GaitFeature)
+            WITH s, collect({feature: f.measurement_id, value: f.value}) as features
             RETURN 
-                p.id as participant_id,
                 s.id as sample_id,
+                s.original_participant_id as participant_id,
                 s.classification as class,
                 s.augmentation_type as augmentation_type,
+                s.sample_index as sample_index,
                 features
-            ORDER BY p.id, s.id
+            ORDER BY s.sample_index
             """
             
             result = session.run(query)
@@ -187,110 +200,119 @@ class ComprehensiveMLAnalysis:
             print(f"   ✅ Extracted data for {len(kg_data)} samples from KG")
             
             if len(kg_data) == 0:
-                print("   ⚠️ No data found in KG - falling back to mock embeddings")
-                return self._create_mock_kg_embeddings(train_data, test_data, embedding_dim)
+                print("   ⚠️ No data found in KG")
+                return None, None
             
-            # Convert KG data to feature matrix
+            # Convert KG data to DataFrame for easier manipulation
             kg_df = pd.DataFrame(kg_data)
             
-            # Create feature matrices from KG data
-            train_kg_features = []
-            test_kg_features = []
+            # Create a mapping from sample_index to KG data
+            kg_index_map = {}
+            for _, row in kg_df.iterrows():
+                sample_idx = row['sample_index']
+                kg_index_map[sample_idx] = row['features']
             
-            # For each sample, get its features from KG
-            for _, row in train_data.iterrows():
-                pid = f"P_{int(row['participant_id']):03d}"
-                sample_idx = row.name % 8  # augmentation index
-                sample_id = f"S_{row['participant_id']:03d}_{sample_idx}"
+            print(f"   📋 Created mapping for {len(kg_index_map)} samples")
+            
+            # Extract embeddings for train data
+            train_embeddings = []
+            for train_idx, row in train_data.iterrows():
+                # The original index in the full dataset
+                original_idx = row.name if hasattr(row, 'name') else train_idx
                 
-                # Find matching KG sample
-                kg_sample = kg_df[kg_df['sample_id'] == sample_id]
-                if len(kg_sample) > 0:
-                    features = kg_sample.iloc[0]['features']
-                    feature_vector = [f['value'] for f in features]
-                    # Pad or truncate to embedding_dim
-                    if len(feature_vector) > embedding_dim:
+                # Try to find the sample in KG data
+                if original_idx in kg_index_map:
+                    features = kg_index_map[original_idx]
+                    feature_vector = [f['value'] for f in features if f['value'] is not None]
+                    
+                    # Ensure we have enough features
+                    if len(feature_vector) >= embedding_dim:
                         feature_vector = feature_vector[:embedding_dim]
                     else:
-                        feature_vector.extend([0.0] * (embedding_dim - len(feature_vector)))
-                    train_kg_features.append(feature_vector)
+                        # Pad with mean of existing features
+                        mean_val = np.mean(feature_vector) if feature_vector else 0.0
+                        feature_vector.extend([mean_val] * (embedding_dim - len(feature_vector)))
+                    
+                    train_embeddings.append(feature_vector)
                 else:
-                    # Fallback to zeros
-                    train_kg_features.append([0.0] * embedding_dim)
+                    # Fallback: create embedding from participant ID pattern
+                    participant_id = int(row['participant_id'])
+                    augmentation_idx = train_idx % 8
+                    
+                    # Look for similar pattern in KG data
+                    found = False
+                    for kg_idx, kg_row in kg_df.iterrows():
+                        if kg_row['sample_index'] // 8 == participant_id and kg_row['sample_index'] % 8 == augmentation_idx:
+                            features = kg_row['features']
+                            feature_vector = [f['value'] for f in features if f['value'] is not None]
+                            
+                            if len(feature_vector) >= embedding_dim:
+                                feature_vector = feature_vector[:embedding_dim]
+                            else:
+                                mean_val = np.mean(feature_vector) if feature_vector else 0.0
+                                feature_vector.extend([mean_val] * (embedding_dim - len(feature_vector)))
+                            
+                            train_embeddings.append(feature_vector)
+                            found = True
+                            break
+                    
+                    if not found:
+                        # Last resort: zeros
+                        train_embeddings.append([0.0] * embedding_dim)
             
-            # Same for test data
-            for _, row in test_data.iterrows():
-                pid = f"P_{int(row['participant_id']):03d}"
-                sample_idx = row.name % 8  # augmentation index
-                sample_id = f"S_{row['participant_id']:03d}_{sample_idx}"
+            # Extract embeddings for test data (similar logic)
+            test_embeddings = []
+            for test_idx, row in test_data.iterrows():
+                original_idx = row.name if hasattr(row, 'name') else test_idx
                 
-                kg_sample = kg_df[kg_df['sample_id'] == sample_id]
-                if len(kg_sample) > 0:
-                    features = kg_sample.iloc[0]['features']
-                    feature_vector = [f['value'] for f in features]
-                    if len(feature_vector) > embedding_dim:
+                if original_idx in kg_index_map:
+                    features = kg_index_map[original_idx]
+                    feature_vector = [f['value'] for f in features if f['value'] is not None]
+                    
+                    if len(feature_vector) >= embedding_dim:
                         feature_vector = feature_vector[:embedding_dim]
                     else:
-                        feature_vector.extend([0.0] * (embedding_dim - len(feature_vector)))
-                    test_kg_features.append(feature_vector)
+                        mean_val = np.mean(feature_vector) if feature_vector else 0.0
+                        feature_vector.extend([mean_val] * (embedding_dim - len(feature_vector)))
+                    
+                    test_embeddings.append(feature_vector)
                 else:
-                    test_kg_features.append([0.0] * embedding_dim)
+                    # Fallback logic similar to train
+                    participant_id = int(row['participant_id'])
+                    augmentation_idx = test_idx % 8
+                    
+                    found = False
+                    for kg_idx, kg_row in kg_df.iterrows():
+                        if kg_row['sample_index'] // 8 == participant_id and kg_row['sample_index'] % 8 == augmentation_idx:
+                            features = kg_row['features']
+                            feature_vector = [f['value'] for f in features if f['value'] is not None]
+                            
+                            if len(feature_vector) >= embedding_dim:
+                                feature_vector = feature_vector[:embedding_dim]
+                            else:
+                                mean_val = np.mean(feature_vector) if feature_vector else 0.0
+                                feature_vector.extend([mean_val] * (embedding_dim - len(feature_vector)))
+                            
+                            test_embeddings.append(feature_vector)
+                            found = True
+                            break
+                    
+                    if not found:
+                        test_embeddings.append([0.0] * embedding_dim)
             
-            train_embeddings = np.array(train_kg_features)
-            test_embeddings = np.array(test_kg_features)
+            # Convert to numpy arrays
+            train_embeddings = np.array(train_embeddings)
+            test_embeddings = np.array(test_embeddings)
             
             print(f"   ✅ Created KG embeddings: train{train_embeddings.shape}, test{test_embeddings.shape}")
             
+            # Check for any issues
+            if np.any(np.isnan(train_embeddings)) or np.any(np.isnan(test_embeddings)):
+                print("   ⚠️ Found NaN values in embeddings, replacing with zeros")
+                train_embeddings = np.nan_to_num(train_embeddings)
+                test_embeddings = np.nan_to_num(test_embeddings)
+            
             return train_embeddings, test_embeddings
-    
-    def _create_mock_kg_embeddings(self, train_data, test_data, embedding_dim):
-        """Create mock KG embeddings based on participant similarity"""
-        print("   🔧 Creating mock KG embeddings based on movement patterns...")
-        
-        # Get participant-level features
-        feature_cols = [col for col in train_data.columns 
-                       if col not in ['participant_id', 'diagnosis']]
-        
-        # Calculate participant averages
-        train_participant_features = train_data.groupby('participant_id')[feature_cols].mean()
-        test_participant_features = test_data.groupby('participant_id')[feature_cols].mean()
-        
-        # Simple dimensionality reduction to create "graph-like" embeddings
-        from sklearn.decomposition import PCA
-        
-        # Combine for consistent transformation
-        all_participant_features = pd.concat([train_participant_features, test_participant_features])
-        
-        # Apply PCA first
-        pca = PCA(n_components=min(embedding_dim, len(feature_cols)))
-        embeddings_all = pca.fit_transform(all_participant_features)
-        
-        # Pad if needed
-        if embeddings_all.shape[1] < embedding_dim:
-            padding = np.zeros((embeddings_all.shape[0], embedding_dim - embeddings_all.shape[1]))
-            embeddings_all = np.hstack([embeddings_all, padding])
-        
-        # Split back
-        n_train_participants = len(train_participant_features)
-        participant_embeddings_train = embeddings_all[:n_train_participants]
-        participant_embeddings_test = embeddings_all[n_train_participants:]
-        
-        # Map back to samples
-        train_embeddings = np.zeros((len(train_data), embedding_dim))
-        test_embeddings = np.zeros((len(test_data), embedding_dim))
-        
-        for i, row in train_data.iterrows():
-            pid = row['participant_id']
-            pid_idx = list(train_participant_features.index).index(pid)
-            train_embeddings[i] = participant_embeddings_train[pid_idx]
-        
-        for i, row in test_data.iterrows():
-            pid = row['participant_id']
-            pid_idx = list(test_participant_features.index).index(pid)
-            test_embeddings[i] = participant_embeddings_test[pid_idx]
-        
-        print(f"   ✅ Created mock embeddings: train{train_embeddings.shape}, test{test_embeddings.shape}")
-        return train_embeddings, test_embeddings
     
     def prepare_raw_features(self, train_data, test_data, n_features=15):
         """Prepare raw movement features with feature selection"""
@@ -609,7 +631,6 @@ class ComprehensiveMLAnalysis:
         plt.savefig(f'{self.output_dir}/comprehensive_comparison.png', dpi=300, bbox_inches='tight')
         plt.close()
         
-    
     def save_detailed_results(self, raw_results, kg_results, comparison_results, 
                             selected_features, train_pids, test_pids):
         """Save all results to JSON files"""
@@ -969,7 +990,7 @@ def main():
     print("   To enable full comparison, run: python neurogait_kg_builder.py first")
     
     # Create analyzer instance
-    analyzer = ComprehensiveMLAnalysis()
+    analyzer = NeuroGaitMLAnalysis()
     
     # Run analysis
     results = analyzer.run_complete_analysis()
