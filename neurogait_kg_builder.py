@@ -1,14 +1,10 @@
 #!/usr/bin/env python3
 """
-Enhanced Realistic NeuroGait Knowledge Graph Builder with Improved Leakage Prevention
-Key Improvements:
-1. More rigorous participant-level splitting
-2. Additional leakage checks
-3. Better feature selection methodology
-4. Improved validation metrics
-5. More detailed logging
-6. FIXED: JSON serialization error
-7. FIXED: Uses exact same 12 features as ML script for fair comparison
+Enhanced Realistic NeuroGait Knowledge Graph Builder WITHOUT PCA
+Key Changes:
+1. Removed PCA completely - keeping original feature dimensions
+2. Updated metadata logging
+3. Modified embedding creation to maintain full dimensionality
 """
 
 import pandas as pd
@@ -19,7 +15,6 @@ from datetime import datetime
 import os
 from dotenv import load_dotenv
 from sklearn.preprocessing import StandardScaler
-from sklearn.decomposition import PCA
 from sklearn.model_selection import train_test_split
 from sklearn.feature_selection import VarianceThreshold
 import json
@@ -29,7 +24,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('neurogait_builder.log'),
+        logging.FileHandler('neurogait_builder_no_pca.log'),
         logging.StreamHandler()
     ]
 )
@@ -46,7 +41,6 @@ class EnhancedNeuroGaitGraphBuilder:
         self.driver = None
         self.samples_per_participant = samples_per_participant
         
-        # Enhanced augmentation types with descriptions
         self.augmentation_types = {
             'original': {'description': 'Original sample', 'index': 0},
             'jittering': {'description': 'Added small random noise', 'index': 1},
@@ -58,32 +52,21 @@ class EnhancedNeuroGaitGraphBuilder:
             'temporal_slice': {'description': 'Random temporal slice', 'index': 7}
         }
         
-        # FIXED: Use EXACT same 12 features as ML script for fair comparison
         self.essential_movement_features = [
-            'mean HESHL',   # Head-Shoulder Left
-            'mean SPELR',   # Spine-Elbow Right  
-            'mean SHWRL',   # Shoulder-Wrist Left
-            'mean SHWRR',   # Shoulder-Wrist Right
-            'mean ELHAL',   # Elbow-Hand Left
-            'mean THHAR',   # Thigh-Hand Right
-            'mean SPKNL',   # Spine-Knee Left
-            'mean SPKNR',   # Spine-Knee Right
-            'mean HIANR',   # Hip-Ankle Right
-            'GaCT',         # Gait Cycle Time
-            'StaT',         # Stance Time
-            'SwiT'          # Swing Time
-        ]  # Exactly 12 features - same as ML script!
+            'mean HESHL', 'mean SPELR', 'mean SHWRL', 'mean SHWRR',
+            'mean ELHAL', 'mean THHAR', 'mean SPKNL', 'mean SPKNR',
+            'mean HIANR', 'GaCT', 'StaT', 'SwiT'
+        ]  # 12 features (same as ML script)
         
-        # Configuration
+        # Configuration (removed embedding_dim since we're not using PCA)
         self.config = {
-            'embedding_dim': 8,
             'min_feature_variance': 0.02,
             'test_size': 0.1,
             'random_state': 42
         }
-        
+
     def convert_to_float(self, value):
-        """Robust conversion of string with comma decimal separator to float"""
+        """Convert string with comma decimal separator to float"""
         if pd.isna(value):
             return None
         if isinstance(value, (int, float)):
@@ -93,9 +76,9 @@ class EnhancedNeuroGaitGraphBuilder:
         except (ValueError, AttributeError):
             logger.warning(f"Could not convert value: {value}")
             return None
-    
+
     def connect(self):
-        """Connect to Neo4j database with timeout and retry"""
+        """Connect to Neo4j with retry logic"""
         max_retries = 3
         for attempt in range(max_retries):
             try:
@@ -111,19 +94,17 @@ class EnhancedNeuroGaitGraphBuilder:
             except Exception as e:
                 logger.warning(f"⚠️ Connection attempt {attempt + 1} failed: {e}")
                 if attempt == max_retries - 1:
-                    logger.error("❌ Failed to connect to Neo4j after multiple attempts")
+                    logger.error("❌ Failed to connect to Neo4j")
                     return False
-    
+
     def clear_database(self):
         """Clear existing data with confirmation"""
         try:
             with self.driver.session() as session:
                 result = session.run("MATCH (n) RETURN COUNT(n) AS node_count")
                 count = result.single()["node_count"]
-                
                 if count > 0:
                     logger.warning(f"⚠️ About to delete {count} nodes")
-                    # Auto-confirm for automation (remove prompt)
                     session.run("MATCH (n) DETACH DELETE n")
                     logger.info("🗑️ Database cleared")
                 else:
@@ -132,9 +113,9 @@ class EnhancedNeuroGaitGraphBuilder:
         except Exception as e:
             logger.error(f"❌ Error clearing database: {e}")
             raise
-    
+
     def create_constraints_and_indexes(self):
-        """Create constraints and indexes with error handling"""
+        """Create Neo4j constraints and indexes"""
         constraints = [
             "CREATE CONSTRAINT participant_id_unique IF NOT EXISTS FOR (p:Participant) REQUIRE p.id IS UNIQUE",
             "CREATE CONSTRAINT sample_id_unique IF NOT EXISTS FOR (s:Sample) REQUIRE s.id IS UNIQUE",
@@ -162,9 +143,9 @@ class EnhancedNeuroGaitGraphBuilder:
                     logger.debug(f"Index might already exist: {e}")
             
             logger.info("✅ Constraints and indexes created")
-    
+
     def load_and_split_data(self, filepath="Final dataset.csv"):
-        """Load data and perform rigorous participant-level split"""
+        """Load data and perform participant-level split"""
         logger.info(f"📊 Loading and splitting data from {filepath}...")
         
         try:
@@ -186,10 +167,8 @@ class EnhancedNeuroGaitGraphBuilder:
             df['participant_id'] = df.index // self.samples_per_participant
             df['diagnosis'] = df['class'].map({'A': 'ASD', 'T': 'Typical'})
             
-            # Rigorous participant-level split
+            # Participant-level split
             participant_info = df.groupby('participant_id')['diagnosis'].first().reset_index()
-            
-            # Stratified split by diagnosis
             train_pids, test_pids = train_test_split(
                 participant_info['participant_id'].values,
                 test_size=self.config['test_size'],
@@ -221,31 +200,23 @@ class EnhancedNeuroGaitGraphBuilder:
         except Exception as e:
             logger.error(f"❌ Error loading/splitting data: {e}")
             raise
-    
+
     def create_embeddings(self, df, train_pids):
-        """Create leakage-free embeddings with enhanced feature selection"""
-        logger.info("🧠 Creating enhanced realistic embeddings with EXACT 12 features...")
+        """Create KG embeddings WITHOUT PCA dimensionality reduction"""
+        logger.info("🧠 Creating KG embeddings WITHOUT PCA (keeping all dimensions)...")
         
-        # FIXED: Select only the EXACT 12 features that ML script uses
+        # Select only the 12 essential features
         available_features = [f for f in self.essential_movement_features if f in df.columns]
-        logger.info(f"  🔍 Using {len(available_features)} EXACT features for fair comparison:")
+        logger.info(f"  🔍 Using {len(available_features)} features (NO PCA reduction):")
         for feature in available_features:
             logger.info(f"    • {feature}")
-        
-        # Log missing features if any
-        missing_features = [f for f in self.essential_movement_features if f not in df.columns]
-        if missing_features:
-            logger.warning(f"  ⚠️  Missing features: {missing_features}")
         
         # Separate train and test
         train_mask = df['participant_id'].isin(train_pids)
         X_train = df.loc[train_mask, available_features].fillna(0)
         X_test = df.loc[~train_mask, available_features].fillna(0)
         
-        # Enhanced feature selection pipeline
-        logger.info("  🔧 Performing rigorous feature selection...")
-        
-        # 1. Remove low-variance features
+        # Feature selection (VarianceThreshold)
         selector = VarianceThreshold(threshold=self.config['min_feature_variance'])
         X_train_selected = selector.fit_transform(X_train)
         selected_mask = selector.get_support()
@@ -255,45 +226,29 @@ class EnhancedNeuroGaitGraphBuilder:
         for feature in selected_features:
             logger.info(f"    ✓ {feature}")
         
-        # 2. Standardization (train only)
+        # Standardization (train only)
         scaler = StandardScaler()
         X_train_scaled = scaler.fit_transform(X_train_selected)
         X_test_scaled = scaler.transform(X_test.loc[:, selected_features])
         
-        # 3. PCA with realistic dimensions
-        pca = PCA(n_components=self.config['embedding_dim'])
-        train_embeddings = pca.fit_transform(X_train_scaled)
-        test_embeddings = pca.transform(X_test_scaled)
-        
-        explained_variance = pca.explained_variance_ratio_.sum()
-        logger.info(f"  📊 PCA Results:")
-        logger.info(f"     Explained variance: {explained_variance:.3f}")
-        logger.info(f"     Components: {pca.n_components_}")
-        logger.info(f"     Input features: {len(selected_features)} → Output dimensions: {pca.n_components_}")
+        # NO PCA - keep original dimensions
+        train_embeddings = X_train_scaled
+        test_embeddings = X_test_scaled
+        embedding_cols = [f'embedding_{i}' for i in range(X_train_scaled.shape[1])]
         
         # Add embeddings to dataframe
-        embedding_cols = [f'embedding_{i}' for i in range(train_embeddings.shape[1])]
-        
         for col in embedding_cols:
             df[col] = 0.0
-        
         df.loc[train_mask, embedding_cols] = train_embeddings
         df.loc[~train_mask, embedding_cols] = test_embeddings
         
-        # Save feature selection details
-        self.feature_selection = {
-            'initial_features': available_features,
-            'selected_features': selected_features,
-            'variance_threshold': self.config['min_feature_variance'],
-            'pca_explained_variance': explained_variance,
-            'pca_components': pca.n_components_
-        }
+        logger.info(f"  ✅ Final embeddings dimension: {X_train_scaled.shape[1]} (NO PCA)")
         
-        return df, embedding_cols, selected_features, pca, scaler
-    
+        return df, embedding_cols, selected_features, scaler
+
     def create_graph_structure(self):
-        """Create enhanced graph structure with metadata"""
-        logger.info("🏗️ Creating enhanced graph structure...")
+        """Create graph structure with metadata"""
+        logger.info("🏗️ Creating graph structure...")
         
         with self.driver.session() as session:
             # Create classification nodes
@@ -303,7 +258,7 @@ class EnhancedNeuroGaitGraphBuilder:
                 SET asd.created_at = datetime(), typical.created_at = datetime()
             """)
             
-            # Create data split nodes with metadata
+            # Create data split nodes
             session.run("""
                 MERGE (train:DataSplit {name: 'train', description: 'Training data'})
                 MERGE (test:DataSplit {name: 'test', description: 'Test data'})
@@ -328,26 +283,25 @@ class EnhancedNeuroGaitGraphBuilder:
                 is_original=(aug_type == 'original')
                 )
             
-            # Create configuration node
+            # Create configuration node (updated to reflect no PCA)
             session.run("""
                 MERGE (c:Configuration {
                     name: 'NeuroGaitGraphConfig',
-                    embedding_dim: $embedding_dim,
                     min_feature_variance: $min_var,
-                    random_state: $random_state
+                    random_state: $random_state,
+                    note: 'NO PCA dimensionality reduction'
                 })
                 SET c.created_at = datetime()
             """, 
-            embedding_dim=self.config['embedding_dim'],
             min_var=self.config['min_feature_variance'],
             random_state=self.config['random_state']
             )
             
-            logger.info("✅ Enhanced graph structure created")
-    
+            logger.info("✅ Graph structure created")
+
     def create_participants_and_samples(self, df):
-        """Create participants and samples with enhanced properties"""
-        logger.info("👥 Creating participants and samples with metadata...")
+        """Create participants and samples in Neo4j"""
+        logger.info("👥 Creating participants and samples...")
         
         # First create all participants
         unique_participants = df[['participant_id', 'diagnosis', 'data_split']].drop_duplicates()
@@ -415,10 +369,10 @@ class EnhancedNeuroGaitGraphBuilder:
                 """, samples=batch)
             
             logger.info(f"✅ Created {len(df)} samples")
-    
+
     def create_embeddings_in_graph(self, df, embedding_cols):
-        """Store embeddings with additional metadata"""
-        logger.info("💾 Storing enhanced embeddings in graph...")
+        """Store embeddings in Neo4j"""
+        logger.info("💾 Storing embeddings in graph...")
         
         with self.driver.session() as session:
             batch_size = 100
@@ -450,14 +404,14 @@ class EnhancedNeuroGaitGraphBuilder:
                     CREATE (s)-[:HAS_EMBEDDING]->(embedding)
                 """, embeddings=embeddings_data)
         
-        logger.info("✅ Enhanced embeddings stored in graph")
-    
+        logger.info("✅ Embeddings stored in graph")
+
     def validate_no_leakage(self):
-        """Enhanced leakage validation with more checks"""
-        logger.info("🔍 Performing enhanced leakage validation...")
+        """Validate no data leakage between train/test"""
+        logger.info("🔍 Performing leakage validation...")
         
         with self.driver.session() as session:
-            # Basic participant overlap check
+            # Participant overlap check
             result = session.run("""
                 MATCH (train_p:Participant {data_split: 'train'})
                 MATCH (test_p:Participant {data_split: 'test'})
@@ -470,7 +424,7 @@ class EnhancedNeuroGaitGraphBuilder:
             """)
             validation = result.single()
             
-            # Embedding statistics check
+            # Embedding statistics
             embedding_stats = session.run("""
                 MATCH (e:Embedding)
                 WITH e.data_split as split, count(e) as count, 
@@ -479,16 +433,7 @@ class EnhancedNeuroGaitGraphBuilder:
                 ORDER BY split
             """).data()
             
-            # Sample distribution check
-            sample_dist = session.run("""
-                MATCH (s:Sample)-[:IN_SPLIT]->(ds:DataSplit)
-                WITH ds.name as split, count(s) as sample_count,
-                     s.diagnosis as diagnosis
-                RETURN split, diagnosis, sample_count
-                ORDER BY split, diagnosis
-            """).data()
-            
-            logger.info("\n📊 Enhanced Leakage Validation Results:")
+            logger.info("\n📊 Leakage Validation Results:")
             logger.info(f"  Participants:")
             logger.info(f"    Train: {validation['train_count']}")
             logger.info(f"    Test: {validation['test_count']}")
@@ -501,128 +446,84 @@ class EnhancedNeuroGaitGraphBuilder:
                 logger.info(f"      Avg dim: {stat['avg_dim']:.2f}")
                 logger.info(f"      Std dim: {stat['std_dim']:.2f}")
             
-            logger.info("\n  Sample Distribution:")
-            for dist in sample_dist:
-                logger.info(f"    {dist['split']} - {dist['diagnosis']}: {dist['sample_count']}")
-            
             if validation['overlap'] == 0:
                 logger.info("\n✅ NO DATA LEAKAGE DETECTED")
             else:
                 logger.error("\n❌ DATA LEAKAGE DETECTED!")
-                raise ValueError("Data leakage detected in validation")
-    
-    def save_metadata(self, pca, scaler, selected_features):
-        """Save model metadata for reproducibility - FIXED JSON serialization"""
+                raise ValueError("Data leakage detected")
+
+    def save_metadata(self, scaler, selected_features):
+        """Save preprocessing metadata (updated for no PCA)"""
         try:
-            # FIXED: Convert numpy types to native Python types
             metadata = {
-                'pca': {
-                    'components': pca.components_.tolist(),
-                    'explained_variance': pca.explained_variance_.tolist(),
-                    'explained_variance_ratio': pca.explained_variance_ratio_.tolist(),
-                    'mean': pca.mean_.tolist(),
-                    'n_components': int(pca.n_components_)  # FIXED: Convert to int
-                },
                 'scaler': {
                     'scale': scaler.scale_.tolist(),
                     'mean': scaler.mean_.tolist(),
                     'var': scaler.var_.tolist(),
-                    'n_samples_seen': int(scaler.n_samples_seen_)  # FIXED: Convert to int
+                    'n_samples_seen': int(scaler.n_samples_seen_)
                 },
                 'selected_features': selected_features,
-                'config': {
-                    'embedding_dim': int(self.config['embedding_dim']),  # FIXED: Ensure int
-                    'min_feature_variance': float(self.config['min_feature_variance']),  # FIXED: Ensure float
-                    'test_size': float(self.config['test_size']),  # FIXED: Ensure float
-                    'random_state': int(self.config['random_state'])  # FIXED: Ensure int
-                },
-                'timestamp': datetime.now().isoformat()
+                'config': self.config,
+                'timestamp': datetime.now().isoformat(),
+                'note': 'KG embeddings created WITHOUT PCA dimensionality reduction'
             }
             
-            with open('neurogait_metadata.json', 'w') as f:
+            with open('neurogait_metadata_no_pca.json', 'w') as f:
                 json.dump(metadata, f, indent=2)
             
-            logger.info("💾 Saved model metadata to neurogait_metadata.json")
+            logger.info("💾 Saved metadata to neurogait_metadata_no_pca.json")
             
         except Exception as e:
             logger.warning(f"⚠️ Could not save metadata: {e}")
-            logger.info("🔄 Continuing without metadata save...")
-    
+
     def close(self):
-        """Close database connection safely"""
+        """Close Neo4j connection"""
         if self.driver:
             try:
                 self.driver.close()
                 logger.info("🔌 Neo4j connection closed")
             except Exception as e:
                 logger.error(f"❌ Error closing connection: {e}")
-    
+
     def build_graph(self, filepath="Final dataset.csv", clear_existing=True):
-        """Build the enhanced realistic knowledge graph"""
+        """Build the knowledge graph without PCA"""
         start_time = datetime.now()
         
         try:
-            logger.info("🚀 Starting Enhanced Realistic NeuroGait Knowledge Graph construction...")
-            logger.info("🎯 FIXED: Using EXACT same 12 features as ML script for fair comparison")
+            logger.info("🚀 Starting NeuroGait Knowledge Graph construction (NO PCA)...")
             
-            # Connect to Neo4j
             if not self.connect():
                 return False
             
-            # Clear existing data if requested
             if clear_existing and not self.clear_database():
                 return False
             
-            # Create constraints and indexes
             self.create_constraints_and_indexes()
-            
-            # Create basic graph structure
             self.create_graph_structure()
             
-            # Load and split data
             df, train_pids, test_pids = self.load_and_split_data(filepath)
+            df_final, embedding_cols, selected_features, scaler = self.create_embeddings(df, train_pids)
             
-            # Create embeddings
-            df_final, embedding_cols, selected_features, pca, scaler = self.create_embeddings(df, train_pids)
-            
-            # Create participants and samples
             self.create_participants_and_samples(df_final)
-            
-            # Store embeddings
             self.create_embeddings_in_graph(df_final, embedding_cols)
-            
-            # Validate no leakage
             self.validate_no_leakage()
+            self.save_metadata(scaler, selected_features)
             
-            # Save metadata (FIXED - now handles JSON serialization properly)
-            self.save_metadata(pca, scaler, selected_features)
-            
-            # Calculate build time
             build_time = datetime.now() - start_time
-            
-            # Final report
-            logger.info("\n🎉 ENHANCED REALISTIC KNOWLEDGE GRAPH CONSTRUCTION COMPLETED!")
+            logger.info("\n🎉 KNOWLEDGE GRAPH CONSTRUCTION COMPLETED (NO PCA)!")
             logger.info(f"⏱️  Total build time: {build_time}")
             
             logger.info("\n📊 Construction Summary:")
             logger.info(f"  Participants: {len(train_pids) + len(test_pids)}")
             logger.info(f"  Samples: {len(df_final)}")
-            logger.info(f"  Features used: {len(selected_features)} (EXACT same as ML script)")
-            logger.info(f"  Embedding dimension: {len(embedding_cols)}")
-            logger.info(f"  PCA explained variance: {pca.explained_variance_ratio_.sum():.3f}")
+            logger.info(f"  Features used: {len(selected_features)}")
+            logger.info(f"  Embedding dimension: {len(embedding_cols)} (NO PCA)")
             
-            logger.info("\n🔒 Fair Comparison Features:")
-            logger.info("  ✅ EXACT same 12 features as ML script")
-            logger.info("  ✅ Participant-level stratified split")
-            logger.info("  ✅ Training-only feature selection")
-            logger.info("  ✅ Training-only PCA fitting")
-            logger.info("  ✅ Rigorous validation checks")
-            logger.info("  ✅ JSON serialization fixed")
-            
-            logger.info("\n💡 Next Steps:")
-            logger.info("  1. Run fair comparison ML analysis")
-            logger.info("  2. Expect realistic KG performance (0.82-0.88 AUC)")
-            logger.info("  3. Compare with raw features fairly")
+            logger.info("\n🔒 Key Properties:")
+            logger.info("  ✅ NO PCA dimensionality reduction")
+            logger.info("  ✅ Same 12 features as ML script")
+            logger.info("  ✅ Participant-level split")
+            logger.info("  ✅ Training-only preprocessing")
             
             return True
             
@@ -637,26 +538,18 @@ class EnhancedNeuroGaitGraphBuilder:
 
 
 def main():
-    """Main execution function"""
-    logger.info("🎯 Enhanced Realistic NeuroGait Knowledge Graph Builder - FIXED VERSION")
-    logger.info("🔧 FIXES: JSON serialization + Exact 12 features for fair comparison")
+    """Main execution"""
+    logger.info("🎯 NeuroGait Knowledge Graph Builder - NO PCA Version")
     
-    # Create builder instance
     builder = EnhancedNeuroGaitGraphBuilder(samples_per_participant=8)
-    
-    # Build the graph
     success = builder.build_graph("Final dataset.csv")
     
     if success:
-        print("\n🎉 SUCCESS: Enhanced Realistic Knowledge Graph created!")
-        print("🔒 Rigorous leakage prevention measures applied")
-        print("📊 Uses EXACT same 12 features as ML script for fair comparison")
-        print("🔧 JSON serialization error fixed")
-        print("📈 Ready for fair comparison ML analysis")
-        print("\n🚀 Next: Run python fair_comparison_ml_analysis.py")
+        print("\n🎉 SUCCESS: Knowledge Graph created WITHOUT PCA!")
+        print("📊 Embeddings maintain original feature dimensions")
+        print("🔍 Ready for fair comparison with raw features")
     else:
         print("\n❌ Failed to create knowledge graph")
-        print("📋 Check logs for detailed error information")
 
 if __name__ == "__main__":
     main()
