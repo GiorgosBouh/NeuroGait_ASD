@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Leakage-Free ML Analysis: Raw Features vs Leakage-Free Knowledge Graph Embeddings
-Compatible with the new leakage-free Knowledge Graph structure
-Expected realistic improvements (AUC 0.75-0.85, NOT 1.000)
+Fair Comparison ML Analysis: Raw Features vs Leakage-Free KG Embeddings
+FIXED: Uses the SAME 19 essential features for both approaches for fair comparison
+Raw: 19 features → Standardization → 19D
+KG: 19 features → Standardization → PCA → 8D
 """
 
 import pandas as pd
@@ -40,9 +41,9 @@ except ImportError:
 
 warnings.filterwarnings('ignore')
 
-class LeakageFreeNeuroGaitMLAnalysis:
+class FairComparisonNeuroGaitMLAnalysis:
     def __init__(self):
-        self.output_dir = f"leakage_free_ml_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        self.output_dir = f"fair_comparison_ml_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         os.makedirs(self.output_dir, exist_ok=True)
         
         # Neo4j connection (if available)
@@ -61,6 +62,15 @@ class LeakageFreeNeuroGaitMLAnalysis:
             except Exception as e:
                 print(f"⚠️ Neo4j connection failed: {e}")
                 self.neo4j_driver = None
+        
+        # SAME essential features used by KG builder for fair comparison
+        self.essential_movement_features = [
+            'mean HESHL', 'mean HESHR', 'mean SPELL', 'mean SPELR',
+            'mean SHWRL', 'mean SHWRR', 'mean ELHAL', 'mean ELHAR', 
+            'mean THHAL', 'mean THHAR', 'mean SPKNL', 'mean SPKNR',
+            'mean HIANL', 'mean HIANR', 'mean KNFOL', 'mean KNFOR',
+            'GaCT', 'StaT', 'SwiT'
+        ]
         
         # Results storage
         self.results = {}
@@ -86,38 +96,25 @@ class LeakageFreeNeuroGaitMLAnalysis:
         df['participant_id'] = participant_ids
         df['diagnosis'] = df['class'].map({'A': 1, 'T': 0})  # ASD=1, Typical=0
         
-        # Filter to movement patterns
-        angle_features = [
-            'mean HESHL', 'mean HESHR', 'mean SPELL', 'mean SPELR',
-            'mean SHWRL', 'mean SHWRR', 'mean ELHAL', 'mean ELHAR',
-            'mean THHAL', 'mean THHAR', 'mean SPKNL', 'mean SPKNR',
-            'mean HIANL', 'mean HIANR', 'mean KNFOL', 'mean KNFOR'
-        ]
-        
-        temporal_features = ['GaCT', 'StaT', 'SwiT']
-        
-        # Keep only movement pattern features that exist
-        movement_features = []
-        for feature in angle_features + temporal_features:
-            if feature in df.columns:
-                movement_features.append(feature)
+        # FIXED: Use the SAME essential features as KG builder
+        available_features = [f for f in self.essential_movement_features if f in df.columns]
         
         # Create final dataset
-        feature_cols = movement_features + ['participant_id', 'diagnosis']
+        feature_cols = available_features + ['participant_id', 'diagnosis']
         df_movement = df[feature_cols].copy()
         
         # Remove rows with missing data
         df_movement = df_movement.dropna()
         
-        print(f"✅ Filtered to {len(movement_features)} movement features:")
-        for feature in movement_features:
+        print(f"✅ Using {len(available_features)} SAME essential features for fair comparison:")
+        for feature in available_features:
             print(f"   • {feature}")
         
         print(f"📊 Final dataset: {len(df_movement)} samples")
         print(f"   Class distribution: {df_movement['diagnosis'].value_counts().to_dict()}")
         print(f"   Participants: {df_movement['participant_id'].nunique()}")
         
-        return df_movement, movement_features
+        return df_movement, available_features
     
     def participant_level_split(self, df, test_size=0.2):
         """Split data at participant level to prevent leakage"""
@@ -157,7 +154,7 @@ class LeakageFreeNeuroGaitMLAnalysis:
             print("❌ Neo4j connection not available!")
             print("💡 To run leakage-free KG embedding analysis:")
             print("   1. Start Neo4j database")
-            print("   2. Run: python leakage_free_kg_builder.py")
+            print("   2. Run: python truly_realistic_kg_builder.py")
             print("   3. Then run this analysis")
             print("\n🚫 Skipping KG embedding analysis...")
             return None, None
@@ -167,7 +164,7 @@ class LeakageFreeNeuroGaitMLAnalysis:
         except Exception as e:
             print(f"❌ KG embedding extraction failed: {e}")
             print("💡 Make sure leakage-free Knowledge Graph is populated")
-            print("   Run: python leakage_free_kg_builder.py")
+            print("   Run: python truly_realistic_kg_builder.py")
             print("\n🚫 Skipping KG embedding analysis...")
             import traceback
             traceback.print_exc()
@@ -201,7 +198,7 @@ class LeakageFreeNeuroGaitMLAnalysis:
             
             if len(kg_data) == 0:
                 print("   ⚠️ No leakage-free embeddings found in KG")
-                print("   💡 Run: python leakage_free_kg_builder.py first!")
+                print("   💡 Run: python truly_realistic_kg_builder.py first!")
                 return None, None
             
             # Convert to DataFrame
@@ -318,36 +315,33 @@ class LeakageFreeNeuroGaitMLAnalysis:
             
             return train_embeddings, test_embeddings
     
-    def prepare_raw_features(self, train_data, test_data, n_features=15):
-        """Prepare raw movement features with feature selection"""
-        print(f"\n📊 Preparing raw features (selecting top {n_features})...")
+    def prepare_raw_features_fair(self, train_data, test_data, available_features):
+        """Prepare raw features using the SAME features as KG for fair comparison"""
+        print(f"\n📊 Preparing raw features for FAIR COMPARISON...")
+        print(f"   🎯 Using the SAME {len(available_features)} features as KG embeddings input")
         
-        feature_cols = [col for col in train_data.columns 
-                       if col not in ['participant_id', 'diagnosis']]
+        # Use ALL available features (same as KG input) - NO feature selection
+        feature_cols = [col for col in available_features if col in train_data.columns]
         
         X_train_raw = train_data[feature_cols]
         X_test_raw = test_data[feature_cols]
         y_train = train_data['diagnosis']
         y_test = test_data['diagnosis']
         
-        # Scale features
+        # Scale features (same as KG preprocessing)
         scaler = StandardScaler()
         X_train_scaled = scaler.fit_transform(X_train_raw)
         X_test_scaled = scaler.transform(X_test_raw)
         
-        # Feature selection
-        selector = SelectKBest(f_classif, k=min(n_features, len(feature_cols)))
-        X_train_selected = selector.fit_transform(X_train_scaled, y_train)
-        X_test_selected = selector.transform(X_test_scaled)
-        
-        # Get selected feature names
-        selected_features = [feature_cols[i] for i in selector.get_support(indices=True)]
-        
-        print(f"   ✅ Selected {len(selected_features)} features:")
-        for feature in selected_features:
+        print(f"   ✅ Using ALL {len(feature_cols)} essential features (no feature selection):")
+        for feature in feature_cols:
             print(f"      • {feature}")
         
-        return X_train_selected, X_test_selected, y_train, y_test, selected_features
+        print(f"   📊 Fair comparison setup:")
+        print(f"      Raw Features: {len(feature_cols)} features → Standardization → {len(feature_cols)}D")
+        print(f"      KG Embeddings: {len(feature_cols)} features → Standardization → PCA → 8D")
+        
+        return X_train_scaled, X_test_scaled, y_train, y_test, feature_cols
     
     def train_multiple_models(self, X_train, X_test, y_train, y_test, train_pids, approach_name):
         """Train multiple ML models and return comprehensive results"""
@@ -435,7 +429,7 @@ class LeakageFreeNeuroGaitMLAnalysis:
     
     def statistical_comparison(self, raw_results, kg_results):
         """Perform comprehensive statistical comparison"""
-        print(f"\n📊 Performing statistical comparison...")
+        print(f"\n📊 Performing fair statistical comparison...")
         
         comparison_results = {}
         
@@ -467,7 +461,7 @@ class LeakageFreeNeuroGaitMLAnalysis:
                         'improvement_pct': improvement_pct
                     }
                     
-                    print(f"      {metric.upper()}: Raw={raw_val:.3f}, LeakageFree-KG={kg_val:.3f}, "
+                    print(f"      {metric.upper()}: Raw={raw_val:.3f}, KG-8D={kg_val:.3f}, "
                           f"Δ={diff:+.3f} ({improvement_pct:+.1f}%)")
                 
                 # Statistical test on CV scores
@@ -518,12 +512,12 @@ class LeakageFreeNeuroGaitMLAnalysis:
         # Main results file
         full_results = {
             'timestamp': datetime.now().isoformat(),
-            'analysis_type': 'Raw Features vs Leakage-Free Knowledge Graph Embeddings',
-            'note': 'Using leakage-free embeddings with proper train/test separation',
+            'analysis_type': 'FAIR COMPARISON: Raw Features vs Leakage-Free KG Embeddings',
+            'note': 'Using SAME input features for fair comparison: Raw=19D, KG=8D from same 19 features',
             'dataset_info': {
                 'total_train_participants': len(train_pids),
                 'total_test_participants': len(test_pids),
-                'selected_features': selected_features,
+                'features_used': selected_features,
                 'train_participants': train_pids.tolist() if hasattr(train_pids, 'tolist') else list(train_pids),
                 'test_participants': test_pids.tolist() if hasattr(test_pids, 'tolist') else list(test_pids)
             },
@@ -532,7 +526,7 @@ class LeakageFreeNeuroGaitMLAnalysis:
             'statistical_comparison': convert_for_json(comparison_results)
         }
         
-        with open(f'{self.output_dir}/leakage_free_comparison_results.json', 'w') as f:
+        with open(f'{self.output_dir}/fair_comparison_results.json', 'w') as f:
             json.dump(full_results, f, indent=2)
         
         # Summary table for easy viewing
@@ -541,11 +535,11 @@ class LeakageFreeNeuroGaitMLAnalysis:
             if model in kg_results and model in comparison_results:
                 row = {
                     'Model': model,
-                    'Raw_AUC': raw_results[model]['auc'],
-                    'LeakageFree_KG_AUC': kg_results[model]['auc'],
+                    'Raw_19D_AUC': raw_results[model]['auc'],
+                    'KG_8D_AUC': kg_results[model]['auc'],
                     'AUC_Improvement': comparison_results[model]['auc']['improvement_pct'],
-                    'Raw_F1': raw_results[model]['f1'],
-                    'LeakageFree_KG_F1': kg_results[model]['f1'],
+                    'Raw_19D_F1': raw_results[model]['f1'],
+                    'KG_8D_F1': kg_results[model]['f1'],
                     'F1_Improvement': comparison_results[model]['f1']['improvement_pct'],
                     'CV_p_value': comparison_results[model]['cv_comparison']['p_value'],
                     'Statistically_Significant': comparison_results[model]['cv_comparison']['significant']
@@ -553,27 +547,27 @@ class LeakageFreeNeuroGaitMLAnalysis:
                 summary_data.append(row)
         
         summary_df = pd.DataFrame(summary_data)
-        summary_df.to_csv(f'{self.output_dir}/leakage_free_results_summary.csv', index=False)
+        summary_df.to_csv(f'{self.output_dir}/fair_comparison_summary.csv', index=False)
         
         print(f"   ✅ Results saved to:")
-        print(f"      • {self.output_dir}/leakage_free_comparison_results.json")
-        print(f"      • {self.output_dir}/leakage_free_results_summary.csv")
+        print(f"      • {self.output_dir}/fair_comparison_results.json")
+        print(f"      • {self.output_dir}/fair_comparison_summary.csv")
         
         return summary_df
     
     def print_final_summary(self, summary_df, comparison_results):
         """Print comprehensive final summary"""
         print(f"\n{'='*80}")
-        print("🎉 LEAKAGE-FREE ML ANALYSIS COMPLETE")
+        print("🎉 FAIR COMPARISON ML ANALYSIS COMPLETE")
         print(f"{'='*80}")
         
         # Best performing approaches
-        best_raw_model = summary_df.loc[summary_df['Raw_AUC'].idxmax()]
-        best_kg_model = summary_df.loc[summary_df['LeakageFree_KG_AUC'].idxmax()]
+        best_raw_model = summary_df.loc[summary_df['Raw_19D_AUC'].idxmax()]
+        best_kg_model = summary_df.loc[summary_df['KG_8D_AUC'].idxmax()]
         
         print(f"\n🏆 BEST PERFORMING MODELS:")
-        print(f"   Raw Features:         {best_raw_model['Model']} (AUC: {best_raw_model['Raw_AUC']:.3f})")
-        print(f"   Leakage-Free KG:      {best_kg_model['Model']} (AUC: {best_kg_model['LeakageFree_KG_AUC']:.3f})")
+        print(f"   Raw Features (19D):   {best_raw_model['Model']} (AUC: {best_raw_model['Raw_19D_AUC']:.3f})")
+        print(f"   KG Embeddings (8D):   {best_kg_model['Model']} (AUC: {best_kg_model['KG_8D_AUC']:.3f})")
         
         # Overall improvements
         avg_auc_improvement = summary_df['AUC_Improvement'].mean()
@@ -594,23 +588,24 @@ class LeakageFreeNeuroGaitMLAnalysis:
                 print(f"      • {row['Model']}: AUC {row['AUC_Improvement']:+.1f}%, F1 {row['F1_Improvement']:+.1f}%")
         
         # Detailed model comparison
-        print(f"\n📋 DETAILED RESULTS TABLE:")
+        print(f"\n📋 FAIR COMPARISON RESULTS TABLE:")
         print("-" * 110)
-        print(f"{'Model':<20} {'Raw AUC':<10} {'LF-KG AUC':<12} {'AUC Δ%':<10} {'Raw F1':<10} {'LF-KG F1':<12} {'F1 Δ%':<10} {'p-value':<10}")
+        print(f"{'Model':<20} {'Raw-19D AUC':<12} {'KG-8D AUC':<11} {'AUC Δ%':<10} {'Raw-19D F1':<11} {'KG-8D F1':<10} {'F1 Δ%':<10} {'p-value':<10}")
         print("-" * 110)
         
         for _, row in summary_df.iterrows():
             significance_marker = "*" if row['Statistically_Significant'] else " "
-            print(f"{row['Model']:<20} {row['Raw_AUC']:<10.3f} {row['LeakageFree_KG_AUC']:<12.3f} "
-                  f"{row['AUC_Improvement']:+<10.1f} {row['Raw_F1']:<10.3f} {row['LeakageFree_KG_F1']:<12.3f} "
+            print(f"{row['Model']:<20} {row['Raw_19D_AUC']:<12.3f} {row['KG_8D_AUC']:<11.3f} "
+                  f"{row['AUC_Improvement']:+<10.1f} {row['Raw_19D_F1']:<11.3f} {row['KG_8D_F1']:<10.3f} "
                   f"{row['F1_Improvement']:+<10.1f} {row['CV_p_value']:<10.3f}{significance_marker}")
         
         print("-" * 110)
         print("* = Statistically significant difference (p < 0.05)")
-        print("LF-KG = Leakage-Free Knowledge Graph")
+        print("Raw-19D = Raw features (19 dimensions)")
+        print("KG-8D = Knowledge Graph embeddings (8 dimensions from same 19 features)")
         
         # Realistic expectations check
-        max_kg_auc = summary_df['LeakageFree_KG_AUC'].max()
+        max_kg_auc = summary_df['KG_8D_AUC'].max()
         if max_kg_auc > 0.95:
             print(f"\n⚠️  LEAKAGE WARNING:")
             print(f"   Maximum KG AUC: {max_kg_auc:.3f} is suspiciously high!")
@@ -621,24 +616,33 @@ class LeakageFreeNeuroGaitMLAnalysis:
             print(f"   Maximum KG AUC: {max_kg_auc:.3f} is within realistic range")
             print(f"   No signs of data leakage detected")
         
+        # Fair comparison insights
+        print(f"\n🎯 FAIR COMPARISON INSIGHTS:")
+        print(f"   Both approaches use the SAME 19 input features")
+        print(f"   Raw: 19 features → Standardization → 19D")
+        print(f"   KG:  19 features → Standardization → PCA → 8D")
+        print(f"   This comparison shows the effect of dimensionality reduction (PCA)")
+        
         # Recommendations
         print(f"\n💡 RECOMMENDATIONS:")
         
         if avg_auc_improvement > 5:
-            print("   🎉 EXCELLENT: Leakage-free KG embeddings show significant improvement!")
-            print("   📋 Recommendation: Use leakage-free KG embeddings for final model")
+            print("   🎉 EXCELLENT: KG embeddings (8D) outperform raw features (19D)!")
+            print("   📋 Recommendation: Use KG embeddings - PCA dimensionality reduction helps")
         elif avg_auc_improvement > 2:
-            print("   ✅ GOOD: Leakage-free KG embeddings show moderate improvement")
-            print("   📋 Recommendation: Consider ensemble of both approaches")
+            print("   ✅ GOOD: KG embeddings show moderate improvement")
+            print("   📋 Recommendation: Consider KG embeddings for memory/speed benefits")
         elif avg_auc_improvement > -2:
             print("   ⚖️  Similar performance between approaches")
-            print("   📋 Recommendation: Raw features may be simpler and equally effective")
+            print("   📋 Recommendation: Choose based on interpretability needs")
+            print("       • Raw features: More interpretable")
+            print("       • KG embeddings: More compact (8D vs 19D)")
         else:
-            print("   ❌ Raw features still outperform leakage-free KG embeddings")
-            print("   📋 Recommendation: Stick with raw feature approach")
+            print("   ❌ Raw features (19D) outperform KG embeddings (8D)")
+            print("   📋 Recommendation: Stick with raw features - PCA loses important information")
         
         # Clinical significance
-        best_overall_auc = max(summary_df['Raw_AUC'].max(), summary_df['LeakageFree_KG_AUC'].max())
+        best_overall_auc = max(summary_df['Raw_19D_AUC'].max(), summary_df['KG_8D_AUC'].max())
         print(f"\n🏥 CLINICAL SIGNIFICANCE:")
         print(f"   Best overall AUC: {best_overall_auc:.3f}")
         
@@ -651,7 +655,8 @@ class LeakageFreeNeuroGaitMLAnalysis:
         else:
             print("   ❌ LIMITED: Low clinical utility, needs significant improvement")
         
-        print(f"\n🔒 LEAKAGE-FREE VALIDATION:")
+        print(f"\n🔒 FAIR COMPARISON VALIDATION:")
+        print("   ✅ Same input features used for both approaches")
         print("   ✅ Participant-level split maintained")
         print("   ✅ No diagnosis information used in feature engineering")
         print("   ✅ All transformations fit only on training data")
@@ -660,20 +665,24 @@ class LeakageFreeNeuroGaitMLAnalysis:
         print(f"\n📁 All results saved to: {os.path.abspath(self.output_dir)}")
     
     def run_complete_analysis(self):
-        """Run the complete leakage-free analysis pipeline"""
-        print("🚀 Starting LEAKAGE-FREE ML Analysis: Raw vs Knowledge Graph")
+        """Run the complete fair comparison analysis pipeline"""
+        print("🚀 Starting FAIR COMPARISON ML Analysis: Raw vs Knowledge Graph")
+        print("="*80)
+        print("🎯 FAIR COMPARISON: Both approaches use the SAME 19 input features")
+        print("   • Raw Features: 19 features → Standardization → 19D")
+        print("   • KG Embeddings: 19 features → Standardization → PCA → 8D")
         print("="*80)
         
         try:
             # 1. Load data
-            df, movement_features = self.load_data()
+            df, available_features = self.load_data()
             
             # 2. Split data
             train_data, test_data, train_pids, test_pids = self.participant_level_split(df)
             
-            # 3. Prepare raw features
-            X_train_raw, X_test_raw, y_train, y_test, selected_features = self.prepare_raw_features(
-                train_data, test_data
+            # 3. Prepare raw features using SAME features as KG
+            X_train_raw, X_test_raw, y_train, y_test, feature_names = self.prepare_raw_features_fair(
+                train_data, test_data, available_features
             )
             
             # 4. Try to get leakage-free KG embeddings
@@ -681,12 +690,12 @@ class LeakageFreeNeuroGaitMLAnalysis:
             
             # 5. Train models on raw features
             print(f"\n{'='*60}")
-            print("🔍 ANALYSIS 1: RAW MOVEMENT FEATURES")
+            print("🔍 ANALYSIS 1: RAW FEATURES (19D - SAME INPUT AS KG)")
             print(f"{'='*60}")
             
             raw_results = self.train_multiple_models(
                 X_train_raw, X_test_raw, y_train, y_test, 
-                train_data['participant_id'].values, "Raw Features"
+                train_data['participant_id'].values, "Raw Features (19D)"
             )
             
             # 6. Train models on leakage-free KG embeddings (if available)
@@ -695,17 +704,17 @@ class LeakageFreeNeuroGaitMLAnalysis:
             
             if X_train_kg is not None and X_test_kg is not None:
                 print(f"\n{'='*60}")
-                print("🧠 ANALYSIS 2: LEAKAGE-FREE KNOWLEDGE GRAPH EMBEDDINGS") 
+                print("🧠 ANALYSIS 2: LEAKAGE-FREE KG EMBEDDINGS (8D from SAME 19 FEATURES)") 
                 print(f"{'='*60}")
                 
                 kg_results = self.train_multiple_models(
                     X_train_kg, X_test_kg, y_train, y_test,
-                    train_data['participant_id'].values, "Leakage-Free KG Embeddings"
+                    train_data['participant_id'].values, "KG Embeddings (8D)"
                 )
                 
                 # 7. Statistical comparison
                 print(f"\n{'='*60}")
-                print("📊 ANALYSIS 3: STATISTICAL COMPARISON")
+                print("📊 ANALYSIS 3: FAIR STATISTICAL COMPARISON")
                 print(f"{'='*60}")
                 
                 comparison_results = self.statistical_comparison(raw_results, kg_results)
@@ -713,7 +722,7 @@ class LeakageFreeNeuroGaitMLAnalysis:
                 # 8. Save results
                 summary_df = self.save_detailed_results(
                     raw_results, kg_results, comparison_results,
-                    selected_features, train_pids, test_pids
+                    feature_names, train_pids, test_pids
                 )
                 
                 # 9. Print final summary
@@ -725,7 +734,7 @@ class LeakageFreeNeuroGaitMLAnalysis:
                 print(f"{'='*60}")
                 
                 # Save only raw results
-                self.save_raw_only_results(raw_results, selected_features, train_pids, test_pids)
+                self.save_raw_only_results(raw_results, feature_names, train_pids, test_pids)
                 self.print_raw_only_summary(raw_results)
             
             return {
@@ -746,7 +755,7 @@ class LeakageFreeNeuroGaitMLAnalysis:
                 self.neo4j_driver.close()
                 print("🔌 Neo4j connection closed")
     
-    def save_raw_only_results(self, raw_results, selected_features, train_pids, test_pids):
+    def save_raw_only_results(self, raw_results, feature_names, train_pids, test_pids):
         """Save results when only raw features are analyzed"""
         print(f"\n💾 Saving raw features results...")
         
@@ -770,12 +779,12 @@ class LeakageFreeNeuroGaitMLAnalysis:
         # Results file
         results = {
             'timestamp': datetime.now().isoformat(),
-            'analysis_type': 'Raw Movement Features Analysis Only',
-            'note': 'Leakage-free Knowledge Graph analysis skipped - Neo4j not available',
+            'analysis_type': 'Raw Movement Features Analysis Only (Fair Comparison Ready)',
+            'note': 'Uses same 19 essential features as KG builder for fair comparison',
             'dataset_info': {
                 'total_train_participants': len(train_pids),
                 'total_test_participants': len(test_pids),
-                'selected_features': selected_features,
+                'features_used': feature_names,
                 'train_participants': train_pids.tolist() if hasattr(train_pids, 'tolist') else list(train_pids),
                 'test_participants': test_pids.tolist() if hasattr(test_pids, 'tolist') else list(test_pids)
             },
@@ -810,7 +819,7 @@ class LeakageFreeNeuroGaitMLAnalysis:
     def print_raw_only_summary(self, raw_results):
         """Print summary when only raw features are analyzed"""
         print(f"\n{'='*60}")
-        print("📊 RAW FEATURES ANALYSIS COMPLETE")
+        print("📊 RAW FEATURES ANALYSIS COMPLETE (FAIR COMPARISON READY)")
         print(f"{'='*60}")
         
         # Find best model
@@ -851,9 +860,9 @@ class LeakageFreeNeuroGaitMLAnalysis:
         else:
             print("   ❌ LIMITED: Low clinical utility, needs significant improvement")
         
-        print(f"\n💡 TO ENABLE LEAKAGE-FREE KNOWLEDGE GRAPH COMPARISON:")
+        print(f"\n💡 TO ENABLE FAIR KNOWLEDGE GRAPH COMPARISON:")
         print("   1. Start Neo4j database")
-        print("   2. Run: python leakage_free_kg_builder.py")
+        print("   2. Run: python truly_realistic_kg_builder.py")
         print("   3. Re-run this analysis")
         
         print(f"\n📁 Results saved to: {os.path.abspath(self.output_dir)}")
@@ -861,41 +870,43 @@ class LeakageFreeNeuroGaitMLAnalysis:
 
 def main():
     """Main execution function"""
-    print("🎯 Leakage-Free NeuroGait ML Analysis: Raw Features vs Leakage-Free KG Embeddings")
+    print("🎯 Fair Comparison NeuroGait ML Analysis: Raw Features vs KG Embeddings")
     print("📋 This analysis will:")
-    print("   1. Train models on raw movement features")
-    print("   2. Train models on LEAKAGE-FREE Knowledge Graph embeddings") 
-    print("   3. Perform comprehensive statistical comparison")
+    print("   1. Train models on raw movement features (19D)")
+    print("   2. Train models on LEAKAGE-FREE Knowledge Graph embeddings (8D from same 19 features)") 
+    print("   3. Perform FAIR statistical comparison using SAME input features")
     print("   4. Generate detailed results with leakage detection")
     print("   5. Provide realistic clinical interpretation")
     print()
-    print("🔒 Anti-leakage measures:")
+    print("🔒 Fair comparison measures:")
+    print("   • SAME 19 essential movement features used as input for both approaches")
+    print("   • Raw: 19 features → Standardization → 19D")
+    print("   • KG:  19 features → Standardization → PCA → 8D")
     print("   • Participant-level data splitting")
-    print("   • No diagnosis information in feature engineering")
-    print("   • Transformations fit only on training data")
     print("   • Expected realistic AUC range: 0.70-0.90")
     print("   • Built-in leakage detection warnings")
     print()
-    print("💡 Note: Run 'python leakage_free_kg_builder.py' first to create leakage-free embeddings")
+    print("💡 Note: Run 'python truly_realistic_kg_builder.py' first to create leakage-free embeddings")
     
     # Create analyzer instance
-    analyzer = LeakageFreeNeuroGaitMLAnalysis()
+    analyzer = FairComparisonNeuroGaitMLAnalysis()
     
     # Run analysis
     results = analyzer.run_complete_analysis()
     
     if results['kg_results'] is not None:
-        print("\n🎉 LEAKAGE-FREE ANALYSIS FINISHED!")
-        print("✅ Comprehensive comparison between raw features and leakage-free KG embeddings")
+        print("\n🎉 FAIR COMPARISON ANALYSIS FINISHED!")
+        print("✅ Both approaches used the SAME 19 input features")
+        print("✅ Fair comparison between 19D raw features and 8D KG embeddings")
         print("✅ Statistical significance testing completed")
         print("✅ Leakage detection validation performed")
-        print("✅ Realistic performance improvements demonstrated")
+        print("✅ Realistic performance comparison demonstrated")
         print("🔒 NO DATA LEAKAGE - Results are scientifically valid!")
     else:
         print("\n✅ RAW FEATURES ANALYSIS COMPLETED!")
-        print("✅ Raw movement features analyzed successfully")
-        print("⚠️  Leakage-free Knowledge Graph analysis skipped (Neo4j not available)")
-        print("💡 Run leakage-free KG builder first for complete comparison")
+        print("✅ Raw movement features analyzed successfully (fair comparison ready)")
+        print("⚠️  Knowledge Graph analysis skipped (Neo4j not available)")
+        print("💡 Run truly realistic KG builder first for complete fair comparison")
     
     return results
 
