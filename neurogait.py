@@ -347,11 +347,21 @@ class FairComparisonNeuroGaitMLAnalysis:
         """Train multiple ML models and return comprehensive results"""
         print(f"\n🚀 Training models for {approach_name}...")
         
-        # Define models to test
+   # Define models to test
         models = {
             'Logistic Regression': LogisticRegression(random_state=42, max_iter=1000),
             'Random Forest': RandomForestClassifier(n_estimators=100, random_state=42),
-            'XGBoost': xgb.XGBClassifier(random_state=42, eval_metric='logloss'),
+            'XGBoost': xgb.XGBClassifier(
+                random_state=42, 
+                eval_metric='logloss',
+                max_depth=3,           # Prevent deep overfitting
+                min_child_weight=5,    # Require more samples per leaf
+                subsample=0.8,         # Use 80% of samples per tree
+                colsample_bytree=0.8,  # Use 80% of features per tree
+                reg_alpha=1.0,         # L1 regularization
+                reg_lambda=1.0,        # L2 regularization
+                n_estimators=50        # Use fewer trees
+            ),
             'SVM': SVC(random_state=42, probability=True)
         }
         
