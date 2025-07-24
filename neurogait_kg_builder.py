@@ -77,7 +77,7 @@ class EnhancedNeuroGaitGraphBuilder:
         # Configuration
         self.config = {
             'embedding_dim': 8,
-            'min_feature_variance': 0.01,
+            'min_feature_variance': 0.02,
             'test_size': 0.1,
             'random_state': 42
         }
