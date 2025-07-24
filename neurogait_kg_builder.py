@@ -76,7 +76,7 @@ class EnhancedNeuroGaitGraphBuilder:
         
         # Configuration - MODIFIED: no PCA
         self.config = {
-            'embedding_dim': None,  # Will be set to number of features
+            'embedding_dim': 19,  # Default to expected number of features
             'min_feature_variance': 0.01,
             'test_size': 0.2,
             'random_state': 42,
@@ -576,14 +576,14 @@ class EnhancedNeuroGaitGraphBuilder:
             # Create constraints and indexes
             self.create_constraints_and_indexes()
             
-            # Create basic graph structure
-            self.create_graph_structure()
-            
             # Load and split data
             df, train_pids, test_pids = self.load_and_split_data(filepath)
             
-            # Create embeddings (NO PCA)
+            # Create embeddings (NO PCA) - this will update embedding_dim
             df_final, embedding_cols, selected_features, pca, scaler = self.create_embeddings(df, train_pids)
+            
+            # Create basic graph structure AFTER we know the embedding dimension
+            self.create_graph_structure()
             
             # Create participants and samples
             self.create_participants_and_samples(df_final)
