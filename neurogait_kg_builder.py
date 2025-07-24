@@ -227,10 +227,9 @@ class EnhancedNeuroGaitGraphBuilder:
         except Exception as e:
             logger.error(f"❌ Error loading/splitting data: {e}")
             raise
-    
     def create_embeddings(self, df, train_pids):
-        """Create leakage-free embeddings with enhanced feature selection"""
-        logger.info("🧠 Creating enhanced realistic embeddings...")
+        """Create embeddings WITHOUT dimensionality reduction"""
+        logger.info("🧠 Creating embeddings (NO DIMENSIONALITY REDUCTION)...")
         
         # Select only available essential features
         available_features = [f for f in self.essential_movement_features if f in df.columns]
@@ -241,31 +240,14 @@ class EnhancedNeuroGaitGraphBuilder:
         X_train = df.loc[train_mask, available_features].fillna(0)
         X_test = df.loc[~train_mask, available_features].fillna(0)
         
-        # Enhanced feature selection pipeline
-        logger.info("  🔧 Performing rigorous feature selection...")
-        
-        # 1. Remove low-variance features
-        selector = VarianceThreshold(threshold=self.config['min_feature_variance'])
-        X_train_selected = selector.fit_transform(X_train)
-        selected_mask = selector.get_support()
-        selected_features = [f for f, m in zip(available_features, selected_mask) if m]
-        
-        logger.info(f"  ✅ Selected {len(selected_features)} features after variance threshold")
-        
-        # 2. Standardization (train only)
+        # Standardization (train only)
         scaler = StandardScaler()
-        X_train_scaled = scaler.fit_transform(X_train_selected)
-        X_test_scaled = scaler.transform(X_test.loc[:, selected_features])
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_test_scaled = scaler.transform(X_test)
         
-        # 3. PCA with realistic dimensions
-        pca = PCA(n_components=self.config['embedding_dim'])
-        train_embeddings = pca.fit_transform(X_train_scaled)
-        test_embeddings = pca.transform(X_test_scaled)
-        
-        explained_variance = pca.explained_variance_ratio_.sum()
-        logger.info(f"  📊 PCA Results:")
-        logger.info(f"     Explained variance: {explained_variance:.3f}")
-        logger.info(f"     Components: {pca.n_components_}")
+        # Use standardized features as embeddings (NO PCA)
+        train_embeddings = X_train_scaled  # 19D
+        test_embeddings = X_test_scaled    # 19D
         
         # Add embeddings to dataframe
         embedding_cols = [f'embedding_{i}' for i in range(train_embeddings.shape[1])]
@@ -276,16 +258,18 @@ class EnhancedNeuroGaitGraphBuilder:
         df.loc[train_mask, embedding_cols] = train_embeddings
         df.loc[~train_mask, embedding_cols] = test_embeddings
         
-        # Save feature selection details
+        # Save metadata
         self.feature_selection = {
             'initial_features': available_features,
-            'selected_features': selected_features,
-            'variance_threshold': self.config['min_feature_variance'],
-            'pca_explained_variance': explained_variance,
-            'pca_components': pca.n_components_
+            'selected_features': available_features,  # No feature selection
+            'scaler_params': {
+                'mean': scaler.mean_.tolist(),
+                'scale': scaler.scale_.tolist()
+            }
         }
         
-        return df, embedding_cols, selected_features, pca, scaler
+        return df, embedding_cols, available_features, None, scaler  # No PCA object returned
+   
     
     def create_graph_structure(self):
         """Create enhanced graph structure with metadata"""

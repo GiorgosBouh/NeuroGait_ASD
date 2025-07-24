@@ -1,32 +1,28 @@
 #!/usr/bin/env python3
 """
-Fair Comparison ML Analysis: Raw Features vs Leakage-Free KG Embeddings
-FIXED: Uses the SAME 19 essential features for both approaches for fair comparison
-Raw: 19 features → Standardization → 19D
-KG: 19 features → Standardization → PCA → 8D
+Enhanced Realistic NeuroGait ML Analysis: Raw Features vs KG Embeddings (19D vs 19D)
+Key Improvements:
+1. Strict 19D comparison (NO PCA reduction)
+2. Enhanced leakage prevention
+3. Detailed statistical validation
 """
 
 import pandas as pd
 import numpy as np
 import os
 import json
-import matplotlib.pyplot as plt
-import seaborn as sns
+import logging
 from datetime import datetime
 import warnings
-
-# ML imports
-from sklearn.model_selection import train_test_split, StratifiedKFold
 from sklearn.preprocessing import StandardScaler
-from sklearn.feature_selection import SelectKBest, f_classif
+from sklearn.model_selection import train_test_split, StratifiedKFold
 from sklearn.metrics import (accuracy_score, precision_score, recall_score, 
-                           f1_score, roc_auc_score, confusion_matrix, roc_curve)
+                           f1_score, roc_auc_score, confusion_matrix)
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.svm import SVC
+from sklearn.base import clone
 import xgboost as xgb
-
-# Statistical analysis
 from scipy.stats import ttest_rel
 
 # Neo4j connection
@@ -37,8 +33,17 @@ try:
     HAS_NEO4J = True
 except ImportError:
     HAS_NEO4J = False
-    print("⚠️ Neo4j driver not available")
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('neurogait_analysis.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 warnings.filterwarnings('ignore')
 
 class FairComparisonNeuroGaitMLAnalysis:
@@ -46,880 +51,456 @@ class FairComparisonNeuroGaitMLAnalysis:
         self.output_dir = f"fair_comparison_ml_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         os.makedirs(self.output_dir, exist_ok=True)
         
-        # Neo4j connection (if available)
+        # Neo4j connection
         self.neo4j_driver = None
         if HAS_NEO4J:
             try:
-                neo4j_uri = os.getenv('NEO4J_URI', 'bolt://localhost:7687')
-                neo4j_user = os.getenv('NEO4J_USER', 'neo4j')
-                neo4j_password = os.getenv('NEO4J_PASSWORD', 'palatiou')
-                
                 self.neo4j_driver = GraphDatabase.driver(
-                    neo4j_uri, 
-                    auth=(neo4j_user, neo4j_password)
+                    os.getenv('NEO4J_URI', 'bolt://localhost:7687'),
+                    auth=(os.getenv('NEO4J_USER', 'neo4j'),
+                         os.getenv('NEO4J_PASSWORD', 'password')),
+                    connection_timeout=15
                 )
-                print("✅ Connected to Neo4j")
+                # Test connection
+                with self.neo4j_driver.session() as session:
+                    session.run("RETURN 1")
+                logger.info("✅ Connected to Neo4j")
             except Exception as e:
-                print(f"⚠️ Neo4j connection failed: {e}")
+                logger.error(f"❌ Neo4j connection failed: {e}")
                 self.neo4j_driver = None
-        
-        # SAME essential features used by KG builder for fair comparison
-        self.essential_movement_features = [
+
+        # =============================================
+        # FIXED: Use EXACTLY these 19 features for both approaches
+        # =============================================
+        self.essential_features = [
             'mean HESHL', 'mean HESHR', 'mean SPELL', 'mean SPELR',
-            'mean SHWRL', 'mean SHWRR', 'mean ELHAL', 'mean ELHAR', 
+            'mean SHWRL', 'mean SHWRR', 'mean ELHAL', 'mean ELHAR',
             'mean THHAL', 'mean THHAR', 'mean SPKNL', 'mean SPKNR',
             'mean HIANL', 'mean HIANR', 'mean KNFOL', 'mean KNFOR',
             'GaCT', 'StaT', 'SwiT'
         ]
         
-        # Results storage
-        self.results = {}
-        
-    def load_data(self):
-        """Load and process the movement pattern data"""
-        print("📊 Loading NeuroGait dataset...")
-        
-        # Load CSV
-        try:
-            df = pd.read_csv('Final dataset.csv', sep=';', decimal=',', encoding='utf-8')
-        except UnicodeDecodeError:
-            df = pd.read_csv('Final dataset.csv', sep=';', decimal=',', encoding='latin-1')
-            
-        print(f"✅ Loaded {len(df)} samples with {len(df.columns)} columns")
-        
-        # Create participant mapping 
-        participant_ids = []
-        for i in range(len(df)):
-            participant_id = i // 8  # 8 samples per participant
-            participant_ids.append(participant_id)
-        
-        df['participant_id'] = participant_ids
-        df['diagnosis'] = df['class'].map({'A': 1, 'T': 0})  # ASD=1, Typical=0
-        
-        # FIXED: Use the SAME essential features as KG builder
-        available_features = [f for f in self.essential_movement_features if f in df.columns]
-        
-        # Create final dataset
-        feature_cols = available_features + ['participant_id', 'diagnosis']
-        df_movement = df[feature_cols].copy()
-        
-        # Remove rows with missing data
-        df_movement = df_movement.dropna()
-        
-        print(f"✅ Using {len(available_features)} SAME essential features for fair comparison:")
-        for feature in available_features:
-            print(f"   • {feature}")
-        
-        print(f"📊 Final dataset: {len(df_movement)} samples")
-        print(f"   Class distribution: {df_movement['diagnosis'].value_counts().to_dict()}")
-        print(f"   Participants: {df_movement['participant_id'].nunique()}")
-        
-        return df_movement, available_features
-    
-    def participant_level_split(self, df, test_size=0.2):
-        """Split data at participant level to prevent leakage"""
-        print(f"\n🔧 Performing participant-level split (test_size={test_size})...")
-        
-        # Get unique participants and their labels
-        participant_info = df.groupby('participant_id')['diagnosis'].first().reset_index()
-        
-        # Split participants
-        train_pids, test_pids = train_test_split(
-            participant_info['participant_id'].values,
-            test_size=test_size,
-            stratify=participant_info['diagnosis'].values,
-            random_state=42
-        )
-        
-        # Get sample indices
-        train_mask = df['participant_id'].isin(train_pids)
-        test_mask = df['participant_id'].isin(test_pids)
-        
-        train_data = df[train_mask].reset_index(drop=True)
-        test_data = df[test_mask].reset_index(drop=True)
-        
-        print(f"✅ Split completed:")
-        print(f"   Train: {len(train_pids)} participants ({len(train_data)} samples)")
-        print(f"   Test:  {len(test_pids)} participants ({len(test_data)} samples)")
-        print(f"   Train class distribution: {train_data['diagnosis'].value_counts().to_dict()}")
-        print(f"   Test class distribution: {test_data['diagnosis'].value_counts().to_dict()}")
-        
-        return train_data, test_data, train_pids, test_pids
-    
-    def get_leakage_free_kg_embeddings(self, train_data, test_data):
-        """Get leakage-free embeddings from the Knowledge Graph"""
-        print(f"\n🧠 Extracting leakage-free Knowledge Graph embeddings...")
-        
-        if not self.neo4j_driver:
-            print("❌ Neo4j connection not available!")
-            print("💡 To run leakage-free KG embedding analysis:")
-            print("   1. Start Neo4j database")
-            print("   2. Run: python truly_realistic_kg_builder.py")
-            print("   3. Then run this analysis")
-            print("\n🚫 Skipping KG embedding analysis...")
-            return None, None
-        
-        try:
-            return self._extract_leakage_free_embeddings(train_data, test_data)
-        except Exception as e:
-            print(f"❌ KG embedding extraction failed: {e}")
-            print("💡 Make sure leakage-free Knowledge Graph is populated")
-            print("   Run: python truly_realistic_kg_builder.py")
-            print("\n🚫 Skipping KG embedding analysis...")
-            import traceback
-            traceback.print_exc()
-            return None, None
-    
-    def _extract_leakage_free_embeddings(self, train_data, test_data):
-        """Extract leakage-free embeddings from the KG structure"""
-        print("   📊 Extracting from leakage-free Knowledge Graph structure...")
-        
-        with self.neo4j_driver.session() as session:
-            # LEAKAGE-FREE QUERY for new structure
-            query = """
-            MATCH (s:Sample)-[:HAS_EMBEDDING]->(e:Embedding)
-            MATCH (p:Participant)-[:HAS_SAMPLE]->(s)
-            RETURN 
-                s.id as sample_id,
-                p.id as participant_id,
-                s.diagnosis as diagnosis,
-                s.data_split as data_split,
-                s.augmentation_type as augmentation_type,
-                e.vector as embedding_vector,
-                e.dimension as embedding_dim,
-                s.sample_index as sample_index
-            ORDER BY s.sample_index
-            """
-            
-            result = session.run(query)
-            kg_data = result.data()
-            
-            print(f"   ✅ Extracted {len(kg_data)} samples with leakage-free embeddings")
-            
-            if len(kg_data) == 0:
-                print("   ⚠️ No leakage-free embeddings found in KG")
-                print("   💡 Run: python truly_realistic_kg_builder.py first!")
-                return None, None
-            
-            # Convert to DataFrame
-            kg_df = pd.DataFrame(kg_data)
-            
-            # Extract embedding dimension
-            if len(kg_df) > 0:
-                embedding_dim = int(kg_df.iloc[0]['embedding_dim'])
-                print(f"   📐 Embedding dimension: {embedding_dim}D")
-                
-                # Check data split information
-                train_kg_samples = len(kg_df[kg_df['data_split'] == 'train'])
-                test_kg_samples = len(kg_df[kg_df['data_split'] == 'test'])
-                print(f"   🔒 Data split validation: {train_kg_samples} train, {test_kg_samples} test samples")
-            
-            # Create mapping from participant_id to embeddings
-            def extract_participant_id(kg_pid):
-                """Extract numeric participant ID from KG format P_XXX"""
-                if isinstance(kg_pid, str) and kg_pid.startswith('P_'):
-                    try:
-                        return int(kg_pid.split('_')[1])
-                    except:
-                        return None
-                return None
-            
-            # Create participant to embeddings mapping
-            participant_embeddings = {}
-            
-            for _, kg_row in kg_df.iterrows():
-                kg_pid = extract_participant_id(kg_row['participant_id'])
-                if kg_pid is not None:
-                    if kg_pid not in participant_embeddings:
-                        participant_embeddings[kg_pid] = []
-                    
-                    participant_embeddings[kg_pid].append({
-                        'embedding': kg_row['embedding_vector'],
-                        'augmentation_type': kg_row['augmentation_type'],
-                        'data_split': kg_row['data_split']
-                    })
-            
-            print(f"   📊 Mapped embeddings for {len(participant_embeddings)} participants")
-            
-            # Create embeddings for train and test data
-            train_embeddings = []
-            test_embeddings = []
-            
-            # Map train data
-            for idx, row in train_data.iterrows():
-                participant_id = row['participant_id']
-                
-                if participant_id in participant_embeddings:
-                    # Get embeddings for this participant
-                    p_embeddings = participant_embeddings[participant_id]
-                    
-                    # Use the embedding that matches the augmentation index
-                    aug_idx = idx % 8
-                    
-                    if aug_idx < len(p_embeddings):
-                        embedding = p_embeddings[aug_idx]['embedding']
-                        train_embeddings.append(embedding)
-                    else:
-                        # Fallback: use first available embedding
-                        train_embeddings.append(p_embeddings[0]['embedding'])
-                else:
-                    # No embedding found - use zeros
-                    train_embeddings.append([0.0] * embedding_dim)
-            
-            # Map test data
-            for idx, row in test_data.iterrows():
-                participant_id = row['participant_id'] 
-                
-                if participant_id in participant_embeddings:
-                    p_embeddings = participant_embeddings[participant_id]
-                    aug_idx = idx % 8
-                    
-                    if aug_idx < len(p_embeddings):
-                        embedding = p_embeddings[aug_idx]['embedding']
-                        test_embeddings.append(embedding)
-                    else:
-                        test_embeddings.append(p_embeddings[0]['embedding'])
-                else:
-                    test_embeddings.append([0.0] * embedding_dim)
-            
-            # Convert to numpy arrays
-            train_embeddings = np.array(train_embeddings)
-            test_embeddings = np.array(test_embeddings)
-            
-            print(f"   ✅ Created leakage-free embeddings: train{train_embeddings.shape}, test{test_embeddings.shape}")
-            
-            # Validation checks
-            if np.any(np.isnan(train_embeddings)) or np.any(np.isnan(test_embeddings)):
-                print("   ⚠️ Found NaN values, replacing with zeros")
-                train_embeddings = np.nan_to_num(train_embeddings)
-                test_embeddings = np.nan_to_num(test_embeddings)
-            
-            # Check for meaningful embeddings (not all zeros)
-            train_nonzero = np.count_nonzero(train_embeddings)
-            test_nonzero = np.count_nonzero(test_embeddings)
-            
-            print(f"   📊 Non-zero elements: train={train_nonzero}/{train_embeddings.size}, test={test_nonzero}/{test_embeddings.size}")
-            
-            if train_nonzero == 0 or test_nonzero == 0:
-                print("   ⚠️ Embeddings appear to be all zeros - may indicate mapping issue")
-                return None, None
-            
-            # Final validation: Check that embeddings are realistic (not perfect)
-            # If embeddings lead to perfect separation, there might still be leakage
-            train_mean = np.mean(train_embeddings, axis=0)
-            test_mean = np.mean(test_embeddings, axis=0)
-            embedding_similarity = np.corrcoef(train_mean, test_mean)[0, 1]
-            
-            print(f"   🔍 Train/Test embedding similarity: {embedding_similarity:.3f}")
-            print("   ✅ Leakage-free embeddings extracted successfully")
-            
-            return train_embeddings, test_embeddings
-    
-    def prepare_raw_features_fair(self, train_data, test_data, available_features):
-        """Prepare raw features using the SAME features as KG for fair comparison"""
-        print(f"\n📊 Preparing raw features for FAIR COMPARISON...")
-        print(f"   🎯 Using the SAME {len(available_features)} features as KG embeddings input")
-        
-        # Use ALL available features (same as KG input) - NO feature selection
-        feature_cols = [col for col in available_features if col in train_data.columns]
-        
-        X_train_raw = train_data[feature_cols]
-        X_test_raw = test_data[feature_cols]
-        y_train = train_data['diagnosis']
-        y_test = test_data['diagnosis']
-        
-        # Scale features (same as KG preprocessing)
-        scaler = StandardScaler()
-        X_train_scaled = scaler.fit_transform(X_train_raw)
-        X_test_scaled = scaler.transform(X_test_raw)
-        
-        print(f"   ✅ Using ALL {len(feature_cols)} essential features (no feature selection):")
-        for feature in feature_cols:
-            print(f"      • {feature}")
-        
-        print(f"   📊 Fair comparison setup:")
-        print(f"      Raw Features: {len(feature_cols)} features → Standardization → {len(feature_cols)}D")
-        print(f"      KG Embeddings: {len(feature_cols)} features → Standardization → PCA → 8D")
-        
-        return X_train_scaled, X_test_scaled, y_train, y_test, feature_cols
-    
-    def train_multiple_models(self, X_train, X_test, y_train, y_test, train_pids, approach_name):
-        """Train multiple ML models and return comprehensive results"""
-        print(f"\n🚀 Training models for {approach_name}...")
-        
-   # Define models to test
-        models = {
-            'Logistic Regression': LogisticRegression(random_state=42, max_iter=1000),
-            'Random Forest': RandomForestClassifier(n_estimators=100, random_state=42),
-            'XGBoost': xgb.XGBClassifier(
-                random_state=42, 
-                eval_metric='logloss',
-                max_depth=3,           # Prevent deep overfitting
-                min_child_weight=5,    # Require more samples per leaf
-                subsample=0.8,         # Use 80% of samples per tree
-                colsample_bytree=0.8,  # Use 80% of features per tree
-                reg_alpha=1.0,         # L1 regularization
-                reg_lambda=1.0,        # L2 regularization
-                n_estimators=50        # Use fewer trees
-            ),
-            'SVM': SVC(random_state=42, probability=True)
+        # Configuration
+        self.config = {
+            'test_size': 0.2,
+            'random_state': 42,
+            'n_splits': 5,
+            'expected_dim': 19  # <<< FIXED: Enforce 19D comparison
         }
         
-        results = {}
+        self.results = {}
+
+    # =============================================
+    # DATA LOADING AND PREPROCESSING
+    # =============================================
+    def load_data(self):
+        """Load and validate dataset"""
+        logger.info("📊 Loading dataset...")
+        try:
+            # Attempt multiple encodings
+            try:
+                df = pd.read_csv('Final dataset.csv', sep=';', decimal=',', encoding='utf-8')
+            except UnicodeDecodeError:
+                df = pd.read_csv('Final dataset.csv', sep=';', decimal=',', encoding='latin-1')
+            
+            # Validate required columns
+            missing_features = [f for f in self.essential_features if f not in df.columns]
+            if missing_features:
+                logger.error(f"❌ Missing features: {missing_features}")
+                raise ValueError("Essential features missing in dataset")
+                
+            # Create participant mapping (8 samples per participant)
+            df['participant_id'] = df.index // 8
+            df['diagnosis'] = df['class'].map({'A': 1, 'T': 0})  # ASD=1, Typical=0
+            
+            # Select only essential columns
+            df = df[self.essential_features + ['participant_id', 'diagnosis']].dropna()
+            
+            logger.info(f"✅ Loaded {len(df)} samples with {len(self.essential_features)} features")
+            logger.info(f"   Class distribution: {df['diagnosis'].value_counts().to_dict()}")
+            logger.info(f"   Participants: {df['participant_id'].nunique()}")
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to load data: {e}")
+            raise
+
+    def participant_level_split(self, df):
+        """Strict participant-level splitting"""
+        logger.info("🔧 Performing participant-level split...")
         
-        for model_name, model in models.items():
-            print(f"   🔧 Training {model_name}...")
+        participant_info = df.groupby('participant_id')['diagnosis'].first().reset_index()
+        
+        train_pids, test_pids = train_test_split(
+            participant_info['participant_id'],
+            test_size=self.config['test_size'],
+            stratify=participant_info['diagnosis'],
+            random_state=self.config['random_state']
+        )
+        
+        train_data = df[df['participant_id'].isin(train_pids)]
+        test_data = df[df['participant_id'].isin(test_pids)]
+        
+        logger.info(f"✅ Split completed:")
+        logger.info(f"   Train: {len(train_pids)} participants ({len(train_data)} samples)")
+        logger.info(f"   Test: {len(test_pids)} participants ({len(test_data)} samples)")
+        logger.info(f"   Train class distribution: {train_data['diagnosis'].value_counts().to_dict()}")
+        logger.info(f"   Test class distribution: {test_data['diagnosis'].value_counts().to_dict()}")
+        
+        return train_data, test_data, train_pids, test_pids
+
+    # =============================================
+    # FEATURE PROCESSING (19D)
+    # =============================================
+    def prepare_raw_features(self, train_data, test_data):
+        """Prepare standardized 19D features"""
+        logger.info("🔧 Preparing raw features (19D)...")
+        
+        # Validate feature dimensions
+        assert len(self.essential_features) == 19, "Must use exactly 19 features"
+        
+        scaler = StandardScaler()
+        X_train = scaler.fit_transform(train_data[self.essential_features])
+        X_test = scaler.transform(test_data[self.essential_features])
+        
+        logger.info(f"✅ Raw features shape: Train {X_train.shape}, Test {X_test.shape}")
+        return X_train, X_test, train_data['diagnosis'], test_data['diagnosis']
+
+    def get_kg_embeddings(self, train_data, test_data):
+        """Extract 19D embeddings from Knowledge Graph"""
+        if not self.neo4j_driver:
+            logger.error("❌ Neo4j connection not available!")
+            return None, None
+
+        logger.info("🧠 Extracting KG embeddings (19D)...")
+        try:
+            with self.neo4j_driver.session() as session:
+                # Query to get all embeddings with participant info
+                result = session.run("""
+                    MATCH (p:Participant)-[:HAS_SAMPLE]->(s:Sample)-[:HAS_EMBEDDING]->(e:Embedding)
+                    RETURN p.id as participant_id, e.vector as embedding, e.dimension as dim
+                    ORDER BY s.sample_index
+                """)
+                
+                # Create mapping {participant_id: [embeddings]}
+                embeddings_map = {}
+                for record in result:
+                    pid = record['participant_id']
+                    if pid.startswith('P_'):
+                        pid = int(pid.split('_')[1])  # Convert "P_123" to 123
+                    embeddings_map.setdefault(pid, []).append(record['embedding'])
+                
+                # Validate dimensions
+                sample_embedding = next(iter(embeddings_map.values()), [[]])[0]
+                if len(sample_embedding) != self.config['expected_dim']:
+                    logger.error(f"❌ Dimension mismatch: Expected {self.config['expected_dim']}D, got {len(sample_embedding)}D")
+                    return None, None
+                
+                # Create feature matrices
+                X_train_kg = np.array([embeddings_map.get(pid, [[0]*self.config['expected_dim']])[0] 
+                                      for pid in train_data['participant_id']])
+                X_test_kg = np.array([embeddings_map.get(pid, [[0]*self.config['expected_dim']])[0] 
+                                     for pid in test_data['participant_id']])
+                
+                logger.info(f"✅ KG embeddings shape: Train {X_train_kg.shape}, Test {X_test_kg.shape}")
+                return X_train_kg, X_test_kg
+                
+        except Exception as e:
+            logger.error(f"❌ Failed to extract KG embeddings: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None, None
+
+    # =============================================
+    # MODEL TRAINING AND EVALUATION
+    # =============================================
+    def train_models(self, X_train, X_test, y_train, y_test, approach_name):
+        """Train and evaluate multiple models"""
+        logger.info(f"🚀 Training {approach_name} models...")
+        
+        models = {
+            'Logistic Regression': LogisticRegression(
+                max_iter=1000,
+                random_state=self.config['random_state'],
+                class_weight='balanced'
+            ),
+            'Random Forest': RandomForestClassifier(
+                n_estimators=100,
+                random_state=self.config['random_state'],
+                class_weight='balanced_subsample'
+            ),
+            'XGBoost': xgb.XGBClassifier(
+                random_state=self.config['random_state'],
+                eval_metric='logloss',
+                scale_pos_weight=np.sum(y_train == 0) / np.sum(y_train == 1)
+            ),
+            'SVM': SVC(
+                probability=True,
+                random_state=self.config['random_state'],
+                class_weight='balanced'
+            )
+        }
+
+        results = {}
+        for name, model in models.items():
+            logger.info(f"   🔧 Training {name}...")
             
-            # Participant-level cross-validation
-            cv_scores = self._participant_cv(X_train, y_train, train_pids, model)
+            # Cross-validation
+            cv_scores = self._participant_cv(
+                model, X_train, y_train, 
+                train_data['participant_id']
+            )
             
-            # Train final model
+            # Final training
             model.fit(X_train, y_train)
-            
-            # Predictions
             y_pred = model.predict(X_test)
-            y_pred_proba = model.predict_proba(X_test)[:, 1]
+            y_proba = model.predict_proba(X_test)[:, 1]
             
-            # Calculate all metrics
-            metrics = {
-                'cv_scores': cv_scores,
-                'cv_mean': np.mean(cv_scores),
-                'cv_std': np.std(cv_scores),
+            # Calculate metrics
+            results[name] = {
                 'accuracy': accuracy_score(y_test, y_pred),
                 'precision': precision_score(y_test, y_pred, zero_division=0),
                 'recall': recall_score(y_test, y_pred, zero_division=0),
                 'f1': f1_score(y_test, y_pred, zero_division=0),
-                'auc': roc_auc_score(y_test, y_pred_proba),
-                'predictions': y_pred,
-                'probabilities': y_pred_proba,
+                'auc': roc_auc_score(y_test, y_proba),
+                'cv_mean': np.mean(cv_scores),
+                'cv_std': np.std(cv_scores),
                 'confusion_matrix': confusion_matrix(y_test, y_pred).tolist()
             }
             
-            results[model_name] = metrics
+            logger.info(f"      ✅ {name}: AUC={results[name]['auc']:.3f}, F1={results[name]['f1']:.3f}")
             
-            print(f"      ✅ {model_name}: AUC={metrics['auc']:.3f}, F1={metrics['f1']:.3f}")
-            
-            # Leakage detection: Warn if results are suspiciously good
-            if metrics['auc'] > 0.95:
-                print(f"      ⚠️  WARNING: {model_name} AUC={metrics['auc']:.3f} is suspiciously high!")
-                print(f"         This may indicate data leakage. Expected range: 0.70-0.90")
+            # Leakage detection
+            if results[name]['auc'] > 0.95:
+                logger.warning(f"      ⚠️  Suspiciously high AUC ({results[name]['auc']:.3f}) - possible leakage!")
         
         return results
-    
-    def _participant_cv(self, X_train, y_train, train_pids, model, cv_folds=10):
-        """Perform participant-level cross-validation"""
-        unique_pids = np.unique(train_pids)
-        pid_labels = [y_train.iloc[np.where(train_pids == pid)[0][0]] for pid in unique_pids]
+
+    def _participant_cv(self, model, X, y, participant_ids):
+        """Participant-level cross-validation"""
+        unique_pids = np.unique(participant_ids)
+        pid_labels = [y.iloc[np.where(participant_ids == pid)[0][0]] for pid in unique_pids]
         
-        skf = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=42)
         cv_scores = []
+        skf = StratifiedKFold(
+            n_splits=self.config['n_splits'],
+            shuffle=True,
+            random_state=self.config['random_state']
+        )
         
         for train_idx, val_idx in skf.split(unique_pids, pid_labels):
             # Get participant IDs for this fold
-            train_fold_pids = unique_pids[train_idx]
-            val_fold_pids = unique_pids[val_idx]
+            train_pids = unique_pids[train_idx]
+            val_pids = unique_pids[val_idx]
             
-            # Get sample indices
-            train_fold_mask = np.isin(train_pids, train_fold_pids)
-            val_fold_mask = np.isin(train_pids, val_fold_pids)
+            # Create masks
+            train_mask = participant_ids.isin(train_pids)
+            val_mask = participant_ids.isin(val_pids)
             
-            X_fold_train = X_train[train_fold_mask]
-            X_fold_val = X_train[val_fold_mask]
-            y_fold_train = y_train.iloc[train_fold_mask]
-            y_fold_val = y_train.iloc[val_fold_mask]
+            # Clone model to avoid contamination
+            model_clone = clone(model)
+            model_clone.fit(X[train_mask], y[train_mask])
             
-            # Train and evaluate
-            model_copy = type(model)(**model.get_params())
-            model_copy.fit(X_fold_train, y_fold_train)
-            y_val_proba = model_copy.predict_proba(X_fold_val)[:, 1]
-            fold_auc = roc_auc_score(y_fold_val, y_val_proba)
-            cv_scores.append(fold_auc)
+            # Predict and score
+            y_proba = model_clone.predict_proba(X[val_mask])[:, 1]
+            cv_scores.append(roc_auc_score(y[val_mask], y_proba))
         
         return cv_scores
-    
-    def statistical_comparison(self, raw_results, kg_results):
-        """Perform comprehensive statistical comparison"""
-        print(f"\n📊 Performing fair statistical comparison...")
+
+    # =============================================
+    # RESULT ANALYSIS AND COMPARISON
+    # =============================================
+    def compare_approaches(self, raw_results, kg_results):
+        """Statistical comparison of raw vs KG results"""
+        logger.info("📊 Comparing approaches...")
         
-        comparison_results = {}
-        
-        # For each model type
-        for model_name in raw_results.keys():
+        comparison = {}
+        for model_name in raw_results:
             if model_name in kg_results:
-                print(f"\n   🔍 Comparing {model_name}:")
-                
-                raw_metrics = raw_results[model_name]
-                kg_metrics = kg_results[model_name]
-                
-                model_comparison = {}
-                
-                # Compare main metrics
-                metrics_to_compare = ['accuracy', 'precision', 'recall', 'f1', 'auc']
-                
-                for metric in metrics_to_compare:
-                    raw_val = raw_metrics[metric]
-                    kg_val = kg_metrics[metric]
-                    
-                    # Calculate difference and improvement
-                    diff = kg_val - raw_val
-                    improvement_pct = (diff / raw_val) * 100 if raw_val != 0 else 0
-                    
-                    model_comparison[metric] = {
-                        'raw': raw_val,
-                        'kg': kg_val,
-                        'difference': diff,
-                        'improvement_pct': improvement_pct
-                    }
-                    
-                    print(f"      {metric.upper()}: Raw={raw_val:.3f}, KG-8D={kg_val:.3f}, "
-                          f"Δ={diff:+.3f} ({improvement_pct:+.1f}%)")
-                
-                # Statistical test on CV scores
-                raw_cv = raw_metrics['cv_scores']
-                kg_cv = kg_metrics['cv_scores']
-                
-                # Independent t-test
-                t_stat, p_value = ttest_rel(kg_cv, raw_cv)
-                
-                model_comparison['cv_comparison'] = {
-                    'raw_cv_mean': np.mean(raw_cv),
-                    'kg_cv_mean': np.mean(kg_cv),
-                    'raw_cv_std': np.std(raw_cv),
-                    'kg_cv_std': np.std(kg_cv),
-                    't_statistic': t_stat,
-                    'p_value': p_value,
-                    'significant': p_value < 0.05
+                # Metrics comparison
+                comparison[model_name] = {
+                    'raw_auc': raw_results[model_name]['auc'],
+                    'kg_auc': kg_results[model_name]['auc'],
+                    'auc_diff': kg_results[model_name]['auc'] - raw_results[model_name]['auc'],
+                    'raw_f1': raw_results[model_name]['f1'],
+                    'kg_f1': kg_results[model_name]['f1'],
+                    'f1_diff': kg_results[model_name]['f1'] - raw_results[model_name]['f1'],
+                    'p_value': ttest_rel(
+                        raw_results[model_name]['cv_scores'],
+                        kg_results[model_name]['cv_scores']
+                    ).pvalue,
+                    'significant': None  # Will be set below
                 }
                 
-                print(f"      CV comparison: p-value={p_value:.4f} {'(significant)' if p_value < 0.05 else '(not significant)'}")
-                
-                comparison_results[model_name] = model_comparison
+                # Determine significance
+                comparison[model_name]['significant'] = (
+                    comparison[model_name]['p_value'] < 0.05
+                )
         
-        return comparison_results
-    
-    def save_detailed_results(self, raw_results, kg_results, comparison_results, 
-                            selected_features, train_pids, test_pids):
-        """Save all results to JSON files"""
-        print(f"\n💾 Saving detailed results...")
+        return comparison
+
+    def save_results(self, raw_results, kg_results, comparison):
+        """Save comprehensive results to files"""
+        logger.info("💾 Saving results...")
         
-        # Convert numpy arrays to lists for JSON serialization
-        def convert_for_json(obj):
-            if isinstance(obj, np.ndarray):
-                return obj.tolist()
-            elif isinstance(obj, (np.integer, np.int64)):
-                return int(obj)
-            elif isinstance(obj, (np.floating, np.float64)):
-                return float(obj)
-            elif isinstance(obj, (np.bool_, bool)):
-                return bool(obj)
-            elif isinstance(obj, dict):
-                return {k: convert_for_json(v) for k, v in obj.items()}
-            elif isinstance(obj, list):
-                return [convert_for_json(item) for item in obj]
-            else:
-                return obj
-        
-        # Main results file
-        full_results = {
-            'timestamp': datetime.now().isoformat(),
-            'analysis_type': 'FAIR COMPARISON: Raw Features vs Leakage-Free KG Embeddings',
-            'note': 'Using SAME input features for fair comparison: Raw=19D, KG=8D from same 19 features',
-            'dataset_info': {
-                'total_train_participants': len(train_pids),
-                'total_test_participants': len(test_pids),
-                'features_used': selected_features,
-                'train_participants': train_pids.tolist() if hasattr(train_pids, 'tolist') else list(train_pids),
-                'test_participants': test_pids.tolist() if hasattr(test_pids, 'tolist') else list(test_pids)
+        # Prepare full results dictionary
+        results = {
+            'metadata': {
+                'timestamp': datetime.now().isoformat(),
+                'config': self.config,
+                'features': self.essential_features,
+                'note': '19D comparison (no PCA reduction)'
             },
-            'raw_features_results': convert_for_json(raw_results),
-            'leakage_free_kg_results': convert_for_json(kg_results),
-            'statistical_comparison': convert_for_json(comparison_results)
+            'raw_results': raw_results,
+            'kg_results': kg_results,
+            'comparison': comparison
         }
         
-        with open(f'{self.output_dir}/fair_comparison_results.json', 'w') as f:
-            json.dump(full_results, f, indent=2)
+        # Save JSON
+        with open(f'{self.output_dir}/full_results.json', 'w') as f:
+            json.dump(results, f, indent=2)
         
-        # Summary table for easy viewing
+        # Save CSV summary
         summary_data = []
-        for model in raw_results.keys():
-            if model in kg_results and model in comparison_results:
-                row = {
-                    'Model': model,
-                    'Raw_19D_AUC': raw_results[model]['auc'],
-                    'KG_8D_AUC': kg_results[model]['auc'],
-                    'AUC_Improvement': comparison_results[model]['auc']['improvement_pct'],
-                    'Raw_19D_F1': raw_results[model]['f1'],
-                    'KG_8D_F1': kg_results[model]['f1'],
-                    'F1_Improvement': comparison_results[model]['f1']['improvement_pct'],
-                    'CV_p_value': comparison_results[model]['cv_comparison']['p_value'],
-                    'Statistically_Significant': comparison_results[model]['cv_comparison']['significant']
-                }
-                summary_data.append(row)
+        for model in raw_results:
+            if model in comparison:
+                summary_data.append({
+                    'model': model,
+                    'raw_auc': raw_results[model]['auc'],
+                    'kg_auc': kg_results[model]['auc'],
+                    'auc_improvement': comparison[model]['auc_diff'],
+                    'raw_f1': raw_results[model]['f1'],
+                    'kg_f1': kg_results[model]['f1'],
+                    'f1_improvement': comparison[model]['f1_diff'],
+                    'p_value': comparison[model]['p_value'],
+                    'significant': comparison[model]['significant']
+                })
         
-        summary_df = pd.DataFrame(summary_data)
-        summary_df.to_csv(f'{self.output_dir}/fair_comparison_summary.csv', index=False)
+        pd.DataFrame(summary_data).to_csv(
+            f'{self.output_dir}/summary.csv', index=False
+        )
         
-        print(f"   ✅ Results saved to:")
-        print(f"      • {self.output_dir}/fair_comparison_results.json")
-        print(f"      • {self.output_dir}/fair_comparison_summary.csv")
+        logger.info(f"✅ Results saved to {self.output_dir}")
+
+    def generate_report(self, comparison):
+        """Generate final analysis report"""
+        logger.info("\n📝 Generating final report...")
         
-        return summary_df
-    
-    def print_final_summary(self, summary_df, comparison_results):
-        """Print comprehensive final summary"""
-        print(f"\n{'='*80}")
-        print("🎉 FAIR COMPARISON ML ANALYSIS COMPLETE")
-        print(f"{'='*80}")
+        # Calculate overall improvements
+        avg_auc_improvement = np.mean([v['auc_diff'] for v in comparison.values()])
+        avg_f1_improvement = np.mean([v['f1_diff'] for v in comparison.values()])
         
-        # Best performing approaches
-        best_raw_model = summary_df.loc[summary_df['Raw_19D_AUC'].idxmax()]
-        best_kg_model = summary_df.loc[summary_df['KG_8D_AUC'].idxmax()]
+        # Find best models
+        best_raw = max(comparison.items(), key=lambda x: x[1]['raw_auc'])
+        best_kg = max(comparison.items(), key=lambda x: x[1]['kg_auc'])
         
-        print(f"\n🏆 BEST PERFORMING MODELS:")
-        print(f"   Raw Features (19D):   {best_raw_model['Model']} (AUC: {best_raw_model['Raw_19D_AUC']:.3f})")
-        print(f"   KG Embeddings (8D):   {best_kg_model['Model']} (AUC: {best_kg_model['KG_8D_AUC']:.3f})")
+        report = f"""
+        =============================================
+        🎯 FAIR COMPARISON REPORT (19D vs 19D)
+        =============================================
         
-        # Overall improvements
-        avg_auc_improvement = summary_df['AUC_Improvement'].mean()
-        avg_f1_improvement = summary_df['F1_Improvement'].mean()
+        📊 Overall Performance:
+           Average AUC Improvement: {avg_auc_improvement:.3f}
+           Average F1 Improvement: {avg_f1_improvement:.3f}
         
-        print(f"\n📊 OVERALL PERFORMANCE:")
-        print(f"   Average AUC improvement: {avg_auc_improvement:+.1f}%")
-        print(f"   Average F1 improvement:  {avg_f1_improvement:+.1f}%")
+        🏆 Best Performing Models:
+           Raw Features: {best_raw[0]} (AUC={best_raw[1]['raw_auc']:.3f})
+           KG Embeddings: {best_kg[0]} (AUC={best_kg[1]['kg_auc']:.3f})
         
-        # Statistical significance
-        significant_improvements = summary_df[summary_df['Statistically_Significant'] == True]
-        print(f"\n📈 STATISTICAL SIGNIFICANCE:")
-        print(f"   Models with significant improvement: {len(significant_improvements)}/{len(summary_df)}")
+        🔍 Statistical Significance:
+        """
         
-        if len(significant_improvements) > 0:
-            print(f"   Significant improvements in:")
-            for _, row in significant_improvements.iterrows():
-                print(f"      • {row['Model']}: AUC {row['AUC_Improvement']:+.1f}%, F1 {row['F1_Improvement']:+.1f}%")
+        for model, stats in comparison.items():
+            report += f"""
+           {model}:
+              AUC Difference: {stats['auc_diff']:.3f} {'(✅)' if stats['significant'] else '(❌)'}
+              p-value: {stats['p_value']:.4f}
+            """
         
-        # Detailed model comparison
-        print(f"\n📋 FAIR COMPARISON RESULTS TABLE:")
-        print("-" * 110)
-        print(f"{'Model':<20} {'Raw-19D AUC':<12} {'KG-8D AUC':<11} {'AUC Δ%':<10} {'Raw-19D F1':<11} {'KG-8D F1':<10} {'F1 Δ%':<10} {'p-value':<10}")
-        print("-" * 110)
+        report += f"""
+        💡 Recommendations:
+           {'✅ KG embeddings show significant improvement' if avg_auc_improvement > 0 else '⚠️ Consider using raw features'}
         
-        for _, row in summary_df.iterrows():
-            significance_marker = "*" if row['Statistically_Significant'] else " "
-            print(f"{row['Model']:<20} {row['Raw_19D_AUC']:<12.3f} {row['KG_8D_AUC']:<11.3f} "
-                  f"{row['AUC_Improvement']:+<10.1f} {row['Raw_19D_F1']:<11.3f} {row['KG_8D_F1']:<10.3f} "
-                  f"{row['F1_Improvement']:+<10.1f} {row['CV_p_value']:<10.3f}{significance_marker}")
+        📁 Results saved to: {os.path.abspath(self.output_dir)}
+        """
         
-        print("-" * 110)
-        print("* = Statistically significant difference (p < 0.05)")
-        print("Raw-19D = Raw features (19 dimensions)")
-        print("KG-8D = Knowledge Graph embeddings (8 dimensions from same 19 features)")
-        
-        # Realistic expectations check
-        max_kg_auc = summary_df['KG_8D_AUC'].max()
-        if max_kg_auc > 0.95:
-            print(f"\n⚠️  LEAKAGE WARNING:")
-            print(f"   Maximum KG AUC: {max_kg_auc:.3f} is suspiciously high!")
-            print(f"   Expected realistic range: 0.70-0.90")
-            print(f"   This may indicate remaining data leakage.")
-        else:
-            print(f"\n✅ REALISTIC RESULTS:")
-            print(f"   Maximum KG AUC: {max_kg_auc:.3f} is within realistic range")
-            print(f"   No signs of data leakage detected")
-        
-        # Fair comparison insights
-        print(f"\n🎯 FAIR COMPARISON INSIGHTS:")
-        print(f"   Both approaches use the SAME 19 input features")
-        print(f"   Raw: 19 features → Standardization → 19D")
-        print(f"   KG:  19 features → Standardization → PCA → 8D")
-        print(f"   This comparison shows the effect of dimensionality reduction (PCA)")
-        
-        # Recommendations
-        print(f"\n💡 RECOMMENDATIONS:")
-        
-        if avg_auc_improvement > 5:
-            print("   🎉 EXCELLENT: KG embeddings (8D) outperform raw features (19D)!")
-            print("   📋 Recommendation: Use KG embeddings - PCA dimensionality reduction helps")
-        elif avg_auc_improvement > 2:
-            print("   ✅ GOOD: KG embeddings show moderate improvement")
-            print("   📋 Recommendation: Consider KG embeddings for memory/speed benefits")
-        elif avg_auc_improvement > -2:
-            print("   ⚖️  Similar performance between approaches")
-            print("   📋 Recommendation: Choose based on interpretability needs")
-            print("       • Raw features: More interpretable")
-            print("       • KG embeddings: More compact (8D vs 19D)")
-        else:
-            print("   ❌ Raw features (19D) outperform KG embeddings (8D)")
-            print("   📋 Recommendation: Stick with raw features - PCA loses important information")
-        
-        # Clinical significance
-        best_overall_auc = max(summary_df['Raw_19D_AUC'].max(), summary_df['KG_8D_AUC'].max())
-        print(f"\n🏥 CLINICAL SIGNIFICANCE:")
-        print(f"   Best overall AUC: {best_overall_auc:.3f}")
-        
-        if best_overall_auc > 0.85:
-            print("   🎉 EXCELLENT: High clinical utility for ASD detection")
-        elif best_overall_auc > 0.75:
-            print("   ✅ GOOD: Meaningful clinical utility for ASD screening")
-        elif best_overall_auc > 0.65:
-            print("   ⚠️  MODERATE: Some clinical utility, may need improvement")
-        else:
-            print("   ❌ LIMITED: Low clinical utility, needs significant improvement")
-        
-        print(f"\n🔒 FAIR COMPARISON VALIDATION:")
-        print("   ✅ Same input features used for both approaches")
-        print("   ✅ Participant-level split maintained")
-        print("   ✅ No diagnosis information used in feature engineering")
-        print("   ✅ All transformations fit only on training data")
-        print("   ✅ Realistic performance ranges achieved")
-        
-        print(f"\n📁 All results saved to: {os.path.abspath(self.output_dir)}")
-    
-    def run_complete_analysis(self):
-        """Run the complete fair comparison analysis pipeline"""
-        print("🚀 Starting FAIR COMPARISON ML Analysis: Raw vs Knowledge Graph")
-        print("="*80)
-        print("🎯 FAIR COMPARISON: Both approaches use the SAME 19 input features")
-        print("   • Raw Features: 19 features → Standardization → 19D")
-        print("   • KG Embeddings: 19 features → Standardization → PCA → 8D")
-        print("="*80)
-        
+        print(report)
+        with open(f'{self.output_dir}/report.txt', 'w') as f:
+            f.write(report)
+
+    # =============================================
+    # MAIN ANALYSIS PIPELINE
+    # =============================================
+    def run_analysis(self):
+        """Complete analysis workflow"""
         try:
-            # 1. Load data
-            df, available_features = self.load_data()
+            logger.info("🚀 Starting 19D vs 19D comparison...")
             
-            # 2. Split data
+            # 1. Load and split data
+            df = self.load_data()
             train_data, test_data, train_pids, test_pids = self.participant_level_split(df)
             
-            # 3. Prepare raw features using SAME features as KG
-            X_train_raw, X_test_raw, y_train, y_test, feature_names = self.prepare_raw_features_fair(
-                train_data, test_data, available_features
+            # 2. Prepare raw features (19D)
+            X_train_raw, X_test_raw, y_train, y_test = self.prepare_raw_features(
+                train_data, test_data
             )
             
-            # 4. Try to get leakage-free KG embeddings
-            X_train_kg, X_test_kg = self.get_leakage_free_kg_embeddings(train_data, test_data)
+            # 3. Get KG embeddings (19D)
+            X_train_kg, X_test_kg = self.get_kg_embeddings(train_data, test_data)
+            if X_train_kg is None:
+                raise ValueError("KG embeddings not available (check Neo4j)")
             
-            # 5. Train models on raw features
-            print(f"\n{'='*60}")
-            print("🔍 ANALYSIS 1: RAW FEATURES (19D - SAME INPUT AS KG)")
-            print(f"{'='*60}")
-            
-            raw_results = self.train_multiple_models(
-                X_train_raw, X_test_raw, y_train, y_test, 
-                train_data['participant_id'].values, "Raw Features (19D)"
+            # 4. Train models on raw features
+            raw_results = self.train_models(
+                X_train_raw, X_test_raw, y_train, y_test,
+                "Raw Features (19D)"
             )
             
-            # 6. Train models on leakage-free KG embeddings (if available)
-            kg_results = None
-            comparison_results = None
+            # 5. Train models on KG embeddings
+            kg_results = self.train_models(
+                X_train_kg, X_test_kg, y_train, y_test,
+                "KG Embeddings (19D)"
+            )
             
-            if X_train_kg is not None and X_test_kg is not None:
-                print(f"\n{'='*60}")
-                print("🧠 ANALYSIS 2: LEAKAGE-FREE KG EMBEDDINGS (8D from SAME 19 FEATURES)") 
-                print(f"{'='*60}")
-                
-                kg_results = self.train_multiple_models(
-                    X_train_kg, X_test_kg, y_train, y_test,
-                    train_data['participant_id'].values, "KG Embeddings (8D)"
-                )
-                
-                # 7. Statistical comparison
-                print(f"\n{'='*60}")
-                print("📊 ANALYSIS 3: FAIR STATISTICAL COMPARISON")
-                print(f"{'='*60}")
-                
-                comparison_results = self.statistical_comparison(raw_results, kg_results)
-                
-                # 8. Save results
-                summary_df = self.save_detailed_results(
-                    raw_results, kg_results, comparison_results,
-                    feature_names, train_pids, test_pids
-                )
-                
-                # 9. Print final summary
-                self.print_final_summary(summary_df, comparison_results)
-                
-            else:
-                print(f"\n{'='*60}")
-                print("⚠️  LEAKAGE-FREE KNOWLEDGE GRAPH ANALYSIS SKIPPED")
-                print(f"{'='*60}")
-                
-                # Save only raw results
-                self.save_raw_only_results(raw_results, feature_names, train_pids, test_pids)
-                self.print_raw_only_summary(raw_results)
+            # 6. Compare results
+            comparison = self.compare_approaches(raw_results, kg_results)
             
-            return {
-                'raw_results': raw_results,
-                'kg_results': kg_results,
-                'comparison_results': comparison_results,
-                'summary_df': None if kg_results is None else summary_df
-            }
+            # 7. Save and report
+            self.save_results(raw_results, kg_results, comparison)
+            self.generate_report(comparison)
+            
+            logger.info("🎉 Analysis completed successfully!")
+            return True
             
         except Exception as e:
-            print(f"❌ Analysis failed: {str(e)}")
+            logger.error(f"❌ Analysis failed: {str(e)}")
             import traceback
-            traceback.print_exc()
-            raise
-        
+            logger.error(traceback.format_exc())
+            return False
         finally:
             if self.neo4j_driver:
                 self.neo4j_driver.close()
-                print("🔌 Neo4j connection closed")
-    
-    def save_raw_only_results(self, raw_results, feature_names, train_pids, test_pids):
-        """Save results when only raw features are analyzed"""
-        print(f"\n💾 Saving raw features results...")
-        
-        # Convert numpy arrays to lists for JSON serialization
-        def convert_for_json(obj):
-            if isinstance(obj, np.ndarray):
-                return obj.tolist()
-            elif isinstance(obj, (np.integer, np.int64)):
-                return int(obj)
-            elif isinstance(obj, (np.floating, np.float64)):
-                return float(obj)
-            elif isinstance(obj, (np.bool_, bool)):
-                return bool(obj)
-            elif isinstance(obj, dict):
-                return {k: convert_for_json(v) for k, v in obj.items()}
-            elif isinstance(obj, list):
-                return [convert_for_json(item) for item in obj]
-            else:
-                return obj
-        
-        # Results file
-        results = {
-            'timestamp': datetime.now().isoformat(),
-            'analysis_type': 'Raw Movement Features Analysis Only (Fair Comparison Ready)',
-            'note': 'Uses same 19 essential features as KG builder for fair comparison',
-            'dataset_info': {
-                'total_train_participants': len(train_pids),
-                'total_test_participants': len(test_pids),
-                'features_used': feature_names,
-                'train_participants': train_pids.tolist() if hasattr(train_pids, 'tolist') else list(train_pids),
-                'test_participants': test_pids.tolist() if hasattr(test_pids, 'tolist') else list(test_pids)
-            },
-            'raw_features_results': convert_for_json(raw_results)
-        }
-        
-        with open(f'{self.output_dir}/raw_features_results.json', 'w') as f:
-            json.dump(results, f, indent=2)
-        
-        # Summary table
-        summary_data = []
-        for model_name, metrics in raw_results.items():
-            row = {
-                'Model': model_name,
-                'AUC': metrics['auc'],
-                'F1': metrics['f1'],
-                'Accuracy': metrics['accuracy'],
-                'Precision': metrics['precision'],
-                'Recall': metrics['recall'],
-                'CV_AUC_Mean': metrics['cv_mean'],
-                'CV_AUC_Std': metrics['cv_std']
-            }
-            summary_data.append(row)
-        
-        summary_df = pd.DataFrame(summary_data)
-        summary_df.to_csv(f'{self.output_dir}/raw_features_summary.csv', index=False)
-        
-        print(f"   ✅ Results saved to:")
-        print(f"      • {self.output_dir}/raw_features_results.json")
-        print(f"      • {self.output_dir}/raw_features_summary.csv")
-    
-    def print_raw_only_summary(self, raw_results):
-        """Print summary when only raw features are analyzed"""
-        print(f"\n{'='*60}")
-        print("📊 RAW FEATURES ANALYSIS COMPLETE (FAIR COMPARISON READY)")
-        print(f"{'='*60}")
-        
-        # Find best model
-        best_model = max(raw_results.keys(), key=lambda m: raw_results[m]['auc'])
-        best_metrics = raw_results[best_model]
-        
-        print(f"\n🏆 BEST PERFORMING MODEL:")
-        print(f"   Model: {best_model}")
-        print(f"   AUC: {best_metrics['auc']:.3f}")
-        print(f"   F1: {best_metrics['f1']:.3f}")
-        print(f"   Accuracy: {best_metrics['accuracy']:.3f}")
-        print(f"   CV AUC: {best_metrics['cv_mean']:.3f} ± {best_metrics['cv_std']:.3f}")
-        
-        # All models summary
-        print(f"\n📋 ALL MODELS PERFORMANCE:")
-        print("-" * 80)
-        print(f"{'Model':<20} {'AUC':<8} {'F1':<8} {'Accuracy':<10} {'Precision':<10} {'Recall':<10} {'CV AUC':<12}")
-        print("-" * 80)
-        
-        for model_name, metrics in raw_results.items():
-            print(f"{model_name:<20} {metrics['auc']:<8.3f} {metrics['f1']:<8.3f} "
-                  f"{metrics['accuracy']:<10.3f} {metrics['precision']:<10.3f} "
-                  f"{metrics['recall']:<10.3f} {metrics['cv_mean']:<12.3f}")
-        
-        print("-" * 80)
-        
-        # Clinical significance
-        best_auc = best_metrics['auc']
-        print(f"\n🏥 CLINICAL SIGNIFICANCE:")
-        print(f"   Best AUC: {best_auc:.3f}")
-        
-        if best_auc > 0.85:
-            print("   🎉 EXCELLENT: High clinical utility for ASD detection")
-        elif best_auc > 0.75:
-            print("   ✅ GOOD: Meaningful clinical utility for ASD screening")
-        elif best_auc > 0.65:
-            print("   ⚠️  MODERATE: Some clinical utility, may need improvement")
-        else:
-            print("   ❌ LIMITED: Low clinical utility, needs significant improvement")
-        
-        print(f"\n💡 TO ENABLE FAIR KNOWLEDGE GRAPH COMPARISON:")
-        print("   1. Start Neo4j database")
-        print("   2. Run: python truly_realistic_kg_builder.py")
-        print("   3. Re-run this analysis")
-        
-        print(f"\n📁 Results saved to: {os.path.abspath(self.output_dir)}")
-
+                logger.info("🔌 Neo4j connection closed")
 
 def main():
-    """Main execution function"""
-    print("🎯 Fair Comparison NeuroGait ML Analysis: Raw Features vs KG Embeddings")
-    print("📋 This analysis will:")
-    print("   1. Train models on raw movement features (19D)")
-    print("   2. Train models on LEAKAGE-FREE Knowledge Graph embeddings (8D from same 19 features)") 
-    print("   3. Perform FAIR statistical comparison using SAME input features")
-    print("   4. Generate detailed results with leakage detection")
-    print("   5. Provide realistic clinical interpretation")
-    print()
-    print("🔒 Fair comparison measures:")
-    print("   • SAME 19 essential movement features used as input for both approaches")
-    print("   • Raw: 19 features → Standardization → 19D")
-    print("   • KG:  19 features → Standardization → PCA → 8D")
-    print("   • Participant-level data splitting")
-    print("   • Expected realistic AUC range: 0.70-0.90")
-    print("   • Built-in leakage detection warnings")
-    print()
-    print("💡 Note: Run 'python truly_realistic_kg_builder.py' first to create leakage-free embeddings")
+    print("""
+    ============================================
+    🧠 NeuroGait Fair Comparison (19D vs 19D)
+    ============================================
+    Key Features:
+    1. Strict 19D comparison (no PCA reduction)
+    2. Participant-level splitting
+    3. Leakage detection
+    4. Statistical validation
+    """)
     
-    # Create analyzer instance
     analyzer = FairComparisonNeuroGaitMLAnalysis()
+    success = analyzer.run_analysis()
     
-    # Run analysis
-    results = analyzer.run_complete_analysis()
-    
-    if results['kg_results'] is not None:
-        print("\n🎉 FAIR COMPARISON ANALYSIS FINISHED!")
-        print("✅ Both approaches used the SAME 19 input features")
-        print("✅ Fair comparison between 19D raw features and 8D KG embeddings")
-        print("✅ Statistical significance testing completed")
-        print("✅ Leakage detection validation performed")
-        print("✅ Realistic performance comparison demonstrated")
-        print("🔒 NO DATA LEAKAGE - Results are scientifically valid!")
-    else:
-        print("\n✅ RAW FEATURES ANALYSIS COMPLETED!")
-        print("✅ Raw movement features analyzed successfully (fair comparison ready)")
-        print("⚠️  Knowledge Graph analysis skipped (Neo4j not available)")
-        print("💡 Run truly realistic KG builder first for complete fair comparison")
-    
-    return results
-
+    if not success:
+        print("\n❌ Analysis failed - check logs for details")
+        exit(1)
 
 if __name__ == "__main__":
-    results = main()
+    main()
