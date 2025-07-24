@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """
-Enhanced Realistic NeuroGait Knowledge Graph Builder with Improved Leakage Prevention
-Key Improvements:
-1. More rigorous participant-level splitting
-2. Additional leakage checks
-3. Better feature selection methodology
-4. Improved validation metrics
-5. More detailed logging
+Enhanced Realistic NeuroGait Knowledge Graph Builder with 19D Embeddings (No PCA)
+Modified version: Uses standardized 19D features directly as embeddings without PCA reduction
+Key Changes:
+1. Removed PCA dimensionality reduction
+2. Uses all 19 essential features as embeddings
+3. Maintains same preprocessing (standardization) for fair comparison
 """
 
 import pandas as pd
@@ -17,7 +16,6 @@ from datetime import datetime
 import os
 from dotenv import load_dotenv
 from sklearn.preprocessing import StandardScaler
-from sklearn.decomposition import PCA
 from sklearn.model_selection import train_test_split
 from sklearn.feature_selection import VarianceThreshold
 import json
@@ -76,12 +74,13 @@ class EnhancedNeuroGaitGraphBuilder:
             'Velocity'
         ]
         
-        # Configuration
+        # Configuration - MODIFIED: no PCA
         self.config = {
-            'embedding_dim': 8,
+            'embedding_dim': None,  # Will be set to number of features
             'min_feature_variance': 0.01,
             'test_size': 0.2,
-            'random_state': 42
+            'random_state': 42,
+            'use_pca': False  # NEW: Flag to disable PCA
         }
         
     def convert_to_float(self, value):
@@ -227,27 +226,48 @@ class EnhancedNeuroGaitGraphBuilder:
         except Exception as e:
             logger.error(f"❌ Error loading/splitting data: {e}")
             raise
+    
     def create_embeddings(self, df, train_pids):
-        """Create embeddings WITHOUT dimensionality reduction"""
-        logger.info("🧠 Creating embeddings (NO DIMENSIONALITY REDUCTION)...")
+        """Create leakage-free embeddings WITHOUT PCA - just standardization"""
+        logger.info("🧠 Creating enhanced realistic embeddings (19D - NO PCA)...")
         
         # Select only available essential features
         available_features = [f for f in self.essential_movement_features if f in df.columns]
         logger.info(f"  🔍 Using {len(available_features)} essential features")
+        
+        # Update embedding dimension
+        self.config['embedding_dim'] = len(available_features)
         
         # Separate train and test
         train_mask = df['participant_id'].isin(train_pids)
         X_train = df.loc[train_mask, available_features].fillna(0)
         X_test = df.loc[~train_mask, available_features].fillna(0)
         
-        # Standardization (train only)
-        scaler = StandardScaler()
-        X_train_scaled = scaler.fit_transform(X_train)
-        X_test_scaled = scaler.transform(X_test)
+        # Enhanced feature selection pipeline
+        logger.info("  🔧 Performing rigorous feature selection...")
         
-        # Use standardized features as embeddings (NO PCA)
-        train_embeddings = X_train_scaled  # 19D
-        test_embeddings = X_test_scaled    # 19D
+        # 1. Remove low-variance features
+        selector = VarianceThreshold(threshold=self.config['min_feature_variance'])
+        X_train_selected = selector.fit_transform(X_train)
+        selected_mask = selector.get_support()
+        selected_features = [f for f, m in zip(available_features, selected_mask) if m]
+        
+        logger.info(f"  ✅ Selected {len(selected_features)} features after variance threshold")
+        
+        # 2. Standardization (train only)
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train_selected)
+        X_test_scaled = scaler.transform(X_test.loc[:, selected_features])
+        
+        # 3. NO PCA - Use scaled features directly as embeddings
+        train_embeddings = X_train_scaled
+        test_embeddings = X_test_scaled
+        
+        logger.info(f"  📊 Embedding Results (NO PCA):")
+        logger.info(f"     Embedding dimension: {train_embeddings.shape[1]}D")
+        logger.info(f"     Using standardized features directly")
+        logger.info(f"     Train shape: {train_embeddings.shape}")
+        logger.info(f"     Test shape: {test_embeddings.shape}")
         
         # Add embeddings to dataframe
         embedding_cols = [f'embedding_{i}' for i in range(train_embeddings.shape[1])]
@@ -258,18 +278,17 @@ class EnhancedNeuroGaitGraphBuilder:
         df.loc[train_mask, embedding_cols] = train_embeddings
         df.loc[~train_mask, embedding_cols] = test_embeddings
         
-        # Save metadata
+        # Save feature selection details
         self.feature_selection = {
             'initial_features': available_features,
-            'selected_features': available_features,  # No feature selection
-            'scaler_params': {
-                'mean': scaler.mean_.tolist(),
-                'scale': scaler.scale_.tolist()
-            }
+            'selected_features': selected_features,
+            'variance_threshold': self.config['min_feature_variance'],
+            'use_pca': False,
+            'embedding_dimension': len(embedding_cols)
         }
         
-        return df, embedding_cols, available_features, None, scaler  # No PCA object returned
-   
+        # Return None for PCA since we're not using it
+        return df, embedding_cols, selected_features, None, scaler
     
     def create_graph_structure(self):
         """Create enhanced graph structure with metadata"""
@@ -308,13 +327,14 @@ class EnhancedNeuroGaitGraphBuilder:
                 is_original=(aug_type == 'original')
                 )
             
-            # Create configuration node
+            # Create configuration node - MODIFIED for no PCA
             session.run("""
                 MERGE (c:Configuration {
-                    name: 'NeuroGaitGraphConfig',
+                    name: 'NeuroGaitGraphConfig_NoPCA',
                     embedding_dim: $embedding_dim,
                     min_feature_variance: $min_var,
-                    random_state: $random_state
+                    random_state: $random_state,
+                    use_pca: false
                 })
                 SET c.created_at = datetime()
             """, 
@@ -506,31 +526,27 @@ class EnhancedNeuroGaitGraphBuilder:
                 return obj
         
         metadata = {
-            'pca': {
-                'components': pca.components_,
-                'explained_variance': pca.explained_variance_,
-                'explained_variance_ratio': pca.explained_variance_ratio_,
-                'mean': pca.mean_,
-                'n_components': pca.n_components_
-            },
+            'pca': None,  # No PCA used
             'scaler': {
                 'scale': scaler.scale_,
                 'mean': scaler.mean_,
                 'var': scaler.var_,
-                'n_samples_seen': int(scaler.n_samples_seen_)  # Convert to native Python int
+                'n_samples_seen': int(scaler.n_samples_seen_)
             },
             'selected_features': selected_features,
             'config': self.config,
+            'use_pca': False,
+            'embedding_method': 'standardized_features',
             'timestamp': datetime.now().isoformat()
         }
         
         # Convert all numpy types to native Python types
         metadata = json.loads(json.dumps(metadata, default=convert_numpy))
         
-        with open('neurogait_metadata.json', 'w') as f:
+        with open('neurogait_metadata_no_pca.json', 'w') as f:
             json.dump(metadata, f, indent=2, ensure_ascii=False)
         
-        logger.info("💾 Saved model metadata to neurogait_metadata.json")
+        logger.info("💾 Saved model metadata to neurogait_metadata_no_pca.json")
     
     def close(self):
         """Close database connection safely"""
@@ -546,7 +562,8 @@ class EnhancedNeuroGaitGraphBuilder:
         start_time = datetime.now()
         
         try:
-            logger.info("🚀 Starting Enhanced Realistic NeuroGait Knowledge Graph construction...")
+            logger.info("🚀 Starting Enhanced Realistic NeuroGait Knowledge Graph construction (NO PCA)...")
+            logger.info("📌 This version uses 19D standardized features directly as embeddings")
             
             # Connect to Neo4j
             if not self.connect():
@@ -565,7 +582,7 @@ class EnhancedNeuroGaitGraphBuilder:
             # Load and split data
             df, train_pids, test_pids = self.load_and_split_data(filepath)
             
-            # Create embeddings
+            # Create embeddings (NO PCA)
             df_final, embedding_cols, selected_features, pca, scaler = self.create_embeddings(df, train_pids)
             
             # Create participants and samples
@@ -591,19 +608,21 @@ class EnhancedNeuroGaitGraphBuilder:
             logger.info(f"  Participants: {len(train_pids) + len(test_pids)}")
             logger.info(f"  Samples: {len(df_final)}")
             logger.info(f"  Features used: {len(selected_features)}")
-            logger.info(f"  Embedding dimension: {len(embedding_cols)}")
-            logger.info(f"  PCA explained variance: {pca.explained_variance_ratio_.sum():.3f}")
+            logger.info(f"  Embedding dimension: {len(embedding_cols)}D (NO PCA)")
+            logger.info(f"  Embedding method: Standardized features directly")
             
             logger.info("\n🔒 Leakage Prevention Measures:")
             logger.info("  ✅ Participant-level stratified split")
             logger.info("  ✅ Training-only feature selection")
-            logger.info("  ✅ Training-only PCA fitting")
+            logger.info("  ✅ Training-only standardization")
+            logger.info("  ✅ NO PCA - using standardized features directly")
             logger.info("  ✅ Rigorous validation checks")
             
             logger.info("\n💡 Next Steps:")
             logger.info("  1. Verify graph structure in Neo4j Browser")
             logger.info("  2. Run graph algorithms for analysis")
             logger.info("  3. Use embeddings for ML tasks")
+            logger.info("  4. Compare 19D vs 19D performance")
             
             return True
             
@@ -619,7 +638,8 @@ class EnhancedNeuroGaitGraphBuilder:
 
 def main():
     """Main execution function"""
-    logger.info("🎯 Enhanced Realistic NeuroGait Knowledge Graph Builder")
+    logger.info("🎯 Enhanced Realistic NeuroGait Knowledge Graph Builder (NO PCA)")
+    logger.info("📌 Modified version: Uses 19D standardized features directly as embeddings")
     
     # Create builder instance
     builder = EnhancedNeuroGaitGraphBuilder(samples_per_participant=8)
@@ -630,8 +650,8 @@ def main():
     if success:
         print("\n🎉 SUCCESS: Enhanced Realistic Knowledge Graph created!")
         print("🔒 Rigorous leakage prevention measures applied")
-        print("📊 Realistic feature selection and dimensionality reduction")
-        print("📈 Ready for analysis and machine learning")
+        print("📊 Using 19D standardized features directly (NO PCA)")
+        print("📈 Ready for fair 19D vs 19D comparison")
     else:
         print("\n❌ Failed to create knowledge graph")
         print("📋 Check logs for detailed error information")
