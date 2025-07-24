@@ -116,7 +116,7 @@ class FairComparisonNeuroGaitMLAnalysis:
         
         return df_movement, available_features
     
-    def participant_level_split(self, df, test_size=0.2):
+    def participant_level_split(self, df, test_size=0.1):
         """Split data at participant level to prevent leakage"""
         print(f"\n🔧 Performing participant-level split (test_size={test_size})...")
         
