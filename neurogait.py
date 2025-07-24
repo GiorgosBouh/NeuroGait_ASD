@@ -27,7 +27,7 @@ from sklearn.svm import SVC
 import xgboost as xgb
 
 # Statistical analysis
-from scipy.stats import ttest_ind
+from scipy.stats import ttest_rel
 
 # Neo4j connection
 try:
@@ -479,7 +479,7 @@ class FairComparisonNeuroGaitMLAnalysis:
                 kg_cv = kg_metrics['cv_scores']
                 
                 # Independent t-test
-                t_stat, p_value = ttest_ind(kg_cv, raw_cv)
+                t_stat, p_value = ttest_rel(kg_cv, raw_cv)
                 
                 model_comparison['cv_comparison'] = {
                     'raw_cv_mean': np.mean(raw_cv),
