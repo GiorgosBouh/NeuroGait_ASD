@@ -58,22 +58,19 @@ class EnhancedNeuroGaitGraphBuilder:
         
         # Carefully selected essential movement features
         self.essential_movement_features = [
-            # Core body metrics
-            'mean-x-Midspain', 'mean-y-Midspain', 'mean-z-Midspain',
-            'mean-x-SpineBase', 'mean-y-SpineBase', 'mean-z-SpineBase',
-            
-            # Limb movement metrics
-            'mean HESHL', 'mean HESHR',  # Hand to elbow
-            'mean SPELL', 'mean SPELR',  # Shoulder to elbow
-            'mean SHWRL', 'mean SHWRR',  # Shoulder to wrist
-            
-            # Leg movement metrics
-            'mean SPKNL', 'mean SPKNR',  # Spine to knee
-            'mean HIANL', 'mean HIANR',  # Hip to ankle
-            
-            # Temporal metrics
-            'GaCT', 'StaT', 'SwiT',  # Gait cycle timing
-            'Velocity'
+            # FIXED: Use EXACT same 12 features as ML script
+            'mean HESHL',   # Head-Shoulder Left
+            'mean SPELR',   # Spine-Elbow Right  
+            'mean SHWRL',   # Shoulder-Wrist Left
+            'mean SHWRR',   # Shoulder-Wrist Right
+            'mean ELHAL',   # Elbow-Hand Left
+            'mean THHAR',   # Thigh-Hand Right
+            'mean SPKNL',   # Spine-Knee Left
+            'mean SPKNR',   # Spine-Knee Right
+            'mean HIANR',   # Hip-Ankle Right
+            'GaCT',         # Gait Cycle Time
+            'StaT',         # Stance Time
+            'SwiT'          # Swing Time
         ]
         
         # Configuration
