@@ -396,7 +396,7 @@ class FairComparisonNeuroGaitMLAnalysis:
         
         return results
     
-    def _participant_cv(self, X_train, y_train, train_pids, model, cv_folds=5):
+    def _participant_cv(self, X_train, y_train, train_pids, model, cv_folds=10):
         """Perform participant-level cross-validation"""
         unique_pids = np.unique(train_pids)
         pid_labels = [y_train.iloc[np.where(train_pids == pid)[0][0]] for pid in unique_pids]
