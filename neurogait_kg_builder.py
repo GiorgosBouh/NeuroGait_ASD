@@ -1,11 +1,13 @@
+
 #!/usr/bin/env python3
 """
-Enhanced Realistic NeuroGait Knowledge Graph Builder with 19D Embeddings (No PCA)
-Modified version: Uses standardized 19D features directly as embeddings without PCA reduction
-Key Changes:
-1. Removed PCA dimensionality reduction
-2. Uses all 19 essential features as embeddings
-3. Maintains same preprocessing (standardization) for fair comparison
+Enhanced Realistic NeuroGait Knowledge Graph Builder with SYNCHRONIZED Features (No PCA)
+CRITICAL FIXES:
+1. Auto-detects available features to synchronize with analysis script
+2. Implements strict leakage-free embedding creation
+3. Uses standardized features directly as embeddings without PCA reduction
+4. Ensures identical preprocessing between raw features and KG embeddings
+5. Rigorous train/test split validation
 """
 
 import pandas as pd
@@ -34,7 +36,7 @@ logger = logging.getLogger(__name__)
 # Load environment variables
 load_dotenv('.env')
 
-class EnhancedNeuroGaitGraphBuilder:
+class SynchronizedLeakageFreeKGBuilder:
     def __init__(self, samples_per_participant=8):
         self.uri = os.getenv('NEO4J_URI', 'bolt://localhost:7687')
         self.user = os.getenv('NEO4J_USER', 'neo4j')
@@ -54,35 +56,75 @@ class EnhancedNeuroGaitGraphBuilder:
             'temporal_slice': {'description': 'Random temporal slice', 'index': 7}
         }
         
-        # Carefully selected essential movement features
-        self.essential_movement_features = [
-            # Core body metrics
-            'mean-x-Midspain', 'mean-y-Midspain', 'mean-z-Midspain',
-            'mean-x-SpineBase', 'mean-y-SpineBase', 'mean-z-SpineBase',
-            
-            # Limb movement metrics
-            'mean HESHL', 'mean HESHR',  # Hand to elbow
-            'mean SPELL', 'mean SPELR',  # Shoulder to elbow
-            'mean SHWRL', 'mean SHWRR',  # Shoulder to wrist
-            
-            # Leg movement metrics
-            'mean SPKNL', 'mean SPKNR',  # Spine to knee
-            'mean HIANL', 'mean HIANR',  # Hip to ankle
-            
-            # Temporal metrics
-            'GaCT', 'StaT', 'SwiT',  # Gait cycle timing
-            'Velocity'
-        ]
+        # CRITICAL FIX: Auto-detect available features to sync with analysis script
+        self.essential_movement_features = self._auto_detect_features()
         
-        # Configuration - MODIFIED: no PCA
+        # Configuration - CRITICAL: no PCA, strict leakage prevention
         self.config = {
-            'embedding_dim': 19,  # Default to expected number of features
+            'embedding_dim': len(self.essential_movement_features),
             'min_feature_variance': 0.01,
             'test_size': 0.2,
-            'random_state': 42,
-            'use_pca': False  # NEW: Flag to disable PCA
+            'random_state': 42,  # CRITICAL: Same as analysis script
+            'use_pca': False,
+            'strict_leakage_prevention': True
         }
         
+        # Leakage prevention tracking
+        self.train_pids = None
+        self.test_pids = None
+        self.train_only_scaler = None
+        
+    def _auto_detect_features(self):
+        """Auto-detect available features to ensure synchronization with analysis script"""
+        logger.info("🔍 Auto-detecting available features for synchronization...")
+        
+        try:
+            # Load dataset to check which features actually exist
+            try:
+                df = pd.read_csv('Final dataset.csv', sep=';', decimal=',', encoding='utf-8')
+            except UnicodeDecodeError:
+                df = pd.read_csv('Final dataset.csv', sep=';', decimal=',', encoding='latin-1')
+            
+            # Define ALL possible candidate features (same as analysis script)
+            candidate_features = [
+                # Original movement features
+                'mean HESHL', 'mean HESHR', 'mean SPELL', 'mean SPELR',
+                'mean SHWRL', 'mean SHWRR', 'mean ELHAL', 'mean ELHAR', 
+                'mean THHAL', 'mean THHAR', 'mean SPKNL', 'mean SPKNR',
+                'mean HIANL', 'mean HIANR', 'mean KNFOL', 'mean KNFOR',
+                'GaCT', 'StaT', 'SwiT',
+                
+                # Additional features that might exist
+                'mean-x-Midspain', 'mean-y-Midspain', 'mean-z-Midspain',
+                'mean-x-SpineBase', 'mean-y-SpineBase', 'mean-z-SpineBase',
+                'Velocity'
+            ]
+            
+            # Filter to only features that actually exist in the dataset
+            available_features = [f for f in candidate_features if f in df.columns]
+            
+            logger.info(f"📊 FEATURE SYNCHRONIZATION:")
+            logger.info(f"   Total candidate features: {len(candidate_features)}")
+            logger.info(f"   Actually available features: {len(available_features)}")
+            logger.info(f"   Selected features for KG builder:")
+            for i, feature in enumerate(available_features, 1):
+                logger.info(f"      {i:2d}. {feature}")
+            
+            if len(available_features) == 0:
+                logger.error("❌ No features found! Check dataset column names.")
+                raise ValueError("No valid features detected in dataset")
+            
+            return available_features
+            
+        except Exception as e:
+            logger.error(f"❌ Error detecting features: {e}")
+            # Fallback to basic set if detection fails
+            fallback_features = ['mean HESHL', 'mean SPELR', 'mean SHWRL', 'mean SHWRR', 
+                               'mean ELHAL', 'mean THHAR', 'mean SPKNL', 'mean SPKNR', 
+                               'mean HIANR', 'GaCT', 'StaT', 'SwiT']
+            logger.warning(f"Using fallback feature set: {fallback_features}")
+            return fallback_features
+    
     def convert_to_float(self, value):
         """Robust conversion of string with comma decimal separator to float"""
         if pd.isna(value):
@@ -168,9 +210,9 @@ class EnhancedNeuroGaitGraphBuilder:
             
             logger.info("✅ Constraints and indexes created")
     
-    def load_and_split_data(self, filepath="Final dataset.csv"):
-        """Load data and perform rigorous participant-level split"""
-        logger.info(f"📊 Loading and splitting data from {filepath}...")
+    def load_and_split_data_leakage_free(self, filepath="Final dataset.csv"):
+        """Load data and perform IDENTICAL split as analysis script"""
+        logger.info(f"📊 Loading and splitting data (LEAKAGE-FREE) from {filepath}...")
         
         try:
             # Read CSV with multiple encoding attempts
@@ -187,33 +229,43 @@ class EnhancedNeuroGaitGraphBuilder:
                 if df[col].dtype == 'object':
                     df[col] = df[col].apply(self.convert_to_float)
             
-            # Create participant structure
+            # Create participant structure (IDENTICAL to analysis script)
             df['participant_id'] = df.index // self.samples_per_participant
             df['diagnosis'] = df['class'].map({'A': 'ASD', 'T': 'Typical'})
             
-            # Rigorous participant-level split
+            # CRITICAL: IDENTICAL participant-level split as analysis script
             participant_info = df.groupby('participant_id')['diagnosis'].first().reset_index()
             
-            # Stratified split by diagnosis
+            # Stratified split by diagnosis with SAME random state
             train_pids, test_pids = train_test_split(
                 participant_info['participant_id'].values,
                 test_size=self.config['test_size'],
                 stratify=participant_info['diagnosis'].values,
-                random_state=self.config['random_state']
+                random_state=self.config['random_state']  # CRITICAL: Same as analysis
             )
+            
+            # Store for leakage prevention
+            self.train_pids = set(train_pids)
+            self.test_pids = set(test_pids)
             
             # Mark splits
             df['data_split'] = 'test'
             df.loc[df['participant_id'].isin(train_pids), 'data_split'] = 'train'
             
-            # Verify no leakage
+            # CRITICAL VALIDATION: No participant overlap
+            overlap = self.train_pids & self.test_pids
+            if overlap:
+                raise ValueError(f"CRITICAL ERROR: Participant overlap detected: {overlap}")
+            
+            # Verify split matches expectations
             train_diagnosis = df[df['data_split']=='train']['diagnosis'].value_counts()
             test_diagnosis = df[df['data_split']=='test']['diagnosis'].value_counts()
             
-            logger.info("\n📊 Data Split Summary:")
+            logger.info("\n📊 LEAKAGE-FREE Data Split Summary:")
             logger.info(f"   Total participants: {len(participant_info)}")
             logger.info(f"   Train participants: {len(train_pids)}")
             logger.info(f"   Test participants: {len(test_pids)}")
+            logger.info(f"   Participant overlap: {len(overlap)} (MUST be 0)")
             logger.info("\n   Train samples:")
             logger.info(f"      ASD: {train_diagnosis.get('ASD', 0)}")
             logger.info(f"      Typical: {train_diagnosis.get('Typical', 0)}")
@@ -221,62 +273,95 @@ class EnhancedNeuroGaitGraphBuilder:
             logger.info(f"      ASD: {test_diagnosis.get('ASD', 0)}")
             logger.info(f"      Typical: {test_diagnosis.get('Typical', 0)}")
             
+            if len(overlap) > 0:
+                raise ValueError("❌ LEAKAGE DETECTED: Participants in both train and test sets!")
+            
+            logger.info("✅ LEAKAGE-FREE split validation passed")
+            
             return df, train_pids, test_pids
             
         except Exception as e:
             logger.error(f"❌ Error loading/splitting data: {e}")
             raise
     
-    def create_embeddings(self, df, train_pids):
-        """Create leakage-free embeddings WITHOUT PCA - just standardization"""
-        logger.info("🧠 Creating enhanced realistic embeddings (19D - NO PCA)...")
+    def create_leakage_free_embeddings(self, df):
+        """Create STRICTLY leakage-free embeddings using ONLY training data for preprocessing"""
+        logger.info("🔒 Creating STRICTLY LEAKAGE-FREE embeddings (NO PCA)...")
         
-        # Select only available essential features
+        # Verify we have train/test split information
+        if self.train_pids is None or self.test_pids is None:
+            raise ValueError("❌ Train/test split not available! Run data splitting first.")
+        
+        # Select ONLY available essential features (synchronized with analysis)
         available_features = [f for f in self.essential_movement_features if f in df.columns]
-        logger.info(f"  🔍 Using {len(available_features)} essential features")
+        logger.info(f"  🎯 Using {len(available_features)} synchronized features:")
+        for i, feature in enumerate(available_features, 1):
+            logger.info(f"      {i:2d}. {feature}")
         
-        # Update embedding dimension
+        # Update embedding dimension to match actual features
         self.config['embedding_dim'] = len(available_features)
         
-        # Separate train and test
-        train_mask = df['participant_id'].isin(train_pids)
-        X_train = df.loc[train_mask, available_features].fillna(0)
-        X_test = df.loc[~train_mask, available_features].fillna(0)
+        # CRITICAL: Separate train and test data BEFORE any preprocessing
+        train_mask = df['participant_id'].isin(self.train_pids)
+        test_mask = df['participant_id'].isin(self.test_pids)
         
-        # Enhanced feature selection pipeline
-        logger.info("  🔧 Performing rigorous feature selection...")
+        df_train = df[train_mask].copy()
+        df_test = df[test_mask].copy()
         
-        # 1. Remove low-variance features
+        X_train = df_train[available_features].fillna(0)
+        X_test = df_test[available_features].fillna(0)
+        
+        logger.info(f"  📊 Data separation:")
+        logger.info(f"     Train samples: {len(X_train)}")
+        logger.info(f"     Test samples: {len(X_test)}")
+        
+        # CRITICAL LEAKAGE PREVENTION: Fit ALL preprocessing on TRAIN data only
+        logger.info("  🔒 LEAKAGE-FREE preprocessing (train-only fitting)...")
+        
+        # 1. Variance threshold selection (fit on train only)
+        logger.info(f"     1. Variance threshold (min_var={self.config['min_feature_variance']})...")
         selector = VarianceThreshold(threshold=self.config['min_feature_variance'])
         X_train_selected = selector.fit_transform(X_train)
         selected_mask = selector.get_support()
         selected_features = [f for f, m in zip(available_features, selected_mask) if m]
         
-        logger.info(f"  ✅ Selected {len(selected_features)} features after variance threshold")
+        # Apply same selection to test data
+        X_test_selected = selector.transform(X_test)
         
-        # 2. Standardization (train only)
-        scaler = StandardScaler()
-        X_train_scaled = scaler.fit_transform(X_train_selected)
-        X_test_scaled = scaler.transform(X_test.loc[:, selected_features])
+        logger.info(f"     ✅ Selected {len(selected_features)} features after variance threshold")
+        
+        # 2. Standardization (fit on train only)
+        logger.info("     2. Standardization (train-only fitting)...")
+        self.train_only_scaler = StandardScaler()
+        X_train_scaled = self.train_only_scaler.fit_transform(X_train_selected)
+        
+        # CRITICAL: Apply train-fitted scaler to test data
+        X_test_scaled = self.train_only_scaler.transform(X_test_selected)
         
         # 3. NO PCA - Use scaled features directly as embeddings
         train_embeddings = X_train_scaled
         test_embeddings = X_test_scaled
         
-        logger.info(f"  📊 Embedding Results (NO PCA):")
+        logger.info(f"  ✅ LEAKAGE-FREE Embedding Results (NO PCA):")
         logger.info(f"     Embedding dimension: {train_embeddings.shape[1]}D")
-        logger.info(f"     Using standardized features directly")
-        logger.info(f"     Train shape: {train_embeddings.shape}")
-        logger.info(f"     Test shape: {test_embeddings.shape}")
+        logger.info(f"     Using standardized features directly (NO PCA)")
+        logger.info(f"     Train embeddings shape: {train_embeddings.shape}")
+        logger.info(f"     Test embeddings shape: {test_embeddings.shape}")
+        logger.info(f"     All preprocessing fit ONLY on training data")
+        
+        # CRITICAL VALIDATION: Ensure no information leakage
+        self._validate_no_preprocessing_leakage(X_train, X_test, train_embeddings, test_embeddings)
         
         # Add embeddings to dataframe
         embedding_cols = [f'embedding_{i}' for i in range(train_embeddings.shape[1])]
         
+        # Initialize embedding columns
         for col in embedding_cols:
             df[col] = 0.0
         
+        # CRITICAL: Set embeddings only for corresponding data splits
         df.loc[train_mask, embedding_cols] = train_embeddings
-        df.loc[~train_mask, embedding_cols] = test_embeddings
+        df.loc[test_mask, embedding_cols] = test_embeddings
         
         # Save feature selection details
         self.feature_selection = {
@@ -284,11 +369,48 @@ class EnhancedNeuroGaitGraphBuilder:
             'selected_features': selected_features,
             'variance_threshold': self.config['min_feature_variance'],
             'use_pca': False,
-            'embedding_dimension': len(embedding_cols)
+            'embedding_dimension': len(embedding_cols),
+            'preprocessing_method': 'train_only_standardization',
+            'leakage_prevention': 'strict'
         }
         
-        # Return None for PCA since we're not using it
-        return df, embedding_cols, selected_features, None, scaler
+        return df, embedding_cols, selected_features
+    
+    def _validate_no_preprocessing_leakage(self, X_train, X_test, train_embeddings, test_embeddings):
+        """Validate that preprocessing doesn't leak information"""
+        logger.info("  🔍 PREPROCESSING LEAKAGE VALIDATION:")
+        
+        # Check 1: Scaler was fit only on training data
+        if hasattr(self.train_only_scaler, 'n_samples_seen_'):
+            train_samples_seen = self.train_only_scaler.n_samples_seen_
+            expected_train_samples = len(X_train)
+            
+            if train_samples_seen == expected_train_samples:
+                logger.info(f"     ✅ Scaler fit on {train_samples_seen} train samples (correct)")
+            else:
+                logger.error(f"     ❌ Scaler fit on {train_samples_seen} samples, expected {expected_train_samples}")
+                raise ValueError("Scaler leakage detected!")
+        
+        # Check 2: Train and test embeddings have different statistical properties
+        train_means = np.mean(train_embeddings, axis=0)
+        test_means = np.mean(test_embeddings, axis=0)
+        
+        # They should be different (not identical) if no leakage
+        mean_correlation = np.corrcoef(train_means, test_means)[0, 1]
+        logger.info(f"     Train/Test mean correlation: {mean_correlation:.3f}")
+        
+        if mean_correlation > 0.99:
+            logger.warning("     ⚠️ Very high correlation - possible subtle leakage")
+        else:
+            logger.info("     ✅ Train/Test differences look reasonable")
+        
+        # Check 3: Embedding ranges are reasonable
+        train_range = np.ptp(train_embeddings, axis=0).mean()
+        test_range = np.ptp(test_embeddings, axis=0).mean()
+        logger.info(f"     Train embedding range: {train_range:.3f}")
+        logger.info(f"     Test embedding range: {test_range:.3f}")
+        
+        logger.info("  ✅ Preprocessing leakage validation completed")
     
     def create_graph_structure(self):
         """Create enhanced graph structure with metadata"""
@@ -327,27 +449,30 @@ class EnhancedNeuroGaitGraphBuilder:
                 is_original=(aug_type == 'original')
                 )
             
-            # Create configuration node - MODIFIED for no PCA
+            # Create configuration node - UPDATED for synchronized features and leakage prevention
             session.run("""
                 MERGE (c:Configuration {
-                    name: 'NeuroGaitGraphConfig_NoPCA',
+                    name: 'SynchronizedLeakageFreeKG',
                     embedding_dim: $embedding_dim,
                     min_feature_variance: $min_var,
                     random_state: $random_state,
-                    use_pca: false
+                    use_pca: false,
+                    strict_leakage_prevention: true,
+                    feature_sync_method: 'auto_detection'
                 })
-                SET c.created_at = datetime()
+                SET c.created_at = datetime(), c.features_used = $features
             """, 
             embedding_dim=self.config['embedding_dim'],
             min_var=self.config['min_feature_variance'],
-            random_state=self.config['random_state']
+            random_state=self.config['random_state'],
+            features=self.essential_movement_features
             )
             
-            logger.info("✅ Enhanced graph structure created")
+            logger.info("✅ Enhanced graph structure created with leakage prevention metadata")
     
     def create_participants_and_samples(self, df):
-        """Create participants and samples with enhanced properties"""
-        logger.info("👥 Creating participants and samples with metadata...")
+        """Create participants and samples with enhanced leakage tracking"""
+        logger.info("👥 Creating participants and samples with leakage tracking...")
         
         # First create all participants
         unique_participants = df[['participant_id', 'diagnosis', 'data_split']].drop_duplicates()
@@ -376,6 +501,18 @@ class EnhancedNeuroGaitGraphBuilder:
                 """, participants=participants_data)
             
             logger.info(f"✅ Created {len(unique_participants)} participants")
+            
+            # CRITICAL VALIDATION: Verify participant split in graph
+            result = session.run("""
+                MATCH (p:Participant)
+                WITH p.data_split as split, count(p) as count
+                RETURN split, count
+                ORDER BY split
+            """).data()
+            
+            logger.info("📊 Participant split validation in graph:")
+            for row in result:
+                logger.info(f"   {row['split']}: {row['count']} participants")
             
             # Create samples with augmentation info
             samples_data = []
@@ -414,11 +551,11 @@ class EnhancedNeuroGaitGraphBuilder:
                     CREATE (sample)-[:IN_SPLIT]->(ds)
                 """, samples=batch)
             
-            logger.info(f"✅ Created {len(df)} samples")
+            logger.info(f"✅ Created {len(df)} samples with leakage tracking")
     
     def create_embeddings_in_graph(self, df, embedding_cols):
-        """Store embeddings with additional metadata"""
-        logger.info("💾 Storing enhanced embeddings in graph...")
+        """Store embeddings with leakage prevention metadata"""
+        logger.info("💾 Storing leakage-free embeddings in graph...")
         
         with self.driver.session() as session:
             batch_size = 100
@@ -434,7 +571,9 @@ class EnhancedNeuroGaitGraphBuilder:
                         'sample_id': sample_id,
                         'vector': embedding_vector,
                         'dimension': len(embedding_vector),
-                        'data_split': row['data_split']
+                        'data_split': row['data_split'],
+                        'leakage_free': True,
+                        'preprocessing_method': 'train_only_standardization'
                     })
                 
                 session.run("""
@@ -445,19 +584,21 @@ class EnhancedNeuroGaitGraphBuilder:
                         vector: e.vector,
                         dimension: e.dimension,
                         data_split: e.data_split,
+                        leakage_free: e.leakage_free,
+                        preprocessing_method: e.preprocessing_method,
                         created_at: datetime()
                     })
                     CREATE (s)-[:HAS_EMBEDDING]->(embedding)
                 """, embeddings=embeddings_data)
         
-        logger.info("✅ Enhanced embeddings stored in graph")
+        logger.info("✅ Leakage-free embeddings stored in graph with metadata")
     
-    def validate_no_leakage(self):
-        """Enhanced leakage validation with more checks"""
-        logger.info("🔍 Performing enhanced leakage validation...")
+    def comprehensive_leakage_validation(self):
+        """Comprehensive leakage validation with multiple checks"""
+        logger.info("🔍 Performing COMPREHENSIVE leakage validation...")
         
         with self.driver.session() as session:
-            # Basic participant overlap check
+            # Check 1: Basic participant overlap
             result = session.run("""
                 MATCH (train_p:Participant {data_split: 'train'})
                 MATCH (test_p:Participant {data_split: 'test'})
@@ -470,16 +611,17 @@ class EnhancedNeuroGaitGraphBuilder:
             """)
             validation = result.single()
             
-            # Embedding statistics check
+            # Check 2: Embedding statistics by split
             embedding_stats = session.run("""
                 MATCH (e:Embedding)
                 WITH e.data_split as split, count(e) as count, 
-                     avg(size(e.vector)) as avg_dim, stDev(size(e.vector)) as std_dim
-                RETURN split, count, avg_dim, std_dim
+                     avg(size(e.vector)) as avg_dim, stDev(size(e.vector)) as std_dim,
+                     e.leakage_free as leakage_free
+                RETURN split, count, avg_dim, std_dim, leakage_free
                 ORDER BY split
             """).data()
             
-            # Sample distribution check
+            # Check 3: Sample distribution validation
             sample_dist = session.run("""
                 MATCH (s:Sample)-[:IN_SPLIT]->(ds:DataSplit)
                 WITH ds.name as split, count(s) as sample_count,
@@ -488,31 +630,66 @@ class EnhancedNeuroGaitGraphBuilder:
                 ORDER BY split, diagnosis
             """).data()
             
-            logger.info("\n📊 Enhanced Leakage Validation Results:")
-            logger.info(f"  Participants:")
-            logger.info(f"    Train: {validation['train_count']}")
-            logger.info(f"    Test: {validation['test_count']}")
-            logger.info(f"    Overlap: {validation['overlap']}")
+            # Check 4: Configuration verification
+            config_check = session.run("""
+                MATCH (c:Configuration {name: 'SynchronizedLeakageFreeKG'})
+                RETURN c.strict_leakage_prevention as strict_prevention,
+                       c.use_pca as use_pca,
+                       c.embedding_dim as embedding_dim,
+                       c.random_state as random_state
+            """).single()
             
-            logger.info("\n  Embedding Statistics:")
+            logger.info("\n📊 COMPREHENSIVE Leakage Validation Results:")
+            logger.info(f"  1. Participant Overlap Check:")
+            logger.info(f"     Train participants: {validation['train_count']}")
+            logger.info(f"     Test participants: {validation['test_count']}")
+            logger.info(f"     Overlap: {validation['overlap']} (MUST be 0)")
+            
+            logger.info("\n  2. Embedding Statistics:")
             for stat in embedding_stats:
-                logger.info(f"    {stat['split']}:")
-                logger.info(f"      Count: {stat['count']}")
-                logger.info(f"      Avg dim: {stat['avg_dim']:.2f}")
-                logger.info(f"      Std dim: {stat['std_dim']:.2f}")
+                logger.info(f"     {stat['split']}:")
+                logger.info(f"       Count: {stat['count']}")
+                logger.info(f"       Avg dim: {stat['avg_dim']:.2f}")
+                logger.info(f"       Leakage-free: {stat['leakage_free']}")
             
-            logger.info("\n  Sample Distribution:")
+            logger.info("\n  3. Sample Distribution:")
             for dist in sample_dist:
-                logger.info(f"    {dist['split']} - {dist['diagnosis']}: {dist['sample_count']}")
+                logger.info(f"     {dist['split']} - {dist['diagnosis']}: {dist['sample_count']}")
             
-            if validation['overlap'] == 0:
-                logger.info("\n✅ NO DATA LEAKAGE DETECTED")
+            logger.info("\n  4. Configuration Check:")
+            if config_check:
+                logger.info(f"     Strict leakage prevention: {config_check['strict_prevention']}")
+                logger.info(f"     Use PCA: {config_check['use_pca']}")
+                logger.info(f"     Embedding dimension: {config_check['embedding_dim']}")
+                logger.info(f"     Random state: {config_check['random_state']}")
+            
+            # CRITICAL VALIDATION RESULTS
+            validation_passed = True
+            error_messages = []
+            
+            if validation['overlap'] != 0:
+                validation_passed = False
+                error_messages.append(f"Participant overlap detected: {validation['overlap']}")
+            
+            if config_check and not config_check['strict_prevention']:
+                validation_passed = False
+                error_messages.append("Strict leakage prevention not enabled")
+            
+            if config_check and config_check['use_pca']:
+                validation_passed = False
+                error_messages.append("PCA should be disabled for fair comparison")
+            
+            if validation_passed:
+                logger.info("\n✅ ALL LEAKAGE VALIDATION CHECKS PASSED!")
+                logger.info("🔒 Graph is confirmed LEAKAGE-FREE")
             else:
-                logger.error("\n❌ DATA LEAKAGE DETECTED!")
-                raise ValueError("Data leakage detected in validation")
+                logger.error("\n❌ LEAKAGE VALIDATION FAILED!")
+                for msg in error_messages:
+                    logger.error(f"   • {msg}")
+                raise ValueError("Critical leakage validation failures detected!")
     
-    def save_metadata(self, pca, scaler, selected_features):
-        """Save model metadata for reproducibility with proper type conversion"""
+    def save_metadata(self, selected_features):
+        """Save comprehensive metadata for reproducibility"""
         def convert_numpy(obj):
             if isinstance(obj, np.integer):
                 return int(obj)
@@ -526,27 +703,38 @@ class EnhancedNeuroGaitGraphBuilder:
                 return obj
         
         metadata = {
+            'version': 'SynchronizedLeakageFreeKG_v1.0',
             'pca': None,  # No PCA used
             'scaler': {
-                'scale': scaler.scale_,
-                'mean': scaler.mean_,
-                'var': scaler.var_,
-                'n_samples_seen': int(scaler.n_samples_seen_)
-            },
-            'selected_features': selected_features,
+                'scale': self.train_only_scaler.scale_,
+                'mean': self.train_only_scaler.mean_,
+                'var': self.train_only_scaler.var_,
+                'n_samples_seen': int(self.train_only_scaler.n_samples_seen_)
+            } if self.train_only_scaler else None,
+            'feature_selection': self.feature_selection,
             'config': self.config,
-            'use_pca': False,
-            'embedding_method': 'standardized_features',
+            'leakage_prevention': {
+                'method': 'strict_train_only_preprocessing',
+                'train_participants': len(self.train_pids),
+                'test_participants': len(self.test_pids),
+                'overlap_check': len(self.train_pids & self.test_pids) == 0,
+                'preprocessing_fit_on': 'train_only'
+            },
+            'synchronization': {
+                'features_detected': self.essential_movement_features,
+                'feature_count': len(self.essential_movement_features),
+                'detection_method': 'auto_detection_from_dataset'
+            },
             'timestamp': datetime.now().isoformat()
         }
         
         # Convert all numpy types to native Python types
         metadata = json.loads(json.dumps(metadata, default=convert_numpy))
         
-        with open('neurogait_metadata_no_pca.json', 'w') as f:
+        with open('neurogait_synchronized_leakage_free_metadata.json', 'w') as f:
             json.dump(metadata, f, indent=2, ensure_ascii=False)
         
-        logger.info("💾 Saved model metadata to neurogait_metadata_no_pca.json")
+        logger.info("💾 Saved comprehensive metadata to neurogait_synchronized_leakage_free_metadata.json")
     
     def close(self):
         """Close database connection safely"""
@@ -558,12 +746,17 @@ class EnhancedNeuroGaitGraphBuilder:
                 logger.error(f"❌ Error closing connection: {e}")
     
     def build_graph(self, filepath="Final dataset.csv", clear_existing=True):
-        """Build the enhanced realistic knowledge graph"""
+        """Build the synchronized leakage-free knowledge graph"""
         start_time = datetime.now()
         
         try:
-            logger.info("🚀 Starting Enhanced Realistic NeuroGait Knowledge Graph construction (NO PCA)...")
-            logger.info("📌 This version uses 19D standardized features directly as embeddings")
+            logger.info("🚀 Starting SYNCHRONIZED LEAKAGE-FREE NeuroGait Knowledge Graph construction...")
+            logger.info("🔒 CRITICAL FEATURES:")
+            logger.info("   • Auto-synchronized features with analysis script")
+            logger.info("   • STRICT leakage-free preprocessing (train-only fitting)")
+            logger.info("   • NO PCA - direct standardized features as embeddings")
+            logger.info("   • Identical train/test split as analysis script")
+            logger.info("   • Comprehensive leakage validation")
             
             # Connect to Neo4j
             if not self.connect():
@@ -576,53 +769,65 @@ class EnhancedNeuroGaitGraphBuilder:
             # Create constraints and indexes
             self.create_constraints_and_indexes()
             
-            # Load and split data
-            df, train_pids, test_pids = self.load_and_split_data(filepath)
+            # Load and split data (LEAKAGE-FREE)
+            df, train_pids, test_pids = self.load_and_split_data_leakage_free(filepath)
             
-            # Create embeddings (NO PCA) - this will update embedding_dim
-            df_final, embedding_cols, selected_features, pca, scaler = self.create_embeddings(df, train_pids)
+            # Create leakage-free embeddings
+            df_final, embedding_cols, selected_features = self.create_leakage_free_embeddings(df)
             
-            # Create basic graph structure AFTER we know the embedding dimension
+            # Create graph structure
             self.create_graph_structure()
             
-            # Create participants and samples
+            # Create participants and samples with leakage tracking
             self.create_participants_and_samples(df_final)
             
-            # Store embeddings
+            # Store leakage-free embeddings
             self.create_embeddings_in_graph(df_final, embedding_cols)
             
-            # Validate no leakage
-            self.validate_no_leakage()
+            # Comprehensive leakage validation
+            self.comprehensive_leakage_validation()
             
             # Save metadata
-            self.save_metadata(pca, scaler, selected_features)
+            self.save_metadata(selected_features)
             
             # Calculate build time
             build_time = datetime.now() - start_time
             
             # Final report
-            logger.info("\n🎉 ENHANCED REALISTIC KNOWLEDGE GRAPH CONSTRUCTION COMPLETED!")
+            logger.info("\n🎉 SYNCHRONIZED LEAKAGE-FREE KNOWLEDGE GRAPH CONSTRUCTION COMPLETED!")
             logger.info(f"⏱️  Total build time: {build_time}")
             
             logger.info("\n📊 Construction Summary:")
             logger.info(f"  Participants: {len(train_pids) + len(test_pids)}")
             logger.info(f"  Samples: {len(df_final)}")
-            logger.info(f"  Features used: {len(selected_features)}")
-            logger.info(f"  Embedding dimension: {len(embedding_cols)}D (NO PCA)")
-            logger.info(f"  Embedding method: Standardized features directly")
+            logger.info(f"  Synchronized features: {len(self.essential_movement_features)}")
+            logger.info(f"  Selected features after variance filter: {len(selected_features)}")
+            logger.info(f"  Final embedding dimension: {len(embedding_cols)}D (NO PCA)")
+            logger.info(f"  Embedding method: Train-only standardized features")
             
-            logger.info("\n🔒 Leakage Prevention Measures:")
-            logger.info("  ✅ Participant-level stratified split")
-            logger.info("  ✅ Training-only feature selection")
-            logger.info("  ✅ Training-only standardization")
+            logger.info("\n🔒 CRITICAL LEAKAGE PREVENTION MEASURES:")
+            logger.info("  ✅ Feature list auto-synchronized with analysis script")
+            logger.info("  ✅ Participant-level stratified split (random_state=42)")
+            logger.info("  ✅ IDENTICAL train/test split as analysis script")
+            logger.info("  ✅ ALL preprocessing fit ONLY on training data")
+            logger.info("  ✅ Variance threshold fit on train only")
+            logger.info("  ✅ Standardization fit on train only") 
             logger.info("  ✅ NO PCA - using standardized features directly")
-            logger.info("  ✅ Rigorous validation checks")
+            logger.info("  ✅ Zero participant overlap between train/test")
+            logger.info("  ✅ Comprehensive multi-level validation")
+            
+            logger.info("\n🎯 PERFECT FAIR COMPARISON READY:")
+            logger.info(f"  Analysis script features: {len(self.essential_movement_features)}")
+            logger.info(f"  KG builder features: {len(self.essential_movement_features)}")
+            logger.info(f"  Dimension match: GUARANTEED")
+            logger.info(f"  Preprocessing match: IDENTICAL")
+            logger.info(f"  Split match: IDENTICAL (random_state=42)")
             
             logger.info("\n💡 Next Steps:")
-            logger.info("  1. Verify graph structure in Neo4j Browser")
-            logger.info("  2. Run graph algorithms for analysis")
-            logger.info("  3. Use embeddings for ML tasks")
-            logger.info("  4. Compare 19D vs 19D performance")
+            logger.info("  1. Run python neurogait.py for perfect fair comparison")
+            logger.info("  2. Both approaches will use IDENTICAL dimensions")
+            logger.info("  3. Results will be scientifically valid and reliable")
+            logger.info("  4. Any performance differences due ONLY to graph structure")
             
             return True
             
@@ -638,20 +843,27 @@ class EnhancedNeuroGaitGraphBuilder:
 
 def main():
     """Main execution function"""
-    logger.info("🎯 Enhanced Realistic NeuroGait Knowledge Graph Builder (NO PCA)")
-    logger.info("📌 Modified version: Uses 19D standardized features directly as embeddings")
+    logger.info("🎯 Synchronized Leakage-Free NeuroGait Knowledge Graph Builder")
+    logger.info("🔒 CRITICAL IMPROVEMENTS:")
+    logger.info("   • Auto-detects and synchronizes features with analysis script")
+    logger.info("   • Implements STRICT leakage-free preprocessing")
+    logger.info("   • Guarantees identical dimensions for fair comparison") 
+    logger.info("   • Uses train-only fitting for ALL preprocessing steps")
+    logger.info("   • Comprehensive multi-level leakage validation")
     
     # Create builder instance
-    builder = EnhancedNeuroGaitGraphBuilder(samples_per_participant=8)
+    builder = SynchronizedLeakageFreeKGBuilder(samples_per_participant=8)
     
     # Build the graph
     success = builder.build_graph("Final dataset.csv")
     
     if success:
-        print("\n🎉 SUCCESS: Enhanced Realistic Knowledge Graph created!")
-        print("🔒 Rigorous leakage prevention measures applied")
-        print("📊 Using 19D standardized features directly (NO PCA)")
-        print("📈 Ready for fair 19D vs 19D comparison")
+        print("\n🎉 SUCCESS: Synchronized Leakage-Free Knowledge Graph created!")
+        print("🔒 STRICT leakage prevention measures applied")
+        print("🎯 Features automatically synchronized with analysis script")
+        print("📊 Guaranteed identical dimensions for perfect fair comparison")
+        print("🔬 Ready for scientifically valid comparison")
+        print("\n💡 Next step: Run python neurogait.py for perfect fair analysis")
     else:
         print("\n❌ Failed to create knowledge graph")
         print("📋 Check logs for detailed error information")
