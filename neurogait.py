@@ -909,6 +909,12 @@ class RealisticAnalysis:
         # === COMPREHENSIVE STATISTICAL ANALYSIS ===
         print("\n" + "="*70)
         statistical_results = self.statistical_comparison_analysis(tier1_results)
+        
+        # Check if statistical analysis succeeded
+        if statistical_results is None:
+            print("⚠️ Statistical analysis failed, proceeding with descriptive results only")
+            statistical_results = {}
+            
         print("="*70)
 
         # BEST PERFORMER
@@ -969,23 +975,26 @@ class RealisticAnalysis:
                 print(f"   Best KG Approach ({kg_best_approach}): AUC = {kg_best_auc:.3f}")
                 print(f"   KG Improvement: {kg_improvement:+.1f}%")
                 
-                # Find statistical significance for this comparison
-                raw_vs_kg_key = None
-                for key, result in statistical_results.items():
-                    if ('Raw Clinical Features' in result['approach1'] and kg_best_approach in result['approach2']) or \
-                       ('Raw Clinical Features' in result['approach2'] and kg_best_approach in result['approach1']):
-                        raw_vs_kg_key = key
-                        break
-                
-                if raw_vs_kg_key and not np.isnan(statistical_results[raw_vs_kg_key]['p_value']):
-                    p_val = statistical_results[raw_vs_kg_key]['p_value']
-                    effect_size = statistical_results[raw_vs_kg_key]['effect_size']
-                    print(f"   Statistical significance: p={p_val:.4f} ({effect_size} effect size)")
+                # Find statistical significance for this comparison (only if statistical_results is valid)
+                if statistical_results:
+                    raw_vs_kg_key = None
+                    for key, result in statistical_results.items():
+                        if ('Raw Clinical Features' in result['approach1'] and kg_best_approach in result['approach2']) or \
+                           ('Raw Clinical Features' in result['approach2'] and kg_best_approach in result['approach1']):
+                            raw_vs_kg_key = key
+                            break
                     
-                    if p_val < 0.05:
-                        print("   ✅ STATISTICALLY SIGNIFICANT improvement!")
+                    if raw_vs_kg_key and not np.isnan(statistical_results[raw_vs_kg_key]['p_value']):
+                        p_val = statistical_results[raw_vs_kg_key]['p_value']
+                        effect_size = statistical_results[raw_vs_kg_key]['effect_size']
+                        print(f"   Statistical significance: p={p_val:.4f} ({effect_size} effect size)")
+                        
+                        if p_val < 0.05:
+                            print("   ✅ STATISTICALLY SIGNIFICANT improvement!")
+                        else:
+                            print("   📋 Not statistically significant (but may be practically meaningful)")
                     else:
-                        print("   📋 Not statistically significant (but may be practically meaningful)")
+                        print("   📊 Statistical significance could not be determined")
                 
                 if kg_improvement > 5:
                     print("   💡 Knowledge Graph embeddings show meaningful benefit")
