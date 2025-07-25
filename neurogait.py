@@ -2160,7 +2160,10 @@ def main():
         print(f"🔧 Please check your data file and dependencies.")
         import traceback
         traceback.print_exc()
-        return NoneAVAILABLE:
+        return None
+
+# ENHANCED_FEATURES_AVAILABLE check
+if ENHANCED_FEATURES_AVAILABLE:
         available_options.append("2. Enhanced Analysis (All tiers με comprehensive statistics)")
     
     print("Available analysis types:")
