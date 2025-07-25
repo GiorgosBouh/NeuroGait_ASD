@@ -101,9 +101,10 @@ class FixedNeuroGaitMLAnalysis:
         
         print(f"📊 Original systematic bias detected:")
         participant_info = df.groupby('participant_id')['original_diagnosis'].first()
-        first_half = participant_info.index < participant_info.index.mean()
-        original_first_half_asd = participant_info[first_half].mean()
-        original_second_half_asd = participant_info[~first_half].mean()
+        participant_ids = participant_info.index.values
+        first_half = participant_ids < np.mean(participant_ids)
+        original_first_half_asd = participant_info.iloc[first_half].mean()
+        original_second_half_asd = participant_info.iloc[~first_half].mean()
         print(f"   First half ASD ratio: {original_first_half_asd:.3f}")
         print(f"   Second half ASD ratio: {original_second_half_asd:.3f}")
         print(f"   Bias magnitude: {abs(original_first_half_asd - original_second_half_asd):.3f}")
@@ -128,8 +129,8 @@ class FixedNeuroGaitMLAnalysis:
         
         # Verify the shuffle worked
         new_participant_info = df.groupby('participant_id')['diagnosis'].first()
-        new_first_half_asd = new_participant_info[first_half].mean()
-        new_second_half_asd = new_participant_info[~first_half].mean()
+        new_first_half_asd = new_participant_info.iloc[first_half].mean()
+        new_second_half_asd = new_participant_info.iloc[~first_half].mean()
         
         print(f"✅ After bias correction:")
         print(f"   First half ASD ratio: {new_first_half_asd:.3f}")
