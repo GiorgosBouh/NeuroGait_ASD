@@ -4,6 +4,7 @@ Fair Comparison ML Analysis: Raw Features vs Leakage-Free KG Embeddings (19D vs 
 MODIFIED: Both approaches use 19D for true apples-to-apples comparison
 Raw: 19 features → Standardization → 19D
 KG: 19 features → Standardization → 19D (NO PCA)
+UPDATED: Using Wilcoxon signed-rank test instead of paired t-test
 """
 
 import pandas as pd
@@ -26,8 +27,8 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.svm import SVC
 import xgboost as xgb
 
-# Statistical analysis
-from scipy.stats import ttest_rel
+# Statistical analysis - UPDATED: Using Wilcoxon instead of t-test
+from scipy.stats import wilcoxon
 
 # Neo4j connection
 try:
@@ -438,8 +439,8 @@ class FairComparisonNeuroGaitMLAnalysis:
         return cv_scores
     
     def statistical_comparison(self, raw_results, kg_results):
-        """Perform comprehensive statistical comparison"""
-        print(f"\n📊 Performing fair statistical comparison (19D vs 19D)...")
+        """Perform comprehensive statistical comparison using Wilcoxon signed-rank test"""
+        print(f"\n📊 Performing fair statistical comparison (19D vs 19D) with Wilcoxon signed-rank test...")
         
         comparison_results = {}
         
@@ -474,24 +475,47 @@ class FairComparisonNeuroGaitMLAnalysis:
                     print(f"      {metric.upper()}: Raw-19D={raw_val:.3f}, KG-19D={kg_val:.3f}, "
                           f"Δ={diff:+.3f} ({improvement_pct:+.1f}%)")
                 
-                # Statistical test on CV scores
+                # UPDATED: Wilcoxon signed-rank test on CV scores
                 raw_cv = raw_metrics['cv_scores']
                 kg_cv = kg_metrics['cv_scores']
                 
-                # Independent t-test
-                t_stat, p_value = ttest_rel(kg_cv, raw_cv)
+                # Ensure we have paired data of the same length
+                min_length = min(len(raw_cv), len(kg_cv))
+                raw_cv_paired = raw_cv[:min_length]
+                kg_cv_paired = kg_cv[:min_length]
+                
+                # Wilcoxon signed-rank test (non-parametric alternative to paired t-test)
+                try:
+                    # Check if there are any differences (Wilcoxon requires at least one non-zero difference)
+                    differences = np.array(kg_cv_paired) - np.array(raw_cv_paired)
+                    
+                    if np.all(differences == 0):
+                        # All differences are zero - no statistical test needed
+                        w_statistic = 0
+                        p_value = 1.0
+                        print(f"      CV comparison: All differences are zero, p-value=1.000 (identical performance)")
+                    else:
+                        # Perform Wilcoxon signed-rank test
+                        w_statistic, p_value = wilcoxon(kg_cv_paired, raw_cv_paired, alternative='two-sided')
+                        print(f"      CV comparison (Wilcoxon): W={w_statistic:.1f}, p-value={p_value:.4f} "
+                              f"{'(significant)' if p_value < 0.05 else '(not significant)'}")
+                
+                except ValueError as e:
+                    # Handle edge cases (e.g., too few samples, all identical values)
+                    print(f"      CV comparison: Cannot perform Wilcoxon test - {str(e)}")
+                    w_statistic = np.nan
+                    p_value = np.nan
                 
                 model_comparison['cv_comparison'] = {
                     'raw_cv_mean': np.mean(raw_cv),
                     'kg_cv_mean': np.mean(kg_cv),
                     'raw_cv_std': np.std(raw_cv),
                     'kg_cv_std': np.std(kg_cv),
-                    't_statistic': t_stat,
+                    'w_statistic': w_statistic,
                     'p_value': p_value,
-                    'significant': p_value < 0.05
+                    'significant': p_value < 0.05 if not np.isnan(p_value) else False,
+                    'test_type': 'Wilcoxon signed-rank test'
                 }
-                
-                print(f"      CV comparison: p-value={p_value:.4f} {'(significant)' if p_value < 0.05 else '(not significant)'}")
                 
                 comparison_results[model_name] = model_comparison
         
@@ -524,6 +548,7 @@ class FairComparisonNeuroGaitMLAnalysis:
             'timestamp': datetime.now().isoformat(),
             'analysis_type': 'FAIR COMPARISON: Raw Features vs Leakage-Free KG Embeddings (19D vs 19D)',
             'note': 'TRUE APPLES-TO-APPLES: Both approaches use 19D standardized features',
+            'statistical_test': 'Wilcoxon signed-rank test (non-parametric)',
             'dataset_info': {
                 'total_train_participants': len(train_pids),
                 'total_test_participants': len(test_pids),
@@ -551,7 +576,8 @@ class FairComparisonNeuroGaitMLAnalysis:
                     'Raw_19D_F1': raw_results[model]['f1'],
                     'KG_19D_F1': kg_results[model]['f1'],
                     'F1_Improvement': comparison_results[model]['f1']['improvement_pct'],
-                    'CV_p_value': comparison_results[model]['cv_comparison']['p_value'],
+                    'Wilcoxon_W': comparison_results[model]['cv_comparison']['w_statistic'],
+                    'Wilcoxon_p_value': comparison_results[model]['cv_comparison']['p_value'],
                     'Statistically_Significant': comparison_results[model]['cv_comparison']['significant']
                 }
                 summary_data.append(row)
@@ -589,30 +615,36 @@ class FairComparisonNeuroGaitMLAnalysis:
         
         # Statistical significance
         significant_improvements = summary_df[summary_df['Statistically_Significant'] == True]
-        print(f"\n📈 STATISTICAL SIGNIFICANCE:")
+        print(f"\n📈 STATISTICAL SIGNIFICANCE (Wilcoxon signed-rank test):")
         print(f"   Models with significant improvement: {len(significant_improvements)}/{len(summary_df)}")
         
         if len(significant_improvements) > 0:
             print(f"   Significant improvements in:")
             for _, row in significant_improvements.iterrows():
-                print(f"      • {row['Model']}: AUC {row['AUC_Improvement']:+.1f}%, F1 {row['F1_Improvement']:+.1f}%")
+                print(f"      • {row['Model']}: AUC {row['AUC_Improvement']:+.1f}%, F1 {row['F1_Improvement']:+.1f}% (W={row['Wilcoxon_W']:.1f}, p={row['Wilcoxon_p_value']:.4f})")
         
         # Detailed model comparison
-        print(f"\n📋 FAIR COMPARISON RESULTS TABLE (19D vs 19D):")
-        print("-" * 110)
-        print(f"{'Model':<20} {'Raw-19D AUC':<12} {'KG-19D AUC':<11} {'AUC Δ%':<10} {'Raw-19D F1':<11} {'KG-19D F1':<10} {'F1 Δ%':<10} {'p-value':<10}")
-        print("-" * 110)
+        print(f"\n📋 FAIR COMPARISON RESULTS TABLE (19D vs 19D) - Wilcoxon Test:")
+        print("-" * 120)
+        print(f"{'Model':<20} {'Raw-19D AUC':<12} {'KG-19D AUC':<11} {'AUC Δ%':<10} {'Raw-19D F1':<11} {'KG-19D F1':<10} {'F1 Δ%':<10} {'Wilcoxon W':<12} {'p-value':<10}")
+        print("-" * 120)
         
         for _, row in summary_df.iterrows():
             significance_marker = "*" if row['Statistically_Significant'] else " "
+            w_stat = row['Wilcoxon_W']
+            w_str = f"{w_stat:.1f}" if not pd.isna(w_stat) else "N/A"
+            p_val = row['Wilcoxon_p_value']
+            p_str = f"{p_val:.4f}" if not pd.isna(p_val) else "N/A"
+            
             print(f"{row['Model']:<20} {row['Raw_19D_AUC']:<12.3f} {row['KG_19D_AUC']:<11.3f} "
                   f"{row['AUC_Improvement']:+<10.1f} {row['Raw_19D_F1']:<11.3f} {row['KG_19D_F1']:<10.3f} "
-                  f"{row['F1_Improvement']:+<10.1f} {row['CV_p_value']:<10.3f}{significance_marker}")
+                  f"{row['F1_Improvement']:+<10.1f} {w_str:<12} {p_str:<10}{significance_marker}")
         
-        print("-" * 110)
-        print("* = Statistically significant difference (p < 0.05)")
+        print("-" * 120)
+        print("* = Statistically significant difference (p < 0.05, Wilcoxon signed-rank test)")
         print("Raw-19D = Raw features (19 dimensions)")
         print("KG-19D = Knowledge Graph embeddings (19 dimensions - NO PCA)")
+        print("Wilcoxon W = Test statistic from Wilcoxon signed-rank test (non-parametric)")
         
         # Realistic expectations check
         max_kg_auc = summary_df['KG_19D_AUC'].max()
@@ -632,6 +664,14 @@ class FairComparisonNeuroGaitMLAnalysis:
         print(f"   • Raw: 19 features → Standardization → 19D")
         print(f"   • KG:  19 features → Standardization → 19D (NO PCA)")
         print(f"   The ONLY difference is the graph structure representation")
+        
+        # Statistical test explanation
+        print(f"\n📊 WILCOXON SIGNED-RANK TEST:")
+        print(f"   • Non-parametric alternative to paired t-test")
+        print(f"   • Does NOT assume normal distribution of differences")
+        print(f"   • More robust for small samples and non-normal data")
+        print(f"   • Tests if median difference between paired samples ≠ 0")
+        print(f"   • Compares cross-validation AUC scores between approaches")
         
         # Recommendations
         print(f"\n💡 RECOMMENDATIONS:")
@@ -676,6 +716,7 @@ class FairComparisonNeuroGaitMLAnalysis:
         print("   ✅ No diagnosis information used in feature engineering")
         print("   ✅ All transformations fit only on training data")
         print("   ✅ ONLY difference is graph structure representation")
+        print("   ✅ Wilcoxon test for robust non-parametric comparison")
         
         print(f"\n📁 All results saved to: {os.path.abspath(self.output_dir)}")
     
@@ -687,6 +728,7 @@ class FairComparisonNeuroGaitMLAnalysis:
         print("   • Raw Features: 19 features → Standardization → 19D")
         print("   • KG Embeddings: 19 features → Standardization → 19D (NO PCA)")
         print("   • ONLY difference: Graph structure representation")
+        print("   • Statistical test: Wilcoxon signed-rank test (non-parametric)")
         print("="*80)
         
         try:
@@ -728,9 +770,9 @@ class FairComparisonNeuroGaitMLAnalysis:
                     train_data['participant_id'].values, "KG Embeddings (19D)"
                 )
                 
-                # 7. Statistical comparison
+                # 7. Statistical comparison with Wilcoxon test
                 print(f"\n{'='*60}")
-                print("📊 ANALYSIS 3: TRUE FAIR STATISTICAL COMPARISON (19D vs 19D)")
+                print("📊 ANALYSIS 3: WILCOXON STATISTICAL COMPARISON (19D vs 19D)")
                 print(f"{'='*60}")
                 
                 comparison_results = self.statistical_comparison(raw_results, kg_results)
@@ -891,8 +933,9 @@ def main():
     print("   1. Train models on raw movement features (19D)")
     print("   2. Train models on LEAKAGE-FREE Knowledge Graph embeddings (19D - NO PCA)") 
     print("   3. Perform TRUE FAIR statistical comparison using IDENTICAL preprocessing")
-    print("   4. Generate detailed results with leakage detection")
-    print("   5. Provide realistic clinical interpretation")
+    print("   4. Use Wilcoxon signed-rank test for robust non-parametric comparison")
+    print("   5. Generate detailed results with leakage detection")
+    print("   6. Provide realistic clinical interpretation")
     print()
     print("🔒 True fair comparison measures:")
     print("   • SAME 19 essential movement features used for both approaches")
@@ -900,6 +943,7 @@ def main():
     print("   • KG:  19 features → Standardization → 19D (NO PCA)")
     print("   • ONLY difference is graph structure representation")
     print("   • Participant-level data splitting")
+    print("   • Wilcoxon test (non-parametric, robust to non-normal data)")
     print("   • Expected realistic AUC range: 0.70-0.90")
     print("   • Built-in leakage detection warnings")
     print()
@@ -916,7 +960,7 @@ def main():
         print("✅ Both approaches used IDENTICAL preprocessing (19D)")
         print("✅ True apples-to-apples comparison completed")
         print("✅ ONLY difference tested: graph structure representation")
-        print("✅ Statistical significance testing completed")
+        print("✅ Wilcoxon signed-rank test for robust statistical comparison")
         print("✅ Leakage detection validation performed")
         print("✅ Realistic performance comparison demonstrated")
         print("🔒 NO DATA LEAKAGE - Results are scientifically valid!")
