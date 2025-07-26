@@ -12,18 +12,18 @@ neo4j>=4.4.0
 xgboost>=1.5.0
 networkx>=2.6.0
 
-# PyTorch with CUDA 11.8
+# PyTorch with CUDA 11.8 (for Python 3.12)
 --extra-index-url https://download.pytorch.org/whl/cu118
-torch==2.0.1
-torchvision==0.15.2
-torchaudio==2.0.2
+torch==2.2.2
+torchvision==0.17.2
+torchaudio==2.2.2
 
 # PyTorch Geometric
 torch-geometric
 
 # PyTorch Geometric dependencies from precompiled wheels
 # These MUST come after torch and torch-geometric
---find-links https://data.pyg.org/whl/torch-2.0.1+cu118.html
+--find-links https://data.pyg.org/whl/torch-2.2.2+cu118.html
 torch-scatter
 torch-sparse
 torch-cluster
