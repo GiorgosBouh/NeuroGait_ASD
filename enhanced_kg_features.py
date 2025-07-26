@@ -1,314 +1,236 @@
 #!/usr/bin/env python3
 """
-Enhanced Knowledge Graph Feature Engineering for NeuroGait Analysis - FIXED VERSION
-TIER 1 UPGRADE: Advanced graph-inspired features that work with classical ML
-
-CRITICAL FIX: Resolved array dimension mismatch errors
+NeuroGait Analysis with True Graph-Based Features
+This shows how to integrate the graph-based features with your existing analysis
 """
 
 import pandas as pd
 import numpy as np
-from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
-from sklearn.feature_selection import VarianceThreshold
-from scipy import stats
-from scipy.spatial.distance import pdist, squareform
-from scipy.signal import find_peaks
+from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, classification_report
 import logging
+from enhanced_kg_graph_features import GraphBasedKGFeatureBuilder
 
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-class EnhancedKGFeatureBuilder:
+class GraphEnhancedNeuroGaitAnalysis:
     def __init__(self, samples_per_participant=8):
         self.samples_per_participant = samples_per_participant
-        self.feature_names = []
-        self.biomech_knowledge = self._load_biomechanical_knowledge()
+        self.graph_builder = GraphBasedKGFeatureBuilder(samples_per_participant)
         
-    def _load_biomechanical_knowledge(self):
-        """Load domain knowledge about gait biomechanics"""
-        return {
-            # Bilateral pairs for symmetry analysis
-            'bilateral_pairs': [
-                ('mean HESHL', 'mean HESHR'),  # Heel strike
-                ('mean SPELR', 'mean SPELL'),  # Heel off (reversed intentionally)
-                ('mean SHWRL', 'mean SHWRR'),  # Shank angular velocity
-                ('mean ELHAL', 'mean ELHAR'),  # Elbow angle
-                ('mean THHAL', 'mean THHAR'),  # Thigh angle
-                ('mean SPKNL', 'mean SPKNR'),  # Spine knee
-                ('mean HIANL', 'mean HIANR'),  # Hip angle
-                ('mean KNFOL', 'mean KNFOR'),  # Knee flexion
-            ],
-            
-            # Kinematic chains (anatomical connections)
-            'kinematic_chains': [
-                ['mean HIANL', 'mean SPKNL', 'mean KNFOL'],  # Left chain
-                ['mean HIANR', 'mean SPKNR', 'mean KNFOR'],  # Right chain
-                ['mean ELHAL', 'mean SHWRL', 'mean THHAL'],  # Left upper-lower
-                ['mean ELHAR', 'mean SHWRR', 'mean THHAR'],  # Right upper-lower
-            ],
-            
-            # Temporal features
-            'temporal_features': ['GaCT', 'StaT', 'SwiT'],
-            
-            # Movement coordination features
-            'coordination_pairs': [
-                ('mean ELHAL', 'mean ELHAR'),  # Upper limb coordination
-                ('mean THHAL', 'mean THHAR'),  # Thigh coordination
-                ('mean SHWRL', 'mean SHWRR'),  # Shank coordination
-            ]
-        }
+    def load_data(self, filepath="Final dataset.csv"):
+        """Load the dataset"""
+        logger.info("📊 Loading dataset...")
+        
+        try:
+            df = pd.read_csv(filepath, sep=';', decimal=',', encoding='utf-8')
+        except UnicodeDecodeError:
+            df = pd.read_csv(filepath, sep=';', decimal=',', encoding='latin-1')
+        
+        # Convert numeric columns
+        numeric_cols = [col for col in df.columns if col != 'class']
+        for col in numeric_cols:
+            if df[col].dtype == 'object':
+                df[col] = df[col].str.replace(',', '.').astype(float)
+        
+        # Add participant info
+        df['participant_id'] = df.index // self.samples_per_participant
+        df['diagnosis'] = df['class'].map({'A': 'ASD', 'T': 'Typical'})
+        
+        return df
     
-    def create_enhanced_kg_features(self, df, feature_list):
-        """
-        Create enhanced KG features using biomechanical domain knowledge
-        FIXED: Proper array dimension handling
-        """
-        logger.info("🧠 Creating Enhanced KG Features with Domain Knowledge...")
+    def compare_approaches(self, df):
+        """Compare three approaches: Original, Enhanced (no graph), and Graph-based"""
         
-        # Start with original features
-        available_features = [f for f in feature_list if f in df.columns]
+        # Define base features
+        base_features = [
+            'mean HESHL', 'mean HESHR', 'mean SPELL', 'mean SPELR',
+            'mean SHWRL', 'mean SHWRR', 'mean ELHAL', 'mean ELHAR', 
+            'mean THHAL', 'mean THHAR', 'mean SPKNL', 'mean SPKNR',
+            'mean HIANL', 'mean HIANR', 'mean KNFOL', 'mean KNFOR',
+            'GaCT', 'StaT', 'SwiT'
+        ]
+        
+        # Filter available features
+        available_features = [f for f in base_features if f in df.columns]
+        
+        # Get labels
+        y = (df['diagnosis'] == 'ASD').astype(int)
+        
+        # Participant-level split
+        participant_info = df.groupby('participant_id')['diagnosis'].first().reset_index()
+        train_pids, test_pids = train_test_split(
+            participant_info['participant_id'].values,
+            test_size=0.2,
+            stratify=participant_info['diagnosis'].values,
+            random_state=42
+        )
+        
+        train_mask = df['participant_id'].isin(train_pids)
+        test_mask = df['participant_id'].isin(test_pids)
+        
+        results = {}
+        
+        # 1. Original Features Only
+        logger.info("\n🔷 Approach 1: Original Features Only")
         X_original = df[available_features].fillna(0).values
-        n_samples = X_original.shape[0]
+        X_train_orig = X_original[train_mask]
+        X_test_orig = X_original[test_mask]
+        y_train = y[train_mask]
+        y_test = y[test_mask]
         
-        logger.info(f"   📊 Input features: {len(available_features)}")
-        logger.info(f"   📊 Sample count: {n_samples}")
+        # Standardize
+        scaler = StandardScaler()
+        X_train_orig_scaled = scaler.fit_transform(X_train_orig)
+        X_test_orig_scaled = scaler.transform(X_test_orig)
         
-        # Create enhanced features - FIXED: Ensure all arrays have same length
-        enhanced_features = []
-        feature_names = []
+        # Train and evaluate
+        rf_orig = RandomForestClassifier(n_estimators=100, random_state=42)
+        rf_orig.fit(X_train_orig_scaled, y_train)
         
-        # 1. Original features (baseline)
-        enhanced_features.append(X_original)
-        feature_names.extend([f"orig_{f}" for f in available_features])
+        acc_orig = accuracy_score(y_test, rf_orig.predict(X_test_orig_scaled))
+        results['original'] = acc_orig
+        logger.info(f"   Accuracy: {acc_orig:.3f}")
         
-        # 2. Bilateral symmetry features - FIXED
-        bilateral_features, bilateral_names = self._create_bilateral_features_fixed(df, available_features, n_samples)
-        if bilateral_features.size > 0:
-            enhanced_features.append(bilateral_features)
-            feature_names.extend(bilateral_names)
+        # 2. Enhanced Features (Domain Knowledge, No Graph)
+        logger.info("\n🔷 Approach 2: Enhanced Features (Domain Knowledge, No Graph)")
+        from enhanced_kg_features_2 import EnhancedKGFeatureBuilder
         
-        # 3. Temporal coordination features - FIXED
-        temporal_features, temporal_names = self._create_temporal_features_fixed(df, available_features, n_samples)
-        if temporal_features.size > 0:
-            enhanced_features.append(temporal_features)
-            feature_names.extend(temporal_names)
+        enhancer = EnhancedKGFeatureBuilder()
+        X_enhanced, enhanced_names = enhancer.create_enhanced_kg_features(df, available_features)
         
-        # 4. Statistical features - FIXED
-        statistical_features, statistical_names = self._create_statistical_features_fixed(X_original, available_features, n_samples)
-        if statistical_features.size > 0:
-            enhanced_features.append(statistical_features)
-            feature_names.extend(statistical_names)
+        X_train_enh = X_enhanced[train_mask]
+        X_test_enh = X_enhanced[test_mask]
         
-        # 5. Movement variability features - FIXED
-        variability_features, variability_names = self._create_variability_features_fixed(df, X_original, n_samples)
-        if variability_features.size > 0:
-            enhanced_features.append(variability_features)
-            feature_names.extend(variability_names)
+        # Standardize
+        scaler_enh = StandardScaler()
+        X_train_enh_scaled = scaler_enh.fit_transform(X_train_enh)
+        X_test_enh_scaled = scaler_enh.transform(X_test_enh)
         
-        # FIXED: Robust combination with proper shape checking
-        if len(enhanced_features) > 1:
-            # Verify all arrays have same number of rows
-            for i, arr in enumerate(enhanced_features):
-                if arr.shape[0] != n_samples:
-                    logger.warning(f"Array {i} has wrong shape: {arr.shape}, expected {n_samples} rows")
-                    # Fix by taking only first n_samples rows or padding
-                    if arr.shape[0] > n_samples:
-                        enhanced_features[i] = arr[:n_samples]
-                    elif arr.shape[0] < n_samples:
-                        # Pad with zeros
-                        padding = np.zeros((n_samples - arr.shape[0], arr.shape[1]))
-                        enhanced_features[i] = np.vstack([arr, padding])
+        # Train and evaluate
+        rf_enh = RandomForestClassifier(n_estimators=100, random_state=42)
+        rf_enh.fit(X_train_enh_scaled, y_train)
+        
+        acc_enh = accuracy_score(y_test, rf_enh.predict(X_test_enh_scaled))
+        results['enhanced_no_graph'] = acc_enh
+        logger.info(f"   Accuracy: {acc_enh:.3f}")
+        logger.info(f"   Features: {X_enhanced.shape[1]} (added {X_enhanced.shape[1] - len(available_features)})")
+        
+        # 3. Graph-Based Features
+        logger.info("\n🔷 Approach 3: Graph-Based Features")
+        
+        # Connect to graph
+        if not self.graph_builder.connect():
+            logger.error("Could not connect to Neo4j!")
+            return results
+        
+        try:
+            # Extract graph features for all samples
+            logger.info("   Extracting graph features...")
             
-            try:
-                X_enhanced = np.hstack(enhanced_features)
-            except ValueError as e:
-                logger.error(f"Hstack failed: {e}")
-                # Fallback: use only original features
-                X_enhanced = enhanced_features[0]
-                feature_names = feature_names[:len(available_features)]
-        else:
-            X_enhanced = enhanced_features[0]
+            # We need to extract features for train and test separately to avoid leakage
+            train_df = df[train_mask]
+            test_df = df[test_mask]
+            
+            # Extract graph features for training data
+            graph_features_train, graph_names, _ = self.graph_builder.extract_graph_features(
+                participant_ids=train_pids,
+                data_split='train'
+            )
+            
+            # Extract graph features for test data
+            graph_features_test, _, _ = self.graph_builder.extract_graph_features(
+                participant_ids=test_pids,
+                data_split='test'
+            )
+            
+            # Combine with original features
+            X_train_graph = np.hstack([X_train_orig, graph_features_train])
+            X_test_graph = np.hstack([X_test_orig, graph_features_test])
+            
+            # Standardize
+            scaler_graph = StandardScaler()
+            X_train_graph_scaled = scaler_graph.fit_transform(X_train_graph)
+            X_test_graph_scaled = scaler_graph.transform(X_test_graph)
+            
+            # Train and evaluate
+            rf_graph = RandomForestClassifier(n_estimators=100, random_state=42)
+            rf_graph.fit(X_train_graph_scaled, y_train)
+            
+            acc_graph = accuracy_score(y_test, rf_graph.predict(X_test_graph_scaled))
+            results['graph_based'] = acc_graph
+            logger.info(f"   Accuracy: {acc_graph:.3f}")
+            logger.info(f"   Features: {X_train_graph.shape[1]} (added {len(graph_names)} graph features)")
+            
+            # Feature importance analysis
+            feature_names_all = [f"orig_{f}" for f in available_features] + graph_names
+            importances = rf_graph.feature_importances_
+            
+            # Get top 10 most important features
+            top_indices = np.argsort(importances)[-10:][::-1]
+            logger.info("\n   Top 10 Most Important Features:")
+            for i, idx in enumerate(top_indices, 1):
+                logger.info(f"      {i:2d}. {feature_names_all[idx]}: {importances[idx]:.3f}")
+            
+            # Analyze feature categories
+            categories = self.graph_builder.get_feature_importance_categories()
+            logger.info("\n   Feature Importance by Category:")
+            
+            for category, cat_features in categories.items():
+                cat_indices = [i for i, name in enumerate(feature_names_all) if name in cat_features]
+                if cat_indices:
+                    cat_importance = np.mean(importances[cat_indices])
+                    logger.info(f"      {category}: {cat_importance:.3f} (avg of {len(cat_indices)} features)")
+            
+        finally:
+            self.graph_builder.close()
         
-        # Store feature names for analysis
-        self.feature_names = feature_names
+        # Summary
+        logger.info("\n📊 RESULTS SUMMARY:")
+        logger.info("   " + "-"*50)
+        logger.info(f"   Original Features:          {results['original']:.3f}")
+        logger.info(f"   Enhanced (No Graph):        {results['enhanced_no_graph']:.3f}")
+        logger.info(f"   Graph-Based Features:       {results.get('graph_based', 'N/A')}")
+        logger.info("   " + "-"*50)
         
-        logger.info(f"   ✅ Enhanced features created:")
-        logger.info(f"      Original: {X_original.shape[1]} features")
-        logger.info(f"      Enhanced: {X_enhanced.shape[1]} features")
-        logger.info(f"      Added: {X_enhanced.shape[1] - X_original.shape[1]} new features")
-        logger.info(f"      Final shape: {X_enhanced.shape}")
+        if 'graph_based' in results:
+            improvement = (results['graph_based'] - results['original']) / results['original'] * 100
+            logger.info(f"   Graph improvement over original: {improvement:+.1f}%")
         
-        return X_enhanced, feature_names
+        return results
+
+
+def main():
+    logger.info("🧠 NeuroGait Analysis with Graph-Based Features")
+    logger.info("="*60)
     
-    def _create_bilateral_features_fixed(self, df, available_features, n_samples):
-        """Create bilateral symmetry features with fixed dimensions"""
-        features = []
-        names = []
-        
-        # Simple bilateral analysis using any L/R patterns
-        left_features = [f for f in available_features if any(indicator in f.upper() for indicator in ['L', 'LEFT', 'HESHL', 'SPELR'])]
-        right_features = [f for f in available_features if any(indicator in f.upper() for indicator in ['R', 'RIGHT', 'HESHR', 'SPELL'])]
-        
-        if len(left_features) >= 2 and len(right_features) >= 2:
-            # Take first two from each side for symmetry analysis
-            left_vals1 = df[left_features[0]].fillna(0).values[:n_samples]
-            left_vals2 = df[left_features[1]].fillna(0).values[:n_samples] if len(left_features) > 1 else left_vals1
-            right_vals1 = df[right_features[0]].fillna(0).values[:n_samples]
-            right_vals2 = df[right_features[1]].fillna(0).values[:n_samples] if len(right_features) > 1 else right_vals1
-            
-            # Bilateral symmetry index
-            symmetry1 = np.abs(left_vals1 - right_vals1) / (np.abs(left_vals1) + np.abs(right_vals1) + 1e-8)
-            symmetry2 = np.abs(left_vals2 - right_vals2) / (np.abs(left_vals2) + np.abs(right_vals2) + 1e-8)
-            
-            features.extend([symmetry1, symmetry2])
-            names.extend(['bilateral_symmetry_1', 'bilateral_symmetry_2'])
-            
-            # Overall bilateral coordination
-            overall_symmetry = (symmetry1 + symmetry2) / 2
-            features.append(overall_symmetry)
-            names.append('overall_bilateral_symmetry')
-        
-        if features:
-            return np.column_stack(features), names
-        else:
-            # Return empty array with correct dimensions
-            return np.array([]).reshape(n_samples, 0), []
+    # Create analyzer
+    analyzer = GraphEnhancedNeuroGaitAnalysis()
     
-    def _create_temporal_features_fixed(self, df, available_features, n_samples):
-        """Create temporal features with fixed dimensions"""
-        features = []
-        names = []
-        
-        # Look for temporal-like features
-        temporal_candidates = [f for f in available_features if any(temp in f.upper() for temp in ['TIME', 'GAC', 'STA', 'SWI', 'DURATION'])]
-        
-        if len(temporal_candidates) >= 2:
-            # Take first two temporal features
-            temp1 = df[temporal_candidates[0]].fillna(0).values[:n_samples]
-            temp2 = df[temporal_candidates[1]].fillna(0).values[:n_samples]
-            
-            # Temporal ratio
-            temp_ratio = temp1 / (temp2 + 1e-8)
-            features.append(temp_ratio)
-            names.append(f'temporal_ratio_{temporal_candidates[0][:5]}_{temporal_candidates[1][:5]}')
-            
-            # Temporal variability
-            temp_var = np.abs(temp1 - temp2) / (np.abs(temp1) + np.abs(temp2) + 1e-8)
-            features.append(temp_var)
-            names.append('temporal_variability')
-        
-        # Add movement rhythm (based on first feature variation)
-        if len(available_features) > 0:
-            first_feature = df[available_features[0]].fillna(0).values[:n_samples]
-            rhythm = np.abs(np.gradient(first_feature))
-            features.append(rhythm)
-            names.append('movement_rhythm')
-        
-        if features:
-            return np.column_stack(features), names
-        else:
-            return np.array([]).reshape(n_samples, 0), []
+    # Load data
+    df = analyzer.load_data()
     
-    def _create_statistical_features_fixed(self, X_original, available_features, n_samples):
-        """Create statistical features with fixed dimensions"""
-        features = []
-        names = []
-        
-        if X_original.shape[1] >= 2:
-            # Feature correlations (sample-wise)
-            for i in range(min(3, X_original.shape[1] - 1)):
-                for j in range(i + 1, min(i + 3, X_original.shape[1])):
-                    correlation = X_original[:, i] * X_original[:, j]
-                    features.append(correlation)
-                    names.append(f'feature_interaction_{i}_{j}')
-            
-            # Movement complexity (entropy approximation)
-            complexity = -np.sum(X_original * np.log(np.abs(X_original) + 1e-8), axis=1)
-            features.append(complexity)
-            names.append('movement_complexity')
-            
-            # Movement magnitude
-            magnitude = np.sqrt(np.sum(X_original**2, axis=1))
-            features.append(magnitude)
-            names.append('movement_magnitude')
-        
-        if features:
-            # Ensure all features have correct length
-            features_fixed = []
-            for feat in features:
-                if len(feat) != n_samples:
-                    if len(feat) > n_samples:
-                        feat = feat[:n_samples]
-                    else:
-                        feat = np.pad(feat, (0, n_samples - len(feat)), 'constant')
-                features_fixed.append(feat)
-            
-            return np.column_stack(features_fixed), names
-        else:
-            return np.array([]).reshape(n_samples, 0), []
+    # Compare approaches
+    results = analyzer.compare_approaches(df)
     
-    def _create_variability_features_fixed(self, df, X_original, n_samples):
-        """Create movement variability features with fixed dimensions"""
-        features = []
-        names = []
-        
-        # Participant-level variability (if participant info available)
-        if 'participant_id' in df.columns:
-            participant_ids = df['participant_id'].values[:n_samples]
-            
-            # Intra-participant variability
-            intra_var = np.zeros(n_samples)
-            for i, pid in enumerate(participant_ids):
-                same_participant_mask = (participant_ids == pid)
-                if np.sum(same_participant_mask) > 1:
-                    participant_data = X_original[same_participant_mask]
-                    intra_var[i] = np.var(participant_data, axis=0).mean()
-                else:
-                    intra_var[i] = 0
-            
-            features.append(intra_var)
-            names.append('intra_participant_variability')
-        
-        # Sample-wise variability
-        sample_variance = np.var(X_original, axis=1)
-        features.append(sample_variance)
-        names.append('sample_variance')
-        
-        # Movement smoothness (approximation)
-        if X_original.shape[1] >= 3:
-            smoothness = np.std(X_original, axis=1)
-            features.append(smoothness)
-            names.append('movement_smoothness')
-        
-        if features:
-            # Ensure all features have correct length
-            features_fixed = []
-            for feat in features:
-                if len(feat) != n_samples:
-                    if len(feat) > n_samples:
-                        feat = feat[:n_samples]
-                    else:
-                        feat = np.pad(feat, (0, n_samples - len(feat)), 'constant')
-                features_fixed.append(feat)
-            
-            return np.column_stack(features_fixed), names
-        else:
-            return np.array([]).reshape(n_samples, 0), []
+    logger.info("\n✅ Analysis Complete!")
     
-    def get_feature_importance_categories(self):
-        """Return categorized feature names for analysis"""
-        categories = {
-            'original': [name for name in self.feature_names if name.startswith('orig_')],
-            'bilateral_symmetry': [name for name in self.feature_names if 'bilateral' in name or 'symmetry' in name],
-            'temporal': [name for name in self.feature_names if 'temporal' in name or 'rhythm' in name],
-            'statistical': [name for name in self.feature_names if 'interaction' in name or 'complexity' in name or 'magnitude' in name],
-            'variability': [name for name in self.feature_names if 'variability' in name or 'variance' in name or 'smoothness' in name]
-        }
-        return categories
+    # Additional insights
+    if 'graph_based' in results and results['graph_based'] > max(results['original'], results['enhanced_no_graph']):
+        logger.info("\n🎯 KEY INSIGHT: Graph-based features provide the best performance!")
+        logger.info("   This suggests that the relationships captured in the knowledge graph")
+        logger.info("   contain valuable information not present in the raw features alone.")
+    else:
+        logger.info("\n💡 The graph structure may need optimization or the current features")
+        logger.info("   are already sufficiently informative for this classification task.")
 
 
 if __name__ == "__main__":
-    print("🧠 Enhanced KG Feature Builder - FIXED VERSION")
-    print("✅ Array dimension issues resolved")
-    print("✅ Robust feature creation with proper error handling")
-    print("✅ Compatible with existing RealisticAnalysis pipeline")
+    main()
