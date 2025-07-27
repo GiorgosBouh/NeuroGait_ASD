@@ -664,47 +664,43 @@ class RealisticAnalysis:
         
         return cv_scores
 
-    def statistical_comparison_analysis(self, tier1_results):
+   def statistical_comparison_analysis(self, tier1_results):
         """Comprehensive statistical comparison with Wilcoxon tests - FIXED VERSION"""
         print("\n📊 DETAILED STATISTICAL ANALYSIS:")
-        print("="*70)
-        
+        print("=" * 70)
+
         approaches = list(tier1_results.keys())
         statistical_results = {}
-        
+
         # Pairwise comparisons
         for i in range(len(approaches)):
-            for j in range(i+1, len(approaches)):
+            for j in range(i + 1, len(approaches)):
                 approach1, approach2 = approaches[i], approaches[j]
-                
+
                 print(f"\n🔍 COMPARING: {approach1} vs {approach2}")
                 print("-" * 60)
-                
-                # Get AUC scores for all models
+
                 aucs1 = [metrics['auc'] for metrics in tier1_results[approach1].values()]
                 aucs2 = [metrics['auc'] for metrics in tier1_results[approach2].values()]
-                
-                # Get CV scores for all models (flattened)
+
                 cv_scores1 = []
                 cv_scores2 = []
                 for model_name in tier1_results[approach1].keys():
                     if model_name in tier1_results[approach2]:
                         cv_scores1.extend(tier1_results[approach1][model_name]['cv_scores'])
                         cv_scores2.extend(tier1_results[approach2][model_name]['cv_scores'])
-                
-                # Basic statistics
+
                 mean1, mean2 = np.mean(aucs1), np.mean(aucs2)
                 std1, std2 = np.std(aucs1), np.std(aucs2)
-                
+
                 print(f"   AUC Summary:")
                 print(f"      {approach1}: {mean1:.3f} ± {std1:.3f}")
                 print(f"      {approach2}: {mean2:.3f} ± {std2:.3f}")
                 print(f"      Difference: {mean2 - mean1:+.3f}")
-                
-                # Effect size (Cohen's d)
+
                 pooled_std = np.sqrt((std1**2 + std2**2) / 2)
                 cohens_d = (mean2 - mean1) / (pooled_std + 1e-8)
-                
+
                 if abs(cohens_d) > 0.8:
                     effect_size = "Large"
                 elif abs(cohens_d) > 0.5:
@@ -713,70 +709,66 @@ class RealisticAnalysis:
                     effect_size = "Small"
                 else:
                     effect_size = "Negligible"
-                
+
                 print(f"   Effect Size: Cohen's d = {cohens_d:+.3f} ({effect_size})")
-                
-                # FIXED: Better statistical testing approach
+
                 print(f"   Statistical Testing:")
                 try:
-                    # Test on AUC scores instead of CV scores if CV scores are identical
                     if len(aucs1) >= 3 and len(aucs2) >= 3:
-                        # Check if CV scores have variance
                         cv1_var = np.var(cv_scores1) if len(cv_scores1) > 0 else 0
                         cv2_var = np.var(cv_scores2) if len(cv_scores2) > 0 else 0
-                        
+
                         if cv1_var > 1e-10 and cv2_var > 1e-10 and len(cv_scores1) == len(cv_scores2):
-                            # Use CV scores if they have variance and equal length
                             test_data1, test_data2 = cv_scores1, cv_scores2
                             test_type = "CV scores"
                         else:
-                            # Use AUC scores instead
                             test_data1, test_data2 = aucs1, aucs2
                             test_type = "AUC scores"
-                        
-                        # Ensure equal length for paired test
+
                         min_length = min(len(test_data1), len(test_data2))
                         if min_length >= 3:
                             data1_paired = test_data1[:min_length]
                             data2_paired = test_data2[:min_length]
-                            
-                            # Check for zero differences (which cause wilcoxon to fail)
+
                             differences = [data2_paired[k] - data1_paired[k] for k in range(min_length)]
                             non_zero_diffs = [d for d in differences if abs(d) > 1e-10]
-                            
-                            if len(non_zero_diffs) >= 3:
-                                # Use wilcoxon with mode='auto' and zero_method='wilcox'
-                                w_stat, p_value = wilcoxon(data2_paired, data1_paired, 
-                                                         alternative='two-sided', 
-                                                         mode='auto',
-                                                         zero_method='wilcox')
-                                
-                                # Interpretation
-                                if p_val < 0.05:
-                    print(f"      Result: ✅ STATISTICALLY SIGNIFICANT")
-                else:
-                    print(f"      Result: 📋 Not statistically significant")
-            else:
-                print(f"      Result: ⚠️ Statistical test could not be performed")
-        
-        # Winner declaration with statistical context
-        print(f"\n🏆 FINAL COMPARISON WINNER:")
-        if kg_best_auc > raw_best_auc + 0.02:
-            print(f"   🧠 KNOWLEDGE GRAPH EMBEDDINGS WIN!")
-            print(f"   💡 Graph processing enhances clinical features by {improvement:+.1f}%")
-            if statistical_results and not np.isnan(list(statistical_results.values())[0]['p_value']):
-                p_val = list(statistical_results.values())[0]['p_value']
-                if p_val < 0.05:
-                    print(f"   ✅ Victory is statistically significant (p={p_val:.4f})")
-                else:
-                    print(f"   📋 Victory not statistically significant (p={p_val:.4f})")
-        elif raw_best_auc > kg_best_auc + 0.02:
-            print(f"   📊 RAW CLINICAL FEATURES WIN!")
-            print(f"   💡 Simple clinical features outperform graph processing")
-        else:
-            print(f"   ⚖️ TIE - Both approaches perform similarly")
-            print(f"   💡 Difference ({improvement:+.1f}%) within statistical noise")
 
+                            if len(non_zero_diffs) >= 3:
+                                w_stat, p_value = wilcoxon(
+                                    data2_paired,
+                                    data1_paired,
+                                    alternative='two-sided',
+                                    mode='auto',
+                                    zero_method='wilcox'
+                                )
+
+                                print(f"      Result: {'✅ STATISTICALLY SIGNIFICANT' if p_value < 0.05 else '📋 Not statistically significant'} (p={p_value:.4f})")
+
+                                # Save result
+                                statistical_results[f"{approach1} vs {approach2}"] = {
+                                    "p_value": p_value,
+                                    "cohen_d": cohens_d,
+                                    "effect_size": effect_size,
+                                    "tested_on": test_type
+                                }
+                            else:
+                                print(f"      Result: ⚠️ Statistical test could not be performed (not enough variation)")
+                        else:
+                            print(f"      Result: ⚠️ Not enough data points for statistical test")
+                    else:
+                        print(f"      Result: ⚠️ Too few AUC values for comparison")
+                except Exception as e:
+                    print(f"      Error during statistical test: {e}")
+
+        print(f"\n🏆 FINAL COMPARISON WINNER:")
+        try:
+            # Naive comparison based on max AUC (if applicable)
+            best_approach = max(approaches, key=lambda a: np.mean([m['auc'] for m in tier1_results[a].values()]))
+            print(f"   🥇 Best approach based on mean AUC: {best_approach}")
+            for k, v in statistical_results.items():
+                print(f"   🔬 {k}: p={v['p_value']:.4f}, d={v['cohen_d']:+.3f} ({v['effect_size']}) [{v['tested_on']}]")
+        except:
+            print("   ⚠️ Could not determine final winner due to missing statistics.")
 
 # ΕΝΗΜΕΡΩΜΕΝΗ MAIN FUNCTION με GNN Support
 def main():
