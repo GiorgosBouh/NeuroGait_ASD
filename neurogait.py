@@ -1807,7 +1807,7 @@ if __name__ == "__main__":
             if not np.isnan(p_val):
                 print(f"      p-value: {p_val:.4f}")
                 print(f"      Effect size: {effect_size} (d={main_comparison['cohens_d']:+.3f})")
-                if p_val_pids = self.proper_train_test_split(df_clean)
+                if p_val_pids == self.proper_train_test_split(df_clean):
         X_train, X_test, selected_features = self.optimized_feature_selection(
             train_data, test_data, clean_features
         )
