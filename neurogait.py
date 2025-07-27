@@ -1101,61 +1101,34 @@ print("🧪 Run run_gnn_example_analysis() for GNN demonstration")  # NEW
 print("="*80)
 
 if __name__ == "__main__":
-    results = main()ue < 0.001:
-                                    significance = "Highly significant (***)"
-                                elif p_value < 0.01:
-                                    significance = "Very significant (**)"
-                                elif p_value < 0.05:
-                                    significance = "Significant (*)"
-                                elif p_value < 0.1:
-                                    significance = "Marginally significant"
-                                else:
-                                    significance = "Not significant"
-                                
-                                print(f"      Test type: Wilcoxon on {test_type}")
-                                print(f"      W-statistic: {w_stat:.2f}")
-                                print(f"      p-value: {p_value:.4f}")
-                                print(f"      Result: {significance}")
-                                
-                                # Confidence interval for difference
-                                ci_lower = np.percentile(differences, 2.5)
-                                ci_upper = np.percentile(differences, 97.5)
-                                print(f"      95% CI for difference: [{ci_lower:.3f}, {ci_upper:.3f}]")
-                                
-                            else:
-                                # Fall back to simple comparison when differences are too similar
-                                print(f"      Test type: Effect size only (insufficient variation)")
-                                print(f"      Differences too small for statistical test")
-                                w_stat, p_value = np.nan, np.nan
-                                significance = "Cannot test (no variation)"
-                        else:
-                            print(f"      Test type: Insufficient data points (n={min_length})")
-                            w_stat, p_value = np.nan, np.nan
-                            significance = "Insufficient data"
-                    else:
-                        print(f"      Test type: Insufficient models for comparison")
-                        w_stat, p_value = np.nan, np.nan
-                        significance = "Insufficient data"
-                        
-                except Exception as e:
-                    print(f"      Test failed: {str(e)[:50]}")
-                    w_stat, p_value = np.nan, np.nan
-                    significance = "Test failed"
-                
-                # Store results
-                comparison_key = f"{approach1}_vs_{approach2}"
-                statistical_results[comparison_key] = {
-                    'approach1': approach1,
-                    'approach2': approach2,
-                    'mean1': mean1,
-                    'mean2': mean2,
-                    'difference': mean2 - mean1,
-                    'cohens_d': cohens_d,
-                    'effect_size': effect_size,
-                    'w_statistic': w_stat,
-                    'p_value': p_value,
-                    'significance': significance
-                }
+    try:
+        # Call your main function and get p_value and differences
+        p_value, differences = main()  # Make sure main() returns these two
+
+        if p_value < 0.001:
+            significance = "Highly significant (***)"
+        elif p_value < 0.01:
+            significance = "Very significant (**)"
+        elif p_value < 0.05:
+            significance = "Significant (*)"
+        elif p_value < 0.1:
+            significance = "Marginally significant"
+        else:
+            significance = "Not significant"
+
+        print(f"      Test type: Wilcoxon")
+        print(f"      p-value: {p_value:.4f}")
+        print(f"      Result: {significance}")
+
+        if differences and len(differences) >= 3:
+            ci_lower = np.percentile(differences, 2.5)
+            ci_upper = np.percentile(differences, 97.5)
+            print(f"      95% CI for difference: [{ci_lower:.3f}, {ci_upper:.3f}]")
+        else:
+            print(f"      95% CI could not be computed (insufficient data)")
+
+    except Exception as e:
+        print(f"⚠️ Error in statistical reporting: {e}")
         
         # Summary table
         print(f"\n📋 STATISTICAL SUMMARY TABLE:")
