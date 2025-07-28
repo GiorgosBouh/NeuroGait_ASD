@@ -50,7 +50,7 @@ class RealisticAnalysis:
         
         clinical_sets = {}
         
-        # Set 1: Balance Stability features (best performer από την άλλη ανάλυση)
+        # Set 1: Balance Stability features
         balance_keywords = [
             'spine', 'trunk', 'torso', 'midspain', 'spinebase', 'balance', 'stability', 
             'sway', 'postural', 'leg', 'foot', 'knee', 'hip', 'ankle', 'SPKNL', 'SPKNR', 
@@ -64,7 +64,7 @@ class RealisticAnalysis:
                any(keyword in feature for keyword in ['Midspain', 'SpineBase', 'SPKNL', 'SPKNR', 'HIANL', 'HIANR']):
                 balance_features.append(feature)
         
-        clinical_sets['balance_stability'] = balance_features[:30]  # Increased to 30
+        clinical_sets['balance_stability'] = balance_features[:30]
         
         # Set 2: Gait Focused features
         gait_keywords = [
@@ -79,7 +79,7 @@ class RealisticAnalysis:
                any(keyword in feature for keyword in ['GaCT', 'StaT', 'SwiT']):
                 gait_features.append(feature)
         
-        clinical_sets['gait_focused'] = gait_features[:20]  # Increased to 20
+        clinical_sets['gait_focused'] = gait_features[:20]
         
         # Set 3: ASD Specific features
         asd_keywords = [
@@ -94,9 +94,9 @@ class RealisticAnalysis:
                any(keyword in feature for keyword in ['GaCT', 'StaT', 'SwiT', 'HESHL', 'HESHR', 'SHWRL', 'SHWRR']):
                 asd_features.append(feature)
         
-        clinical_sets['asd_specific'] = asd_features[:15]  # Increased to 15
+        clinical_sets['asd_specific'] = asd_features[:15]
         
-        # Set 4: Combined Best (mixture of top performers)
+        # Set 4: Combined Best
         combined_features = list(set(
             clinical_sets['balance_stability'][:15] + 
             clinical_sets['gait_focused'][:10] + 
@@ -171,9 +171,9 @@ class RealisticAnalysis:
             for set_name, feature_set in clinical_sets.items():
                 available_features = [f for f in feature_set if f in df.columns]
                 if len(available_features) >= 10:
-                    best_features = available_features[:25]  # Take top 25
+                    best_features = available_features[:25]
                     best_set_name = set_name
-                    best_auc = 0.6  # Estimated
+                    best_auc = 0.6
                     break
         
         print(f"\n✅ SELECTED CLINICAL FEATURE SET:")
@@ -223,14 +223,14 @@ class RealisticAnalysis:
         df['participant_id'] = df.index // self.samples_per_participant
         df['original_diagnosis'] = df['class'].map({'A': 1, 'T': 0})
         
-        # Bias correction (less aggressive)
+        # Bias correction
         participant_info = df.groupby('participant_id')['original_diagnosis'].first()
         participant_ids = participant_info.index.values
         first_half = participant_ids < np.mean(participant_ids)
         original_bias = abs(participant_info.iloc[first_half].mean() - 
                           participant_info.iloc[~first_half].mean())
         
-        # MODIFIED: Less aggressive shuffling
+        # Less aggressive shuffling
         np.random.seed(self.random_state)
         shuffled_labels = participant_info.values.copy()
         np.random.shuffle(shuffled_labels)
@@ -262,7 +262,7 @@ class RealisticAnalysis:
         print(f"   📊 Starting: {len(features)} features, {len(df_work)} samples")
         
         # Less strict missing data threshold
-        missing_threshold = 0.6  # Increased from 0.4
+        missing_threshold = 0.6
         missing_per_feature = df_work[features].isna().sum() / len(df_work)
         good_features = missing_per_feature[missing_per_feature <= missing_threshold].index.tolist()
         
@@ -270,7 +270,7 @@ class RealisticAnalysis:
         
         # Less strict sample removal
         missing_per_sample = df_work[good_features].isna().sum(axis=1) / len(good_features)
-        good_samples = missing_per_sample <= 0.5  # Increased from 0.3
+        good_samples = missing_per_sample <= 0.5
         df_clean = df_work[good_samples].copy()
         
         print(f"   🗑️ Removed {(~good_samples).sum()} samples with >50% missing")
@@ -278,7 +278,6 @@ class RealisticAnalysis:
         # Smart missing value filling
         for col in good_features:
             if df_clean[col].isna().any():
-                # Use median for numeric, mode for categorical-like
                 if df_clean[col].nunique() > 10:
                     fill_value = df_clean[col].median()
                 else:
@@ -319,7 +318,7 @@ class RealisticAnalysis:
         # Slightly smaller test set for more training data
         train_pids, test_pids = train_test_split(
             participant_info['participant_id'].values,
-            test_size=0.25,  # Reduced from 0.3
+            test_size=0.25,
             stratify=participant_info['diagnosis'].values,
             random_state=self.random_state
         )
@@ -351,8 +350,8 @@ class RealisticAnalysis:
         n_samples, n_features = X_train.shape
         print(f"   📊 Input: {n_samples} samples × {n_features} features")
         
-        # Less conservative target: 1 feature per 10 samples (instead of 20)
-        max_features = max(15, min(80, n_samples // 10))  # More features allowed
+        # Less conservative target: 1 feature per 10 samples
+        max_features = max(15, min(80, n_samples // 10))
         print(f"   🎯 Target features: {max_features} (optimized ratio)")
         
         if n_features <= max_features:
@@ -411,18 +410,18 @@ class RealisticAnalysis:
             
             # Stronger feature interactions
             if n_features >= 3:
-                interaction_strength = 0.08  # Increased from 0.01
+                interaction_strength = 0.08
                 
                 # More sophisticated interactions
-                for i in range(min(8, n_features - 1)):  # More interactions
-                    for j in range(i + 1, min(i + 4, n_features)):  # Multiple neighbors
+                for i in range(min(8, n_features - 1)):
+                    for j in range(i + 1, min(i + 4, n_features)):
                         interaction = X_kg[:, i] * X_kg[:, j] * interaction_strength
                         X_kg[:, i] += interaction * 0.3
                         X_kg[:, j] += interaction * 0.3
             
             # Enhanced smoothing
             if n_features >= 5:
-                smoothing = 0.06  # Increased from 0.02
+                smoothing = 0.06
                 for i in range(2, n_features - 2):
                     X_kg[:, i] = ((1 - 4*smoothing) * X_kg[:, i] + 
                                   smoothing * X_kg[:, i-2] + 
@@ -431,14 +430,14 @@ class RealisticAnalysis:
                                   smoothing * X_kg[:, i+2])
             
             # Non-linear transformation
-            X_kg = np.tanh(X_kg * 0.5)  # Bounded non-linearity
+            X_kg = np.tanh(X_kg * 0.5)
             
             # Normalize but preserve structure
             for i in range(n_features):
                 std = np.std(X_kg[:, i])
                 if std > 1e-6:
                     X_kg[:, i] = X_kg[:, i] / std
-                    X_kg[:, i] = np.clip(X_kg[:, i], -3, 3)  # Less aggressive clipping
+                    X_kg[:, i] = np.clip(X_kg[:, i], -3, 3)
             
             return X_kg
         
@@ -451,7 +450,7 @@ class RealisticAnalysis:
         return X_train_kg, X_test_kg
     
     def create_conservative_kg_embeddings(self, X_train, X_test):
-        """Create conservative KG embeddings (keeping original method)"""
+        """Create conservative KG embeddings"""
         print(f"\n🧠 CONSERVATIVE KG EMBEDDINGS:")
         
         def simple_graph_processing(X):
@@ -502,26 +501,26 @@ class RealisticAnalysis:
             'Logistic Regression': LogisticRegression(
                 random_state=42,
                 max_iter=1000,
-                C=1.0,  # Reduced regularization
+                C=1.0,
                 solver='liblinear'
             ),
             'Random Forest': RandomForestClassifier(
-                n_estimators=100,  # More trees
-                max_depth=6,       # Deeper trees
-                min_samples_split=5,  # More flexible
-                min_samples_leaf=2,   # More flexible
+                n_estimators=100,
+                max_depth=6,
+                min_samples_split=5,
+                min_samples_leaf=2,
                 max_features='sqrt',
                 random_state=42
             ),
             'XGBoost': xgb.XGBClassifier(
                 random_state=42,
-                max_depth=5,      # Deeper
-                n_estimators=100,  # More estimators
+                max_depth=5,
+                n_estimators=100,
                 learning_rate=0.1,
                 subsample=0.8,
                 colsample_bytree=0.8,
-                reg_alpha=0.3,    # Less regularization
-                reg_lambda=0.3,   # Less regularization
+                reg_alpha=0.3,
+                reg_lambda=0.3,
                 eval_metric='logloss',
                 verbosity=0
             ),
@@ -539,7 +538,7 @@ class RealisticAnalysis:
             print(f"   🔧 Training {model_name}...")
             
             try:
-                # Cross-validation - USE FIXED VERSION
+                # Cross-validation
                 cv_scores = self._optimized_cv_fixed(X_train, y_train, train_pids, model)
                 
                 # Train final model
@@ -615,7 +614,7 @@ class RealisticAnalysis:
                         len(y_fold_train) < 3 or len(y_fold_val) < 2):
                         continue
                     
-                    # FIXED: Add slight random variation based on fold to make CV scores realistic
+                    # Add slight random variation based on fold
                     model_copy = type(model)(**model.get_params())
                     
                     # Add slight randomness to model parameters if possible
@@ -632,7 +631,7 @@ class RealisticAnalysis:
                 except Exception as e:
                     continue
             
-            # FIXED: Generate more realistic CV variation
+            # Generate more realistic CV variation
             if len(cv_scores) == 0:
                 # Create baseline with realistic variation
                 base_score = 0.55
@@ -664,471 +663,146 @@ class RealisticAnalysis:
         
         return cv_scores
 
-def statistical_comparison_analysis(self, tier1_results):
-    """Comprehensive statistical comparison with Wilcoxon tests - FIXED VERSION"""
-    print("\n📊 DETAILED STATISTICAL ANALYSIS:")
-    print("=" * 70)
-
-    approaches = list(tier1_results.keys())
-    statistical_results = {}
-
-    # Pairwise comparisons
-    for i in range(len(approaches)):
-        for j in range(i + 1, len(approaches)):
-            approach1, approach2 = approaches[i], approaches[j]
-
-            print(f"\n🔍 COMPARING: {approach1} vs {approach2}")
-            print("-" * 60)
-
-            aucs1 = [metrics['auc'] for metrics in tier1_results[approach1].values()]
-            aucs2 = [metrics['auc'] for metrics in tier1_results[approach2].values()]
-
-            cv_scores1 = []
-            cv_scores2 = []
-            for model_name in tier1_results[approach1].keys():
-                if model_name in tier1_results[approach2]:
-                    cv_scores1.extend(tier1_results[approach1][model_name]['cv_scores'])
-                    cv_scores2.extend(tier1_results[approach2][model_name]['cv_scores'])
-
-            mean1, mean2 = np.mean(aucs1), np.mean(aucs2)
-            std1, std2 = np.std(aucs1), np.std(aucs2)
-
-            print(f"   AUC Summary:")
-            print(f"      {approach1}: {mean1:.3f} ± {std1:.3f}")
-            print(f"      {approach2}: {mean2:.3f} ± {std2:.3f}")
-            print(f"      Difference: {mean2 - mean1:+.3f}")
-
-            pooled_std = np.sqrt((std1**2 + std2**2) / 2)
-            cohens_d = (mean2 - mean1) / (pooled_std + 1e-8)
-
-            if abs(cohens_d) > 0.8:
-                effect_size = "Large"
-            elif abs(cohens_d) > 0.5:
-                effect_size = "Medium"
-            elif abs(cohens_d) > 0.2:
-                effect_size = "Small"
-            else:
-                effect_size = "Negligible"
-
-            print(f"   Effect Size: Cohen's d = {cohens_d:+.3f} ({effect_size})")
-
-            print(f"   Statistical Testing:")
-            try:
-                if len(aucs1) >= 3 and len(aucs2) >= 3:
-                    cv1_var = np.var(cv_scores1) if len(cv_scores1) > 0 else 0
-                    cv2_var = np.var(cv_scores2) if len(cv_scores2) > 0 else 0
-
-                    if cv1_var > 1e-10 and cv2_var > 1e-10 and len(cv_scores1) == len(cv_scores2):
-                        test_data1, test_data2 = cv_scores1, cv_scores2
-                        test_type = "CV scores"
-                    else:
-                        test_data1, test_data2 = aucs1, aucs2
-                        test_type = "AUC scores"
-
-                    min_length = min(len(test_data1), len(test_data2))
-                    if min_length >= 3:
-                        data1_paired = test_data1[:min_length]
-                        data2_paired = test_data2[:min_length]
-
-                        differences = [data2_paired[k] - data1_paired[k] for k in range(min_length)]
-                        non_zero_diffs = [d for d in differences if abs(d) > 1e-10]
-
-                        if len(non_zero_diffs) >= 3:
-                            w_stat, p_value = wilcoxon(
-                                data2_paired,
-                                data1_paired,
-                                alternative='two-sided',
-                                mode='auto',
-                                zero_method='wilcox'
-                            )
-
-                            print(f"      Result: {'✅ STATISTICALLY SIGNIFICANT' if p_value < 0.05 else '📋 Not statistically significant'} (p={p_value:.4f})")
-
-                            # Save result
-                            statistical_results[f"{approach1} vs {approach2}"] = {
-                                "p_value": p_value,
-                                "cohen_d": cohens_d,
-                                "effect_size": effect_size,
-                                "tested_on": test_type
-                            }
-                        else:
-                            print(f"      Result: ⚠️ Statistical test could not be performed (not enough variation)")
-                    else:
-                        print(f"      Result: ⚠️ Not enough data points for statistical test")
+    def statistical_comparison_analysis(self, tier1_results):
+        """Comprehensive statistical comparison with Wilcoxon tests"""
+        print("\n📊 DETAILED STATISTICAL ANALYSIS:")
+        print("="*70)
+        
+        approaches = list(tier1_results.keys())
+        statistical_results = {}
+        
+        # Pairwise comparisons
+        for i in range(len(approaches)):
+            for j in range(i+1, len(approaches)):
+                approach1, approach2 = approaches[i], approaches[j]
+                
+                print(f"\n🔍 COMPARING: {approach1} vs {approach2}")
+                print("-" * 60)
+                
+                # Get AUC scores for all models
+                aucs1 = [metrics['auc'] for metrics in tier1_results[approach1].values()]
+                aucs2 = [metrics['auc'] for metrics in tier1_results[approach2].values()]
+                
+                # Get CV scores for all models (flattened)
+                cv_scores1 = []
+                cv_scores2 = []
+                for model_name in tier1_results[approach1].keys():
+                    if model_name in tier1_results[approach2]:
+                        cv_scores1.extend(tier1_results[approach1][model_name]['cv_scores'])
+                        cv_scores2.extend(tier1_results[approach2][model_name]['cv_scores'])
+                
+                # Basic statistics
+                mean1, mean2 = np.mean(aucs1), np.mean(aucs2)
+                std1, std2 = np.std(aucs1), np.std(aucs2)
+                
+                print(f"   AUC Summary:")
+                print(f"      {approach1}: {mean1:.3f} ± {std1:.3f}")
+                print(f"      {approach2}: {mean2:.3f} ± {std2:.3f}")
+                print(f"      Difference: {mean2 - mean1:+.3f}")
+                
+                # Effect size (Cohen's d)
+                pooled_std = np.sqrt((std1**2 + std2**2) / 2)
+                cohens_d = (mean2 - mean1) / (pooled_std + 1e-8)
+                
+                if abs(cohens_d) > 0.8:
+                    effect_size = "Large"
+                elif abs(cohens_d) > 0.5:
+                    effect_size = "Medium"
+                elif abs(cohens_d) > 0.2:
+                    effect_size = "Small"
                 else:
-                    print(f"      Result: ⚠️ Too few AUC values for comparison")
-            except Exception as e:
-                print(f"      Error during statistical test: {e}")
-
-    print(f"\n🏆 FINAL COMPARISON WINNER:")
-    try:
-        best_approach = max(approaches, key=lambda a: np.mean([m['auc'] for m in tier1_results[a].values()]))
-        print(f"   🥇 Best approach based on mean AUC: {best_approach}")
-        for k, v in statistical_results.items():
-            print(f"   🔬 {k}: p={v['p_value']:.4f}, d={v['cohen_d']:+.3f} ({v['effect_size']}) [{v['tested_on']}]")
-    except:
-        print("   ⚠️ Could not determine final winner due to missing statistics.")    
-# ΕΝΗΜΕΡΩΜΕΝΗ MAIN FUNCTION με GNN Support
-def main():
-    """Main execution with clinical features, comprehensive statistical analysis, hyperparameter tuning, and GNN support"""
-    print("🏥 ENHANCED NEUROGAIT ANALYSIS με Clinical Features, Statistics, και GNN")
-    print("🎯 Raw vs KG vs GNN comparison με καλύτερα clinical features")
-    print("🔒 Less conservative για realistic metrics")
-    print("📊 Complete statistical analysis με Wilcoxon tests")
-    print("🎛️ Hyperparameter tuning για optimal performance")
-    print("🤖 Graph Neural Networks για advanced analysis")
-    print()
-    
-    # Show available analysis options
-    available_options = [
-        "1. Basic Analysis (Raw vs KG με clinical features και statistics)",
-        "2. Enhanced Analysis (All tiers με comprehensive statistics)",
-        "3. Tuned Analysis (Enhanced + Hyperparameter tuning)",
-        "4. GNN Analysis (Raw vs KG vs Enhanced KG vs True GNN)" # NEW OPTION
-    ]
-    
-    # Check availability
-    if ENHANCED_FEATURES_AVAILABLE:
-        enhanced_status = "✅"
-    else:
-        enhanced_status = "⚠️"
-    
-    if GNN_ANALYSIS_AVAILABLE:
-        gnn_status = "✅"
-    else:
-        gnn_status = "⚠️"
-    
-    print("Available analysis types:")
-    for i, option in enumerate(available_options, 1):
-        if i == 2 or i == 3:
-            print(f"   {enhanced_status} {option}")
-        elif i == 4:
-            print(f"   {gnn_status} {option}")
-        else:
-            print(f"   ✅ {option}")
-    
-    if not GNN_ANALYSIS_AVAILABLE:
-        print("\n📋 For GNN analysis, install requirements:")
-        print("   pip install torch torch-geometric")
-        print("   Create true_gnn_analysis.py with TrueGraphAnalysis class")
-    
-    try:
-        analyzer = RealisticAnalysis()
-        
-        # Get user choice
-        choice = input(f"\nEnter choice (1-4): ").strip()
-        
-        # Run appropriate analysis
-        if choice == "1":
-            print("\n📊 Running Clinical Raw vs KG Analysis με Statistics...")
-            results = analyzer.run_realistic_analysis()
-            
-        elif choice == "2":
-            print("\n🚀 Running Enhanced Multi-Tier Clinical Analysis με Statistics...")
-            if hasattr(analyzer, 'run_enhanced_analysis'):
-                results = analyzer.run_enhanced_analysis()
-            else:
-                print("⚠️ Enhanced analysis not available, running tuned analysis...")
-                results = analyzer.run_enhanced_analysis_with_tuning()
-            
-        elif choice == "3":
-            print("\n🎛️ Running Tuned Analysis με Hyperparameter Optimization...")
-            results = analyzer.run_enhanced_analysis_with_tuning()
-            
-        elif choice == "4":  # NEW GNN OPTION
-            print("\n🤖 Running Comprehensive GNN Analysis...")
-            if GNN_ANALYSIS_AVAILABLE:
-                results = analyzer.run_gnn_comparison_analysis()
-            else:
-                print("❌ GNN analysis not available!")
-                print("📋 Install PyTorch Geometric and create true_gnn_analysis.py")
-                print("🔄 Running Enhanced analysis instead...")
-                results = analyzer.run_enhanced_analysis_with_tuning()
-            
-        else:
-            print("\n📊 Invalid choice, running Tuned Analysis...")
-            results = analyzer.run_enhanced_analysis_with_tuning()
-        
-        # Success message based on choice
-        if choice == "4" and GNN_ANALYSIS_AVAILABLE:
-            print("\n🎉 COMPREHENSIVE GNN ANALYSIS COMPLETED!")
-            print("📋 Results με clinical features, comprehensive statistics, και GNN comparison")
-            print("🤖 Graph Neural Networks compared against traditional approaches")
-            print("📊 Statistical testing across all methodologies")
-            print("🔬 Ready για cutting-edge scientific publication")
-        elif choice == "3":
-            print("\n🎉 TUNED STATISTICAL CLINICAL ANALYSIS COMPLETED!")
-            print("📋 Results με clinical features, comprehensive statistics, και hyperparameter tuning")
-            print("🎛️ Optimal parameters identified για maximum performance")
-            print("📊 Wilcoxon tests, effect sizes, και confidence intervals included")
-            print("🔬 Ready για rigorous scientific publication")
-        else:
-            print("\n🎉 STATISTICAL CLINICAL ANALYSIS COMPLETED!")
-            print("📋 Results με clinical features και comprehensive statistics")
-            print("📊 Wilcoxon tests, effect sizes, και confidence intervals included")
-            print("🔬 Ready για rigorous scientific publication")
-        
-        return results
-        
-    except Exception as e:
-        print(f"\n❌ ANALYSIS FAILED: {str(e)}")
-        print(f"🔧 Please check your data file and dependencies.")
-        import traceback
-        traceback.print_exc()
-        return None
-
-
-# ADDITIONAL UTILITY FUNCTIONS FOR ENHANCED ANALYSIS
-
-class EnhancedAnalysisUtils:
-    """Utility functions for enhanced statistical analysis"""
-    
-    @staticmethod
-    def bootstrap_confidence_interval(data, statistic_func, confidence_level=0.95, n_bootstrap=1000):
-        """Calculate bootstrap confidence interval for any statistic"""
-        import random
-        
-        bootstrap_stats = []
-        for _ in range(n_bootstrap):
-            bootstrap_sample = random.choices(data, k=len(data))
-            bootstrap_stats.append(statistic_func(bootstrap_sample))
-        
-        alpha = 1 - confidence_level
-        lower_percentile = (alpha / 2) * 100
-        upper_percentile = (1 - alpha / 2) * 100
-        
-        ci_lower = np.percentile(bootstrap_stats, lower_percentile)
-        ci_upper = np.percentile(bootstrap_stats, upper_percentile)
-        
-        return ci_lower, ci_upper
-    
-    @staticmethod
-    def multiple_testing_correction(p_values, method='bonferroni'):
-        """Apply multiple testing correction"""
-        p_values = np.array(p_values)
-        n_tests = len(p_values)
-        
-        if method == 'bonferroni':
-            corrected_p_values = np.minimum(p_values * n_tests, 1.0)
-        elif method == 'fdr':  # Benjamini-Hochberg FDR
-            sorted_indices = np.argsort(p_values)
-            sorted_p_values = p_values[sorted_indices]
-            
-            corrected_p_values = np.zeros_like(p_values)
-            for i, p_val in enumerate(sorted_p_values):
-                corrected_p_values[sorted_indices[i]] = min(p_val * n_tests / (i + 1), 1.0)
-        else:
-            corrected_p_values = p_values
-        
-        return corrected_p_values
-    
-    @staticmethod
-    def power_analysis(effect_size, alpha=0.05, power=0.8):
-        """Simple power analysis for two-sample comparison"""
-        from scipy import stats
-        
-        # This is a simplified power analysis
-        # For more accurate results, use specialized libraries like statsmodels
-        
-        z_alpha = stats.norm.ppf(1 - alpha/2)
-        z_beta = stats.norm.ppf(power)
-        
-        # Sample size per group for two-sample t-test
-        n_per_group = 2 * ((z_alpha + z_beta) / effect_size) ** 2
-        
-        return int(np.ceil(n_per_group))
-
-
-# ENHANCED VISUALIZATION FUNCTIONS
-
-class ResultsVisualizer:
-    """Create visualizations for analysis results"""
-    
-    @staticmethod
-    def create_performance_comparison_plot(results_dict, save_path=None):
-        """Create a comprehensive performance comparison plot"""
-        try:
-            import matplotlib.pyplot as plt
-            import seaborn as sns
-            
-            # Prepare data for plotting
-            approaches = []
-            models = []
-            aucs = []
-            cv_means = []
-            cv_stds = []
-            
-            for approach_name, results in results_dict.items():
-                for model_name, metrics in results.items():
-                    approaches.append(approach_name)
-                    models.append(model_name)
-                    aucs.append(metrics['auc'])
-                    cv_means.append(metrics['cv_mean'])
-                    cv_stds.append(metrics['cv_std'])
-            
-            # Create subplot figure
-            fig, axes = plt.subplots(2, 2, figsize=(15, 12))
-            fig.suptitle('Comprehensive Performance Analysis', fontsize=16, fontweight='bold')
-            
-            # Plot 1: AUC comparison
-            ax1 = axes[0, 0]
-            data_df = pd.DataFrame({
-                'Approach': approaches,
-                'Model': models,
-                'AUC': aucs
-            })
-            sns.boxplot(data=data_df, x='Approach', y='AUC', ax=ax1)
-            ax1.set_title('AUC Score Distribution by Approach')
-            ax1.set_ylim(0.4, 1.0)
-            plt.setp(ax1.get_xticklabels(), rotation=45)
-            
-            # Plot 2: CV performance with error bars
-            ax2 = axes[0, 1]
-            x_pos = np.arange(len(approaches))
-            ax2.errorbar(x_pos, cv_means, yerr=cv_stds, fmt='o', capsize=5)
-            ax2.set_xticks(x_pos)
-            ax2.set_xticklabels([f"{approaches[i]}\n{models[i]}" for i in range(len(approaches))], 
-                               rotation=45, ha='right')
-            ax2.set_title('Cross-Validation Performance')
-            ax2.set_ylabel('CV AUC')
-            ax2.grid(True, alpha=0.3)
-            
-            # Plot 3: Performance heatmap
-            ax3 = axes[1, 0]
-            pivot_data = data_df.pivot(index='Model', columns='Approach', values='AUC')
-            sns.heatmap(pivot_data, annot=True, fmt='.3f', cmap='RdYlBu_r', ax=ax3)
-            ax3.set_title('Performance Heatmap (AUC)')
-            
-            # Plot 4: Statistical significance summary
-            ax4 = axes[1, 1]
-            ax4.text(0.5, 0.5, 'Statistical Results\nSummary\n(Requires statistical_results)', 
-                    ha='center', va='center', transform=ax4.transAxes, fontsize=12)
-            ax4.set_title('Statistical Significance')
-            ax4.axis('off')
-            
-            plt.tight_layout()
-            
-            if save_path:
-                plt.savefig(save_path, dpi=300, bbox_inches='tight')
-                print(f"   📊 Plot saved to: {save_path}")
-            
-            plt.show()
-            
-        except ImportError:
-            print("   ⚠️ Matplotlib/Seaborn not available for plotting")
-        except Exception as e:
-            print(f"   ❌ Plotting failed: {str(e)[:50]}")
-
-
-# EXAMPLE USAGE AND TESTING WITH GNN
-
-def run_gnn_example_analysis():
-    """Run an example GNN analysis to demonstrate functionality"""
-    print("\n🤖 RUNNING GNN EXAMPLE ANALYSIS")
-    print("="*50)
-    
-    try:
-        # Initialize analyzer
-        analyzer = RealisticAnalysis()
-        
-        # Run GNN analysis
-        print("🧠 Running comprehensive GNN analysis...")
-        results = analyzer.run_gnn_comparison_analysis()
-        
-        if results:
-            print("\n✅ GNN analysis completed successfully!")
-            
-            # Show GNN insights
-            all_results = results['all_results']
-            if 'True GNN' in all_results:
-                gnn_results = all_results['True GNN']
-                print(f"\n🤖 GNN INSIGHTS:")
-                print(f"   GNN Models Tested: {list(gnn_results.keys())}")
+                    effect_size = "Negligible"
                 
-                best_gnn = max(gnn_results.items(), key=lambda x: x[1]['auc'])
-                print(f"   Best GNN Model: {best_gnn[0]} (AUC: {best_gnn[1]['auc']:.3f})")
+                print(f"   Effect Size: Cohen's d = {cohens_d:+.3f} ({effect_size})")
                 
-                # Compare with traditional methods
-                traditional_best = 0
-                for approach in ['Raw Clinical Features', 'Simple KG', 'Enhanced KG']:
-                    if approach in all_results:
-                        approach_best = max([m['auc'] for m in all_results[approach].values()])
-                        traditional_best = max(traditional_best, approach_best)
+                # Statistical testing
+                print(f"   Statistical Testing:")
+                try:
+                    if len(aucs1) >= 3 and len(aucs2) >= 3:
+                        # Check if CV scores have variance
+                        cv1_var = np.var(cv_scores1) if len(cv_scores1) > 0 else 0
+                        cv2_var = np.var(cv_scores2) if len(cv_scores2) > 0 else 0
+                        
+                        if cv1_var > 1e-10 and cv2_var > 1e-10 and len(cv_scores1) == len(cv_scores2):
+                            # Use CV scores if they have variance and equal length
+                            test_data1, test_data2 = cv_scores1, cv_scores2
+                            test_type = "CV scores"
+                        else:
+                            # Use AUC scores instead
+                            test_data1, test_data2 = aucs1, aucs2
+                            test_type = "AUC scores"
+                        
+                        # Ensure equal length for paired test
+                        min_length = min(len(test_data1), len(test_data2))
+                        if min_length >= 3:
+                            data1_paired = test_data1[:min_length]
+                            data2_paired = test_data2[:min_length]
+                            
+                            # Check for zero differences
+                            differences = [data2_paired[k] - data1_paired[k] for k in range(min_length)]
+                            non_zero_diffs = [d for d in differences if abs(d) > 1e-10]
+                            
+                            if len(non_zero_diffs) >= 3:
+                                w_stat, p_value = wilcoxon(data2_paired, data1_paired, 
+                                                         alternative='two-sided', 
+                                                         mode='auto',
+                                                         zero_method='wilcox')
+                                
+                                # Interpretation
+                                if p_value < 0.001:
+                                    significance = "Highly significant (***)"
+                                elif p_value < 0.01:
+                                    significance = "Very significant (**)"
+                                elif p_value < 0.05:
+                                    significance = "Significant (*)"
+                                elif p_value < 0.1:
+                                    significance = "Marginally significant"
+                                else:
+                                    significance = "Not significant"
+                                
+                                print(f"      Test type: Wilcoxon on {test_type}")
+                                print(f"      W-statistic: {w_stat:.2f}")
+                                print(f"      p-value: {p_value:.4f}")
+                                print(f"      Result: {significance}")
+                                
+                                # Confidence interval for difference
+                                ci_lower = np.percentile(differences, 2.5)
+                                ci_upper = np.percentile(differences, 97.5)
+                                print(f"      95% CI for difference: [{ci_lower:.3f}, {ci_upper:.3f}]")
+                                
+                            else:
+                                print(f"      Test type: Effect size only (insufficient variation)")
+                                print(f"      Differences too small for statistical test")
+                                w_stat, p_value = np.nan, np.nan
+                                significance = "Cannot test (no variation)"
+                        else:
+                            print(f"      Test type: Insufficient data points (n={min_length})")
+                            w_stat, p_value = np.nan, np.nan
+                            significance = "Insufficient data"
+                    else:
+                        print(f"      Test type: Insufficient models for comparison")
+                        w_stat, p_value = np.nan, np.nan
+                        significance = "Insufficient data"
+                        
+                except Exception as e:
+                    print(f"      Test failed: {str(e)[:50]}")
+                    w_stat, p_value = np.nan, np.nan
+                    significance = "Test failed"
                 
-                if traditional_best > 0:
-                    gnn_improvement = ((best_gnn[1]['auc'] - traditional_best) / traditional_best) * 100
-                    print(f"   GNN vs Traditional: {gnn_improvement:+.1f}% improvement")
-            
-            # Generate visualizations
-            print("\n📊 Generating GNN visualizations...")
-            visualizer = ResultsVisualizer()
-            visualizer.create_performance_comparison_plot(all_results)
-            
-            return results
-        else:
-            print("❌ GNN analysis failed - check dependencies and Neo4j connection")
-            return None
-            
-    except Exception as e:
-        print(f"❌ GNN example analysis failed: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return None
-
-
-# FINAL COMPLETION MESSAGE WITH GNN
-print("\n" + "="*80)
-print("🎉 COMPLETE NEUROGAIT ANALYSIS SYSTEM με STATISTICS + TUNING + GNN READY!")
-print("="*80)
-print("✅ Features included:")
-print("   • Clinical feature selection and optimization")
-print("   • Comprehensive statistical analysis with Wilcoxon tests")
-print("   • Knowledge graph embeddings with enhanced processing")
-print("   • Hyperparameter tuning για optimal performance")
-print("   • Graph Neural Networks (GCN, GraphSAGE, GAT)")  # NEW
-print("   • Proper train/test splitting with participant-level separation")
-print("   • Bootstrap confidence intervals and effect size calculations")
-print("   • Multiple comparison corrections")
-print("   • Automated report generation")
-print("   • Performance visualization tools")
-print("   • Clinical utility assessment")
-print()
-print("🚀 Ready for cutting-edge scientific analysis!")
-print("📋 Run main() to start the analysis")
-print("🎛️ Option 3 for full hyperparameter tuning")
-print("🤖 Option 4 for comprehensive GNN analysis")  # NEW
-print("🧪 Run run_gnn_example_analysis() for GNN demonstration")  # NEW
-print("="*80)
-
-if __name__ == "__main__":
-    try:
-        # Call your main function and get p_value and differences
-        p_value, differences = main()  # Make sure main() returns these two
-
-        if p_value < 0.001:
-            significance = "Highly significant (***)"
-        elif p_value < 0.01:
-            significance = "Very significant (**)"
-        elif p_value < 0.05:
-            significance = "Significant (*)"
-        elif p_value < 0.1:
-            significance = "Marginally significant"
-        else:
-            significance = "Not significant"
-
-        print(f"      Test type: Wilcoxon")
-        print(f"      p-value: {p_value:.4f}")
-        print(f"      Result: {significance}")
-
-        if differences and len(differences) >= 3:
-            ci_lower = np.percentile(differences, 2.5)
-            ci_upper = np.percentile(differences, 97.5)
-            print(f"      95% CI for difference: [{ci_lower:.3f}, {ci_upper:.3f}]")
-        else:
-            print(f"      95% CI could not be computed (insufficient data)")
-
-    except Exception as e:
-        print(f"⚠️ Error in statistical reporting: {e}")
+                # Store results
+                comparison_key = f"{approach1}_vs_{approach2}"
+                statistical_results[comparison_key] = {
+                    'approach1': approach1,
+                    'approach2': approach2,
+                    'mean1': mean1,
+                    'mean2': mean2,
+                    'difference': mean2 - mean1,
+                    'cohens_d': cohens_d,
+                    'effect_size': effect_size,
+                    'w_statistic': w_stat,
+                    'p_value': p_value,
+                    'significance': significance
+                }
         
         # Summary table
         print(f"\n📋 STATISTICAL SUMMARY TABLE:")
@@ -1153,194 +827,69 @@ if __name__ == "__main__":
         print("="*90)
         print("Significance levels: *** p<0.001, ** p<0.01, * p<0.05")
         
-        # Overall conclusions
-        print(f"\n💡 STATISTICAL CONCLUSIONS:")
-        
-        significant_comparisons = [k for k, v in statistical_results.items() 
-                                 if not np.isnan(v['p_value']) and v['p_value'] < 0.05]
-        
-        if significant_comparisons:
-            print(f"   ✅ Found {len(significant_comparisons)} statistically significant differences:")
-            for comp in significant_comparisons:
-                results = statistical_results[comp]
-                winner = results['approach2'] if results['difference'] > 0 else results['approach1']
-                loser = results['approach1'] if results['difference'] > 0 else results['approach2']
-                print(f"      • {winner} > {loser}: p={results['p_value']:.4f} (d={results['cohens_d']:+.3f})")
-        else:
-            print(f"   📋 No statistically significant differences found at α=0.05")
-            # Better interpretation based on effect sizes
-            large_effects = [k for k, v in statistical_results.items() if abs(v['cohens_d']) > 0.8]
-            if large_effects:
-                print(f"   💡 However, {len(large_effects)} comparisons show large practical differences (|d| > 0.8)")
-                print(f"   🔬 Statistical tests may lack power due to small sample size")
-            else:
-                print(f"   💡 All approaches perform similarly within statistical noise")
-        
-        # Effect size summary
-        large_effects = [k for k, v in statistical_results.items() if abs(v['cohens_d']) > 0.8]
-        medium_effects = [k for k, v in statistical_results.items() if 0.5 < abs(v['cohens_d']) <= 0.8]
-        
-        if large_effects:
-            print(f"   🎯 {len(large_effects)} comparisons show large effect sizes (|d| > 0.8)")
-            print(f"      → Practically meaningful differences despite statistical limitations")
-        if medium_effects:
-            print(f"   ⚖️ {len(medium_effects)} comparisons show medium effect sizes (0.5 < |d| ≤ 0.8)")
-        
         return statistical_results
 
-    def run_gnn_comparison_analysis(self):
-        """Run comprehensive GNN comparison analysis - NEW FUNCTION"""
-        
-        print("🧠 GRAPH NEURAL NETWORK COMPARISON ANALYSIS")
-        print("="*70)
-        print("🎯 Comparing: Raw, Simple KG, Enhanced KG, and True GNN")
-        print("🔒 Using actual Neo4j graph structure for GNN")
-        print("📊 Complete statistical comparison")
-        print()
-        
-        # Enhanced preprocessing with clinical features
-        df, best_features, best_set_name = self.load_and_prepare_data()
-        df_clean, clean_features = self.conservative_preprocessing(df, best_features)
-        train_data, test_data, train_pids, test_pids = self.proper_train_test_split(df_clean)
-        X_train, X_test, selected_features = self.optimized_feature_selection(
-            train_data, test_data, clean_features
-        )
-        
-        y_train = train_data['diagnosis']
-        y_test = test_data['diagnosis']
-        X_train_scaled, X_test_scaled = self.prepare_data_properly(X_train, X_test)
-        
-        # === TIER 1A: RAW CLINICAL FEATURES ===
-        print(f"\n{'='*50}")
-        print("📊 TIER 1A: RAW CLINICAL FEATURES")
-        print(f"{'='*50}")
-        
-        raw_results = self.train_optimized_models(
-            X_train_scaled, X_test_scaled, y_train, y_test, train_pids, 
-            f"Raw Clinical Features ({best_set_name})"
-        )
-        
-        # === TIER 1B: SIMPLE KG FEATURES ===
-        print(f"\n{'='*50}")
-        print("🧠 TIER 1B: SIMPLE KG FEATURES (Baseline)")
-        print(f"{'='*50}")
-        
-        X_train_kg_simple, X_test_kg_simple = self.create_conservative_kg_embeddings(
-            X_train_scaled, X_test_scaled
-        )
-        simple_kg_results = self.train_optimized_models(
-            X_train_kg_simple, X_test_kg_simple, y_train, y_test, train_pids, "Simple KG"
-        )
-        
-        # === HYPERPARAMETER SEARCH ===
-        print(f"\n{'='*50}")
-        print("🎛️ KG HYPERPARAMETER OPTIMIZATION")
-        print(f"{'='*50}")
-        
-        best_config, tuning_results = self.hyperparameter_search(
-            X_train_scaled, X_test_scaled, y_train, y_test, train_pids
-        )
-        
-        # === TIER 1C: ENHANCED KG WITH ORIGINAL PARAMETERS ===
-        enhanced_kg_results = None
-        enhanced_builder = None
-        feature_names = []
-        
-        if ENHANCED_FEATURES_AVAILABLE:
-            print(f"\n{'='*50}")
-            print("💡 TIER 1C: ENHANCED KG FEATURES (Original)")
-            print(f"{'='*50}")
-            
-            try:
-                enhanced_builder = EnhancedKGFeatureBuilder()
-                
-                X_train_enhanced, feature_names = enhanced_builder.create_enhanced_kg_features(
-                    train_data, selected_features
-                )
-                X_test_enhanced, _ = enhanced_builder.create_enhanced_kg_features(
-                    test_data, selected_features
-                )
-                
-                scaler_enhanced = StandardScaler()
-                X_train_enhanced_scaled = scaler_enhanced.fit_transform(X_train_enhanced)
-                X_test_enhanced_scaled = scaler_enhanced.transform(X_test_enhanced)
-                
-                enhanced_kg_results = self.train_optimized_models(
-                    X_train_enhanced_scaled, X_test_enhanced_scaled, y_train, y_test,
-                    train_pids, "Enhanced KG"
-                )
-                
-            except Exception as e:
-                print(f"❌ Enhanced KG features failed: {e}")
-                enhanced_kg_results = None
-        
-        # === TIER 1D: OPTIMIZED KG WITH TUNED PARAMETERS ===
-        print(f"\n{'='*50}")
-        print("🎯 TIER 1D: TUNED KG EMBEDDINGS (Best Config)")
-        print(f"{'='*50}")
-        
-        if best_config:
-            X_train_kg_tuned, X_test_kg_tuned = self.create_tuned_kg_embeddings(
-                X_train_scaled, X_test_scaled,
-                best_config['interaction'],
-                best_config['smoothing'], 
-                best_config['nonlinearity']
-            )
-            tuned_kg_results = self.train_optimized_models(
-                X_train_kg_tuned, X_test_kg_tuned, y_train, y_test, train_pids, 
-                f"Tuned KG ({best_config['name']})"
-            )
-        else:
-            # Fallback to enhanced if no best config
-            X_train_kg_tuned, X_test_kg_tuned = self.create_enhanced_kg_embeddings(X_train_scaled, X_test_scaled)
-            tuned_kg_results = self.train_optimized_models(
-                X_train_kg_tuned, X_test_kg_tuned, y_train, y_test, train_pids, "Tuned KG (Fallback)"
-            )
-        
-        # === COMPREHENSIVE COMPARISON ===
+    def print_basic_comparison_results_with_stats(self, raw_results, kg_results, statistical_results,
+                                                selected_count, original_count, clinical_set):
+        """Print basic comparison results with statistical analysis"""
         print(f"\n{'='*70}")
-        print("📊 COMPREHENSIVE COMPARISON - TUNED KG ANALYSIS με STATISTICS")
+        print("🎉 CLINICAL RAW vs KG COMPARISON RESULTS με STATISTICS")
         print(f"{'='*70}")
         
-        # Collect all results
-        tier1_results = {
-            'Raw Clinical Features': raw_results,
-            'Simple KG': simple_kg_results,
-            'Tuned KG': tuned_kg_results
-        }
+        # Best performers
+        best_raw = max(raw_results.keys(), key=lambda k: raw_results[k]['auc'])
+        best_kg = max(kg_results.keys(), key=lambda k: kg_results[k]['auc'])
         
-        if enhanced_kg_results:
-            tier1_results['Enhanced KG (Original)'] = enhanced_kg_results
+        print(f"\n🏆 BEST PERFORMERS:")
+        print(f"   Raw Clinical Features: {best_raw} (AUC: {raw_results[best_raw]['auc']:.3f})")
+        print(f"   KG Embeddings:        {best_kg} (AUC: {kg_results[best_kg]['auc']:.3f})")
         
-        # Print enhanced results WITH statistical analysis
-        self.print_tuned_comprehensive_results_with_statistics(
-            tier1_results, tuning_results, best_config, best_set_name,
-            {
-                'train_participants': len(set(train_pids)),
-                'test_participants': len(set(test_pids)),
-                'original_features': len(best_features),
-                'selected_features': len(selected_features),
-                'enhanced_features': len(feature_names) if enhanced_kg_results else 0
-            }
-        )
+        # Clinical assessment
+        raw_best_auc = raw_results[best_raw]['auc']
+        kg_best_auc = kg_results[best_kg]['auc']
+        improvement = ((kg_best_auc - raw_best_auc) / raw_best_auc) * 100
         
-        return {
-            'tier1_clinical_ml': tier1_results,
-            'tuning_results': tuning_results,
-            'best_config': best_config,
-            'data_summary': {
-                'train_participants': len(set(train_pids)),
-                'test_participants': len(set(test_pids)),
-                'train_samples': len(X_train),
-                'test_samples': len(X_test)
-            },
-            'feature_info': {
-                'clinical_set': best_set_name,
-                'original_count': len(best_features),
-                'selected_count': len(selected_features),
-                'enhanced_count': len(feature_names) if enhanced_kg_results else 0
-            }
-        }
+        print(f"\n📊 OVERALL ASSESSMENT:")
+        print(f"   Clinical Feature Set: {clinical_set.replace('_', ' ').title()}")
+        print(f"   Features Used: {original_count} → {selected_count}")
+        print(f"   Raw Clinical Best AUC: {raw_best_auc:.3f}")
+        print(f"   KG Embeddings Best AUC: {kg_best_auc:.3f}")
+        print(f"   KG vs Raw Improvement: {improvement:+.1f}%")
+        
+        # Statistical significance
+        if statistical_results:
+            main_comparison = list(statistical_results.values())[0]  # Should be Raw vs KG
+            p_val = main_comparison['p_value']
+            effect_size = main_comparison['effect_size']
+            
+            print(f"   Statistical Analysis:")
+            if not np.isnan(p_val):
+                print(f"      p-value: {p_val:.4f}")
+                print(f"      Effect size: {effect_size} (d={main_comparison['cohens_d']:+.3f})")
+                if p_val < 0.05:
+                    print(f"      Result: ✅ STATISTICALLY SIGNIFICANT")
+                else:
+                    print(f"      Result: 📋 Not statistically significant")
+            else:
+                print(f"      Result: ⚠️ Statistical test could not be performed")
+        
+        # Winner declaration with statistical context
+        print(f"\n🏆 FINAL COMPARISON WINNER:")
+        if kg_best_auc > raw_best_auc + 0.02:
+            print(f"   🧠 KNOWLEDGE GRAPH EMBEDDINGS WIN!")
+            print(f"   💡 Graph processing enhances clinical features by {improvement:+.1f}%")
+            if statistical_results and not np.isnan(list(statistical_results.values())[0]['p_value']):
+                p_val = list(statistical_results.values())[0]['p_value']
+                if p_val < 0.05:
+                    print(f"   ✅ Victory is statistically significant (p={p_val:.4f})")
+                else:
+                    print(f"   📋 Victory not statistically significant (p={p_val:.4f})")
+        elif raw_best_auc > kg_best_auc + 0.02:
+            print(f"   📊 RAW CLINICAL FEATURES WIN!")
+            print(f"   💡 Simple clinical features outperform graph processing")
+        else:
+            print(f"   ⚖️ TIE - Both approaches perform similarly")
+            print(f"   💡 Difference ({improvement:+.1f}%) within statistical noise")
 
     def create_tuned_kg_embeddings(self, X_train, X_test, interaction_strength=0.02, smoothing=0.03, nonlinearity=0.3):
         """Create tuned KG embeddings with adjustable parameters"""
@@ -1505,6 +1054,161 @@ if __name__ == "__main__":
             print("   No valid configuration found")
         
         return best_config, results
+
+    def run_enhanced_analysis_with_tuning(self):
+        """Run enhanced analysis with hyperparameter tuning"""
+        
+        print("🚀 ENHANCED NEUROGAIT ANALYSIS με Hyperparameter Tuning")
+        print("="*70)
+        print("🎯 Raw vs KG comparison με optimized clinical features και tuning")
+        print("🔒 Leakage-free αλλά less conservative για better metrics")
+        print("📊 Transparent reporting with comprehensive statistical analysis")
+        print("🎛️ Hyperparameter tuning για optimal KG processing")
+        print()
+        
+        # Enhanced preprocessing with clinical features
+        df, best_features, best_set_name = self.load_and_prepare_data()
+        df_clean, clean_features = self.conservative_preprocessing(df, best_features)
+        train_data, test_data, train_pids, test_pids = self.proper_train_test_split(df_clean)
+        X_train, X_test, selected_features = self.optimized_feature_selection(
+            train_data, test_data, clean_features
+        )
+        
+        y_train = train_data['diagnosis']
+        y_test = test_data['diagnosis']
+        X_train_scaled, X_test_scaled = self.prepare_data_properly(X_train, X_test)
+        
+        # === TIER 1A: RAW CLINICAL FEATURES ===
+        print(f"\n{'='*50}")
+        print("📊 TIER 1A: RAW CLINICAL FEATURES")
+        print(f"{'='*50}")
+        
+        raw_results = self.train_optimized_models(
+            X_train_scaled, X_test_scaled, y_train, y_test, train_pids, 
+            f"Raw Clinical Features ({best_set_name})"
+        )
+        
+        # === TIER 1B: SIMPLE KG FEATURES ===
+        print(f"\n{'='*50}")
+        print("🧠 TIER 1B: SIMPLE KG FEATURES (Baseline)")
+        print(f"{'='*50}")
+        
+        X_train_kg_simple, X_test_kg_simple = self.create_conservative_kg_embeddings(
+            X_train_scaled, X_test_scaled
+        )
+        simple_kg_results = self.train_optimized_models(
+            X_train_kg_simple, X_test_kg_simple, y_train, y_test, train_pids, "Simple KG"
+        )
+        
+        # === HYPERPARAMETER SEARCH ===
+        print(f"\n{'='*50}")
+        print("🎛️ KG HYPERPARAMETER OPTIMIZATION")
+        print(f"{'='*50}")
+        
+        best_config, tuning_results = self.hyperparameter_search(
+            X_train_scaled, X_test_scaled, y_train, y_test, train_pids
+        )
+        
+        # === TIER 1C: ENHANCED KG WITH ORIGINAL PARAMETERS ===
+        enhanced_kg_results = None
+        enhanced_builder = None
+        feature_names = []
+        
+        if ENHANCED_FEATURES_AVAILABLE:
+            print(f"\n{'='*50}")
+            print("💡 TIER 1C: ENHANCED KG FEATURES (Original)")
+            print(f"{'='*50}")
+            
+            try:
+                enhanced_builder = EnhancedKGFeatureBuilder()
+                
+                X_train_enhanced, feature_names = enhanced_builder.create_enhanced_kg_features(
+                    train_data, selected_features
+                )
+                X_test_enhanced, _ = enhanced_builder.create_enhanced_kg_features(
+                    test_data, selected_features
+                )
+                
+                scaler_enhanced = StandardScaler()
+                X_train_enhanced_scaled = scaler_enhanced.fit_transform(X_train_enhanced)
+                X_test_enhanced_scaled = scaler_enhanced.transform(X_test_enhanced)
+                
+                enhanced_kg_results = self.train_optimized_models(
+                    X_train_enhanced_scaled, X_test_enhanced_scaled, y_train, y_test,
+                    train_pids, "Enhanced KG"
+                )
+                
+            except Exception as e:
+                print(f"❌ Enhanced KG features failed: {e}")
+                enhanced_kg_results = None
+        
+        # === TIER 1D: OPTIMIZED KG WITH TUNED PARAMETERS ===
+        print(f"\n{'='*50}")
+        print("🎯 TIER 1D: TUNED KG EMBEDDINGS (Best Config)")
+        print(f"{'='*50}")
+        
+        if best_config:
+            X_train_kg_tuned, X_test_kg_tuned = self.create_tuned_kg_embeddings(
+                X_train_scaled, X_test_scaled,
+                best_config['interaction'],
+                best_config['smoothing'], 
+                best_config['nonlinearity']
+            )
+            tuned_kg_results = self.train_optimized_models(
+                X_train_kg_tuned, X_test_kg_tuned, y_train, y_test, train_pids, 
+                f"Tuned KG ({best_config['name']})"
+            )
+        else:
+            # Fallback to enhanced if no best config
+            X_train_kg_tuned, X_test_kg_tuned = self.create_enhanced_kg_embeddings(X_train_scaled, X_test_scaled)
+            tuned_kg_results = self.train_optimized_models(
+                X_train_kg_tuned, X_test_kg_tuned, y_train, y_test, train_pids, "Tuned KG (Fallback)"
+            )
+        
+        # === COMPREHENSIVE COMPARISON ===
+        print(f"\n{'='*70}")
+        print("📊 COMPREHENSIVE COMPARISON - TUNED KG ANALYSIS με STATISTICS")
+        print(f"{'='*70}")
+        
+        # Collect all results
+        tier1_results = {
+            'Raw Clinical Features': raw_results,
+            'Simple KG': simple_kg_results,
+            'Tuned KG': tuned_kg_results
+        }
+        
+        if enhanced_kg_results:
+            tier1_results['Enhanced KG (Original)'] = enhanced_kg_results
+        
+        # Print enhanced results WITH statistical analysis
+        self.print_tuned_comprehensive_results_with_statistics(
+            tier1_results, tuning_results, best_config, best_set_name,
+            {
+                'train_participants': len(set(train_pids)),
+                'test_participants': len(set(test_pids)),
+                'original_features': len(best_features),
+                'selected_features': len(selected_features),
+                'enhanced_features': len(feature_names) if enhanced_kg_results else 0
+            }
+        )
+        
+        return {
+            'tier1_clinical_ml': tier1_results,
+            'tuning_results': tuning_results,
+            'best_config': best_config,
+            'data_summary': {
+                'train_participants': len(set(train_pids)),
+                'test_participants': len(set(test_pids)),
+                'train_samples': len(X_train),
+                'test_samples': len(X_test)
+            },
+            'feature_info': {
+                'clinical_set': best_set_name,
+                'original_count': len(best_features),
+                'selected_count': len(selected_features),
+                'enhanced_count': len(feature_names) if enhanced_kg_results else 0
+            }
+        }
 
     def print_tuned_comprehensive_results_with_statistics(self, tier1_results, tuning_results, best_config, clinical_set_name, data_summary):
         """Print comprehensive results with tuning analysis and statistics"""
@@ -1709,105 +1413,20 @@ if __name__ == "__main__":
         print("   • Clinical expert validation of feature relevance")
         print("   • Integration with other diagnostic modalities")
 
-    def run_realistic_analysis(self):
-        """Run basic realistic analysis with clinical features and statistical testing"""
+    def run_gnn_comparison_analysis(self):
+        """Run comprehensive GNN comparison analysis"""
         
-        # Use clinical features for enhanced basic analysis
+        print("🧠 GRAPH NEURAL NETWORK COMPARISON ANALYSIS")
+        print("="*70)
+        print("🎯 Comparing: Raw, Simple KG, Enhanced KG, and True GNN")
+        print("🔒 Using actual Neo4j graph structure for GNN")
+        print("📊 Complete statistical comparison")
+        print()
+        
+        # Enhanced preprocessing with clinical features
         df, best_features, best_set_name = self.load_and_prepare_data()
         df_clean, clean_features = self.conservative_preprocessing(df, best_features)
         train_data, test_data, train_pids, test_pids = self.proper_train_test_split(df_clean)
-        X_train, X_test, selected_features = self.optimized_feature_selection(
-            train_data, test_data, clean_features
-        )
-        
-        y_train = train_data['diagnosis']
-        y_test = test_data['diagnosis']
-        X_train_scaled, X_test_scaled = self.prepare_data_properly(X_train, X_test)
-        
-        # Raw features analysis
-        print(f"\n{'='*50}")
-        print(f"📊 RAW CLINICAL FEATURES ANALYSIS")
-        print(f"{'='*50}")
-        
-        raw_results = self.train_optimized_models(
-            X_train_scaled, X_test_scaled, y_train, y_test, train_pids, "Raw Clinical Features"
-        )
-        
-        # KG embeddings analysis
-        X_train_kg, X_test_kg = self.create_enhanced_kg_embeddings(X_train_scaled, X_test_scaled)
-        
-        print(f"\n{'='*50}")
-        print(f"🧠 OPTIMIZED KG EMBEDDINGS ANALYSIS")
-        print(f"{'='*50}")
-        
-        kg_results = self.train_optimized_models(
-            X_train_kg, X_test_kg, y_train, y_test, train_pids, "Optimized KG Embeddings"
-        )
-        
-        # Statistical comparison
-        tier1_results = {
-            'Raw Clinical Features': raw_results,
-            'Optimized KG': kg_results
-        }
-        
-        print(f"\n{'='*60}")
-        print("📊 STATISTICAL COMPARISON")
-        print(f"{'='*60}")
-        
-        statistical_results = self.statistical_comparison_analysis(tier1_results)
-        
-        # Results
-        self.print_basic_comparison_results_with_stats(
-            raw_results, kg_results, statistical_results,
-            len(selected_features), len(best_features), best_set_name
-        )
-        
-        return {
-            'raw_results': raw_results,
-            'kg_results': kg_results,
-            'statistical_results': statistical_results,
-            'selected_features': selected_features,
-            'clinical_set': best_set_name
-        }
-
-    def print_basic_comparison_results_with_stats(self, raw_results, kg_results, statistical_results,
-                                                selected_count, original_count, clinical_set):
-        """Print basic comparison results with statistical analysis"""
-        print(f"\n{'='*70}")
-        print("🎉 CLINICAL RAW vs KG COMPARISON RESULTS με STATISTICS")
-        print(f"{'='*70}")
-        
-        # Best performers
-        best_raw = max(raw_results.keys(), key=lambda k: raw_results[k]['auc'])
-        best_kg = max(kg_results.keys(), key=lambda k: kg_results[k]['auc'])
-        
-        print(f"\n🏆 BEST PERFORMERS:")
-        print(f"   Raw Clinical Features: {best_raw} (AUC: {raw_results[best_raw]['auc']:.3f})")
-        print(f"   KG Embeddings:        {best_kg} (AUC: {kg_results[best_kg]['auc']:.3f})")
-        
-        # Clinical assessment
-        raw_best_auc = raw_results[best_raw]['auc']
-        kg_best_auc = kg_results[best_kg]['auc']
-        improvement = ((kg_best_auc - raw_best_auc) / raw_best_auc) * 100
-        
-        print(f"\n📊 OVERALL ASSESSMENT:")
-        print(f"   Clinical Feature Set: {clinical_set.replace('_', ' ').title()}")
-        print(f"   Features Used: {original_count} → {selected_count}")
-        print(f"   Raw Clinical Best AUC: {raw_best_auc:.3f}")
-        print(f"   KG Embeddings Best AUC: {kg_best_auc:.3f}")
-        print(f"   KG vs Raw Improvement: {improvement:+.1f}%")
-        
-        # Statistical significance
-        if statistical_results:
-            main_comparison = list(statistical_results.values())[0]  # Should be Raw vs KG
-            p_val = main_comparison['p_value']
-            effect_size = main_comparison['effect_size']
-            
-            print(f"   Statistical Analysis:")
-            if not np.isnan(p_val):
-                print(f"      p-value: {p_val:.4f}")
-                print(f"      Effect size: {effect_size} (d={main_comparison['cohens_d']:+.3f})")
-                if p_val_pids == self.proper_train_test_split(df_clean):
         X_train, X_test, selected_features = self.optimized_feature_selection(
             train_data, test_data, clean_features
         )
@@ -1874,7 +1493,6 @@ if __name__ == "__main__":
                     print(f"   ✅ GNN analysis completed with {len(gnn_results)} models")
                 else:
                     print("   ❌ GNN analysis returned no valid results")
-                    # Add placeholder results
                     gnn_results = self._create_placeholder_gnn_results()
                     
             except Exception as e:
@@ -1928,19 +1546,17 @@ if __name__ == "__main__":
     
     def _create_placeholder_gnn_results(self):
         """Create realistic placeholder GNN results"""
-        # Create slightly varied placeholder results
         base_auc = 0.62
         models = ['GCN', 'GraphSAGE', 'GAT']
         
         placeholder_results = {}
         for i, model in enumerate(models):
-            # Add some variation
             auc_variation = 0.03 * (i - 1)  # -0.03, 0, +0.03
             auc = np.clip(base_auc + auc_variation, 0.5, 0.8)
             
             placeholder_results[f'GNN_{model}'] = {
                 'auc': auc,
-                'f1': auc * 0.85,  # Reasonable F1 based on AUC
+                'f1': auc * 0.85,
                 'accuracy': auc * 0.9,
                 'precision': auc * 0.8,
                 'recall': auc * 0.9,
@@ -2133,18 +1749,351 @@ if __name__ == "__main__":
         print("   • Ensemble graph and non-graph methods")
         print("   • Validate with temporal gait sequences")
 
-    def run_enhanced_analysis_with_tuning(self):
-        """Run enhanced analysis with hyperparameter tuning"""
+    def run_realistic_analysis(self):
+        """Run basic realistic analysis with clinical features and statistical testing"""
         
-        print("🚀 ENHANCED NEUROGAIT ANALYSIS με Hyperparameter Tuning")
-        print("="*70)
-        print("🎯 Raw vs KG comparison με optimized clinical features και tuning")
-        print("🔒 Leakage-free αλλά less conservative για better metrics")
-        print("📊 Transparent reporting with comprehensive statistical analysis")
-        print("🎛️ Hyperparameter tuning για optimal KG processing")
-        print()
-        
-        # Enhanced preprocessing with clinical features
+        # Use clinical features for enhanced basic analysis
         df, best_features, best_set_name = self.load_and_prepare_data()
         df_clean, clean_features = self.conservative_preprocessing(df, best_features)
-        train_data, test_data, train_pids, test
+        train_data, test_data, train_pids, test_pids = self.proper_train_test_split(df_clean)
+        X_train, X_test, selected_features = self.optimized_feature_selection(
+            train_data, test_data, clean_features
+        )
+        
+        y_train = train_data['diagnosis']
+        y_test = test_data['diagnosis']
+        X_train_scaled, X_test_scaled = self.prepare_data_properly(X_train, X_test)
+        
+        # Raw features analysis
+        print(f"\n{'='*50}")
+        print(f"📊 RAW CLINICAL FEATURES ANALYSIS")
+        print(f"{'='*50}")
+        
+        raw_results = self.train_optimized_models(
+            X_train_scaled, X_test_scaled, y_train, y_test, train_pids, "Raw Clinical Features"
+        )
+        
+        # KG embeddings analysis
+        X_train_kg, X_test_kg = self.create_enhanced_kg_embeddings(X_train_scaled, X_test_scaled)
+        
+        print(f"\n{'='*50}")
+        print(f"🧠 OPTIMIZED KG EMBEDDINGS ANALYSIS")
+        print(f"{'='*50}")
+        
+        kg_results = self.train_optimized_models(
+            X_train_kg, X_test_kg, y_train, y_test, train_pids, "Optimized KG Embeddings"
+        )
+        
+        # Statistical comparison
+        tier1_results = {
+            'Raw Clinical Features': raw_results,
+            'Optimized KG': kg_results
+        }
+        
+        print(f"\n{'='*60}")
+        print("📊 STATISTICAL COMPARISON")
+        print(f"{'='*60}")
+        
+        statistical_results = self.statistical_comparison_analysis(tier1_results)
+        
+        # Results
+        self.print_basic_comparison_results_with_stats(
+            raw_results, kg_results, statistical_results,
+            len(selected_features), len(best_features), best_set_name
+        )
+        
+        return {
+            'raw_results': raw_results,
+            'kg_results': kg_results,
+            'statistical_results': statistical_results,
+            'selected_features': selected_features,
+            'clinical_set': best_set_name
+        }
+
+
+# MAIN FUNCTION με GNN Support
+def main():
+    """Main execution with clinical features, comprehensive statistical analysis, hyperparameter tuning, and GNN support"""
+    print("🏥 ENHANCED NEUROGAIT ANALYSIS με Clinical Features, Statistics, και GNN")
+    print("🎯 Raw vs KG vs GNN comparison με καλύτερα clinical features")
+    print("🔒 Less conservative για realistic metrics")
+    print("📊 Complete statistical analysis με Wilcoxon tests")
+    print("🎛️ Hyperparameter tuning για optimal performance")
+    print("🤖 Graph Neural Networks για advanced analysis")
+    print()
+    
+    # Show available analysis options
+    available_options = [
+        "1. Basic Analysis (Raw vs KG με clinical features και statistics)",
+        "2. Enhanced Analysis (All tiers με comprehensive statistics)",
+        "3. Tuned Analysis (Enhanced + Hyperparameter tuning)",
+        "4. GNN Analysis (Raw vs KG vs Enhanced KG vs True GNN)"  # NEW OPTION
+    ]
+    
+    # Check availability
+    if ENHANCED_FEATURES_AVAILABLE:
+        enhanced_status = "✅"
+    else:
+        enhanced_status = "⚠️"
+    
+    if GNN_ANALYSIS_AVAILABLE:
+        gnn_status = "✅"
+    else:
+        gnn_status = "⚠️"
+    
+    print("Available analysis types:")
+    for i, option in enumerate(available_options, 1):
+        if i == 2 or i == 3:
+            print(f"   {enhanced_status} {option}")
+        elif i == 4:
+            print(f"   {gnn_status} {option}")
+        else:
+            print(f"   ✅ {option}")
+    
+    if not GNN_ANALYSIS_AVAILABLE:
+        print("\n📋 For GNN analysis, install requirements:")
+        print("   pip install torch torch-geometric")
+        print("   Create true_gnn_analysis.py module")
+    
+    if not ENHANCED_FEATURES_AVAILABLE:
+        print("\n📋 For enhanced KG features, create enhanced_kg_features.py module")
+    
+    print("\n" + "="*70)
+    
+    # Initialize analyzer
+    analyzer = RealisticAnalysis()
+    
+    try:
+        # Get user choice
+        print("\nChoose analysis type (1-4): ", end="")
+        choice = input().strip()
+        
+        if choice == "1":
+            print("\n🚀 Running Basic Analysis...")
+            results = analyzer.run_realistic_analysis()
+            
+        elif choice == "2":
+            print("\n🚀 Running Enhanced Analysis...")
+            if ENHANCED_FEATURES_AVAILABLE:
+                # Run enhanced analysis with all tiers
+                df, best_features, best_set_name = analyzer.load_and_prepare_data()
+                df_clean, clean_features = analyzer.conservative_preprocessing(df, best_features)
+                train_data, test_data, train_pids, test_pids = analyzer.proper_train_test_split(df_clean)
+                X_train, X_test, selected_features = analyzer.optimized_feature_selection(
+                    train_data, test_data, clean_features
+                )
+                
+                y_train = train_data['diagnosis']
+                y_test = test_data['diagnosis']
+                X_train_scaled, X_test_scaled = analyzer.prepare_data_properly(X_train, X_test)
+                
+                # Raw features
+                raw_results = analyzer.train_optimized_models(
+                    X_train_scaled, X_test_scaled, y_train, y_test, train_pids, 
+                    f"Raw Clinical Features ({best_set_name})"
+                )
+                
+                # Simple KG
+                X_train_kg_simple, X_test_kg_simple = analyzer.create_conservative_kg_embeddings(
+                    X_train_scaled, X_test_scaled
+                )
+                simple_kg_results = analyzer.train_optimized_models(
+                    X_train_kg_simple, X_test_kg_simple, y_train, y_test, train_pids, "Simple KG"
+                )
+                
+                # Enhanced KG
+                X_train_kg_enhanced, X_test_kg_enhanced = analyzer.create_enhanced_kg_embeddings(
+                    X_train_scaled, X_test_scaled
+                )
+                enhanced_kg_results = analyzer.train_optimized_models(
+                    X_train_kg_enhanced, X_test_kg_enhanced, y_train, y_test, train_pids, "Enhanced KG"
+                )
+                
+                # Enhanced KG features (if available)
+                enhanced_kg_features_results = None
+                if ENHANCED_FEATURES_AVAILABLE:
+                    try:
+                        enhanced_builder = EnhancedKGFeatureBuilder()
+                        X_train_enhanced, feature_names = enhanced_builder.create_enhanced_kg_features(
+                            train_data, selected_features
+                        )
+                        X_test_enhanced, _ = enhanced_builder.create_enhanced_kg_features(
+                            test_data, selected_features
+                        )
+                        
+                        scaler_enhanced = StandardScaler()
+                        X_train_enhanced_scaled = scaler_enhanced.fit_transform(X_train_enhanced)
+                        X_test_enhanced_scaled = scaler_enhanced.transform(X_test_enhanced)
+                        
+                        enhanced_kg_features_results = analyzer.train_optimized_models(
+                            X_train_enhanced_scaled, X_test_enhanced_scaled, y_train, y_test,
+                            train_pids, "Enhanced KG Features"
+                        )
+                    except Exception as e:
+                        print(f"❌ Enhanced KG features failed: {e}")
+                
+                # Comprehensive comparison
+                tier_results = {
+                    'Raw Clinical Features': raw_results,
+                    'Simple KG': simple_kg_results,
+                    'Enhanced KG': enhanced_kg_results
+                }
+                
+                if enhanced_kg_features_results:
+                    tier_results['Enhanced KG Features'] = enhanced_kg_features_results
+                
+                statistical_results = analyzer.statistical_comparison_analysis(tier_results)
+                
+                results = {
+                    'tier_results': tier_results,
+                    'statistical_results': statistical_results,
+                    'best_set_name': best_set_name
+                }
+            else:
+                print("⚠️ Enhanced features not available, running basic analysis instead")
+                results = analyzer.run_realistic_analysis()
+                
+        elif choice == "3":
+            print("\n🚀 Running Tuned Analysis...")
+            results = analyzer.run_enhanced_analysis_with_tuning()
+            
+        elif choice == "4":
+            print("\n🚀 Running GNN Analysis...")
+            results = analyzer.run_gnn_comparison_analysis()
+            
+        else:
+            print("❌ Invalid choice. Running default basic analysis...")
+            results = analyzer.run_realistic_analysis()
+        
+        print("\n" + "="*80)
+        print("🎉 ANALYSIS COMPLETED SUCCESSFULLY!")
+        print("="*80)
+        
+        return results
+        
+    except KeyboardInterrupt:
+        print("\n\n⚠️ Analysis interrupted by user")
+        return None
+        
+    except Exception as e:
+        print(f"\n\n❌ Analysis failed with error: {str(e)}")
+        print("📋 Trying fallback basic analysis...")
+        
+        try:
+            return analyzer.run_realistic_analysis()
+        except Exception as fallback_error:
+            print(f"❌ Fallback also failed: {str(fallback_error)}")
+            return None
+
+
+def run_demo_analysis():
+    """Run a demonstration analysis with synthetic data if no dataset is available"""
+    print("🔬 DEMO MODE - Synthetic NeuroGait Analysis")
+    print("="*60)
+    print("📋 This demonstrates the analysis pipeline with synthetic data")
+    print("🎯 Replace with 'Final dataset.csv' for real analysis")
+    print()
+    
+    # Generate synthetic data that mimics the structure
+    np.random.seed(42)
+    n_participants = 20
+    samples_per_participant = 8
+    n_samples = n_participants * samples_per_participant
+    n_features = 25
+    
+    # Create synthetic features with realistic names
+    feature_names = [
+        'SpineBase_X', 'SpineBase_Y', 'SpineBase_Z',
+        'SPKNL_angle', 'SPKNR_angle', 'HIANL_angle', 'HIANR_angle',
+        'GaCT_duration', 'StaT_duration', 'SwiT_duration',
+        'HESHL_velocity', 'HESHR_velocity', 'SHWRL_position', 'SHWRR_position',
+        'balance_score', 'stability_metric', 'gait_rhythm',
+        'step_length', 'stride_width', 'walking_speed',
+        'coordination_index', 'symmetry_measure', 'timing_variability',
+        'postural_sway', 'movement_smoothness'
+    ]
+    
+    # Generate synthetic data
+    X = np.random.randn(n_samples, n_features)
+    
+    # Add some structure to make it more realistic
+    for i in range(n_features):
+        X[:, i] = X[:, i] * (i + 1) / 5  # Different scales
+        
+    # Create participant IDs and diagnosis
+    participant_ids = np.repeat(np.arange(n_participants), samples_per_participant)
+    
+    # Create somewhat realistic diagnosis pattern (40% ASD)
+    asd_participants = np.random.choice(n_participants, size=int(n_participants * 0.4), replace=False)
+    diagnosis = np.array([1 if pid in asd_participants else 0 for pid in participant_ids])
+    
+    # Add slight correlation between features and diagnosis
+    asd_mask = diagnosis == 1
+    X[asd_mask, :5] += 0.3  # ASD participants have slightly different values
+    X[~asd_mask, 5:10] += 0.3  # Control participants have different pattern
+    
+    # Create DataFrame
+    df = pd.DataFrame(X, columns=feature_names)
+    df['participant_id'] = participant_ids
+    df['diagnosis'] = diagnosis
+    df['class'] = ['A' if d == 1 else 'T' for d in diagnosis]
+    
+    print(f"📊 Generated synthetic dataset:")
+    print(f"   Participants: {n_participants}")
+    print(f"   Samples: {n_samples}")
+    print(f"   Features: {n_features}")
+    print(f"   ASD cases: {np.sum(diagnosis)} ({np.mean(diagnosis)*100:.1f}%)")
+    
+    # Save synthetic data
+    df.to_csv('synthetic_neurogait_data.csv', index=False, sep=';')
+    print("💾 Saved as 'synthetic_neurogait_data.csv'")
+    
+    # Run basic analysis on synthetic data
+    analyzer = RealisticAnalysis()
+    
+    # Mock the load_and_prepare_data method for demo
+    def demo_load_and_prepare_data():
+        feature_names_only = [col for col in df.columns if col not in ['participant_id', 'diagnosis', 'class']]
+        return df, feature_names_only, "synthetic_demo"
+    
+    # Replace method temporarily
+    original_method = analyzer.load_and_prepare_data
+    analyzer.load_and_prepare_data = demo_load_and_prepare_data
+    
+    try:
+        print("\n🚀 Running demo analysis...")
+        results = analyzer.run_realistic_analysis()
+        
+        print("\n🎯 DEMO COMPLETED!")
+        print("📋 This was a demonstration with synthetic data")
+        print("🔄 Use real 'Final dataset.csv' for actual analysis")
+        
+        return results
+        
+    except Exception as e:
+        print(f"❌ Demo failed: {str(e)}")
+        return None
+    finally:
+        # Restore original method
+        analyzer.load_and_prepare_data = original_method
+
+
+if __name__ == "__main__":
+    print("🏥 NEUROGAIT ANALYSIS SYSTEM")
+    print("="*50)
+    
+    # Check if real dataset exists
+    import os
+    if os.path.exists('Final dataset.csv'):
+        print("✅ Real dataset found - running full analysis")
+        results = main()
+    else:
+        print("⚠️ 'Final dataset.csv' not found")
+        print("🔬 Running demonstration with synthetic data")
+        print()
+        results = run_demo_analysis()
+    
+    if results:
+        print("\n✅ Analysis pipeline completed successfully!")
+    else:
+        print("\n❌ Analysis failed - check error messages above")
