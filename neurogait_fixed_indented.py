@@ -814,67 +814,67 @@ class RealisticAnalysis:
             return statistical_results
     
     
-        def print_basic_comparison_results_with_stats(self, raw_results, kg_results, statistical_results,
-                                                    selected_count, original_count, clinical_set):
-            """Print basic comparison results with statistical analysis"""
-            print(f"\n{'='*70}")
-            print("🎉 CLINICAL RAW vs KG COMPARISON RESULTS με STATISTICS")
-            print(f"{'='*70}")
-            
-            # Best performers
-            best_raw = max(raw_results.keys(), key=lambda k: raw_results[k]['auc'])
-            best_kg = max(kg_results.keys(), key=lambda k: kg_results[k]['auc'])
-            
-            print(f"\n🏆 BEST PERFORMERS:")
-            print(f"   Raw Clinical Features: {best_raw} (AUC: {raw_results[best_raw]['auc']:.3f})")
-            print(f"   KG Embeddings:        {best_kg} (AUC: {kg_results[best_kg]['auc']:.3f})")
-            
-            # Clinical assessment
-            raw_best_auc = raw_results[best_raw]['auc']
-            kg_best_auc = kg_results[best_kg]['auc']
-            improvement = ((kg_best_auc - raw_best_auc) / raw_best_auc) * 100
-            
-            print(f"\n📊 OVERALL ASSESSMENT:")
-            print(f"   Clinical Feature Set: {clinical_set.replace('_', ' ').title()}")
-            print(f"   Features Used: {original_count} → {selected_count}")
-            print(f"   Raw Clinical Best AUC: {raw_best_auc:.3f}")
-            print(f"   KG Embeddings Best AUC: {kg_best_auc:.3f}")
-            print(f"   KG vs Raw Improvement: {improvement:+.1f}%")
-            
-            # Statistical significance
-            if statistical_results:
-                main_comparison = list(statistical_results.values())[0]  # Should be Raw vs KG
-                p_val = main_comparison['p_value']
-                effect_size = main_comparison['effect_size']
+            def print_basic_comparison_results_with_stats(self, raw_results, kg_results, statistical_results,
+                                                        selected_count, original_count, clinical_set):
+                """Print basic comparison results with statistical analysis"""
+                print(f"\n{'='*70}")
+                print("🎉 CLINICAL RAW vs KG COMPARISON RESULTS με STATISTICS")
+                print(f"{'='*70}")
                 
-                print(f"   Statistical Analysis:")
-                if not np.isnan(p_val):
-                    print(f"      p-value: {p_val:.4f}")
-                    print(f"      Effect size: {effect_size} (rank-biserial r={main_comparison['rank_biserial']:+.3f})")
-                    if p_val < 0.05:
-                        print(f"      Result: ✅ STATISTICALLY SIGNIFICANT")
+                # Best performers
+                best_raw = max(raw_results.keys(), key=lambda k: raw_results[k]['auc'])
+                best_kg = max(kg_results.keys(), key=lambda k: kg_results[k]['auc'])
+                
+                print(f"\n🏆 BEST PERFORMERS:")
+                print(f"   Raw Clinical Features: {best_raw} (AUC: {raw_results[best_raw]['auc']:.3f})")
+                print(f"   KG Embeddings:        {best_kg} (AUC: {kg_results[best_kg]['auc']:.3f})")
+                
+                # Clinical assessment
+                raw_best_auc = raw_results[best_raw]['auc']
+                kg_best_auc = kg_results[best_kg]['auc']
+                improvement = ((kg_best_auc - raw_best_auc) / raw_best_auc) * 100
+                
+                print(f"\n📊 OVERALL ASSESSMENT:")
+                print(f"   Clinical Feature Set: {clinical_set.replace('_', ' ').title()}")
+                print(f"   Features Used: {original_count} → {selected_count}")
+                print(f"   Raw Clinical Best AUC: {raw_best_auc:.3f}")
+                print(f"   KG Embeddings Best AUC: {kg_best_auc:.3f}")
+                print(f"   KG vs Raw Improvement: {improvement:+.1f}%")
+                
+                # Statistical significance
+                if statistical_results:
+                    main_comparison = list(statistical_results.values())[0]  # Should be Raw vs KG
+                    p_val = main_comparison['p_value']
+                    effect_size = main_comparison['effect_size']
+                    
+                    print(f"   Statistical Analysis:")
+                    if not np.isnan(p_val):
+                        print(f"      p-value: {p_val:.4f}")
+                        print(f"      Effect size: {effect_size} (rank-biserial r={main_comparison['rank_biserial']:+.3f})")
+                        if p_val < 0.05:
+                            print(f"      Result: ✅ STATISTICALLY SIGNIFICANT")
+                        else:
+                            print(f"      Result: 📋 Not statistically significant")
                     else:
-                        print(f"      Result: 📋 Not statistically significant")
+                        print(f"      Result: ⚠️ Statistical test could not be performed")
+                
+                # Winner declaration with statistical context
+                print(f"\n🏆 FINAL COMPARISON WINNER:")
+                if kg_best_auc > raw_best_auc + 0.02:
+                    print(f"   🧠 KNOWLEDGE GRAPH EMBEDDINGS WIN!")
+                    print(f"   💡 Graph processing enhances clinical features by {improvement:+.1f}%")
+                    if statistical_results and not np.isnan(list(statistical_results.values())[0]['p_value']):
+                        p_val = list(statistical_results.values())[0]['p_value']
+                        if p_val < 0.05:
+                            print(f"   ✅ Victory is statistically significant (p={p_val:.4f})")
+                        else:
+                            print(f"   📋 Victory not statistically significant (p={p_val:.4f})")
+                elif raw_best_auc > kg_best_auc + 0.02:
+                    print(f"   📊 RAW CLINICAL FEATURES WIN!")
+                    print(f"   💡 Simple clinical features outperform graph processing")
                 else:
-                    print(f"      Result: ⚠️ Statistical test could not be performed")
-            
-            # Winner declaration with statistical context
-            print(f"\n🏆 FINAL COMPARISON WINNER:")
-            if kg_best_auc > raw_best_auc + 0.02:
-                print(f"   🧠 KNOWLEDGE GRAPH EMBEDDINGS WIN!")
-                print(f"   💡 Graph processing enhances clinical features by {improvement:+.1f}%")
-                if statistical_results and not np.isnan(list(statistical_results.values())[0]['p_value']):
-                    p_val = list(statistical_results.values())[0]['p_value']
-                    if p_val < 0.05:
-                        print(f"   ✅ Victory is statistically significant (p={p_val:.4f})")
-                    else:
-                        print(f"   📋 Victory not statistically significant (p={p_val:.4f})")
-            elif raw_best_auc > kg_best_auc + 0.02:
-                print(f"   📊 RAW CLINICAL FEATURES WIN!")
-                print(f"   💡 Simple clinical features outperform graph processing")
-            else:
-                print(f"   ⚖️ TIE - Both approaches perform similarly")
-                print(f"   💡 Difference ({improvement:+.1f}%) within statistical noise")
+                    print(f"   ⚖️ TIE - Both approaches perform similarly")
+                    print(f"   💡 Difference ({improvement:+.1f}%) within statistical noise")
     
         def create_tuned_kg_embeddings(self, X_train, X_test, interaction_strength=0.02, smoothing=0.03, nonlinearity=0.3):
             """Create tuned KG embeddings with adjustable parameters"""
