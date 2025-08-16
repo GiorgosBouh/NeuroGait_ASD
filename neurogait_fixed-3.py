@@ -1461,7 +1461,7 @@ if __name__ == "__main__":
     if results:
         print("\n✅ Analysis pipeline completed successfully!")
     else:
-        print("\n❌ Analysis failed - check error messages above")']
+        print("\n❌ Analysis failed - check error messages above")
         X_train_scaled, X_test_scaled = self.prepare_data_properly(X_train, X_test)
         
         # === TIER 1A: RAW CLINICAL FEATURES ===
