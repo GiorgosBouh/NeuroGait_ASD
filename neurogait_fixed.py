@@ -815,7 +815,7 @@ def statistical_comparison_analysis(self, tier1_results):
 
 
     def print_basic_comparison_results_with_stats(self, raw_results, kg_results, statistical_results,
-                                                selected_count, original_count, clinical_set):
+                                                  raw_mean_auc, kg_mean_auc, raw_std_auc, kg_std_auc):
         """Print basic comparison results with statistical analysis"""
         print(f"\n{'='*70}")
         print("🎉 CLINICAL RAW vs KG COMPARISON RESULTS με STATISTICS")
