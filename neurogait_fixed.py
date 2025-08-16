@@ -14,19 +14,28 @@ from sklearn.svm import SVC
 from sklearn.feature_selection import SelectKBest, f_classif
 import xgboost as xgb
 from sklearn.metrics import roc_auc_score, f1_score, accuracy_score, precision_score, recall_score
+
 from scipy.stats import wilcoxon
 
-# === Statistical utilities (paired, sample-level) ===
+# =====================
+# Statistical utilities
+# =====================
 
 def paired_bootstrap_metric_diff(y, p1, p2, metric_func, n_boot=10000, seed=123, threshold=0.5):
-    \"\"\"Paired bootstrap CI for Δ metric between two methods using per-sample pairing.
-    For accuracy/f1, probabilities are thresholded at 'threshold'.\"\"\"
+    """
+    Paired bootstrap for the difference in a metric between two methods using sample-level pairing.
+    y: true labels (0/1), shape (n,)
+    p1, p2: predicted probabilities or hard labels, shape (n,)
+    metric_func: e.g., roc_auc_score, accuracy_score, f1_score
+    For accuracy/f1, we binarize p >= threshold.
+    Returns: (mean_diff, (ci_low, ci_high), diffs_array)
+    """
     rng = np.random.default_rng(seed)
     idx = np.arange(len(y))
     diffs = np.empty(n_boot, dtype=float)
     for b in range(n_boot):
         s = rng.choice(idx, size=len(idx), replace=True)
-        if metric_func.__name__ in (\"accuracy_score\", \"f1_score\"):
+        if metric_func.__name__ in ("accuracy_score", "f1_score"):
             m1 = metric_func(y[s], (p1[s] >= threshold).astype(int))
             m2 = metric_func(y[s], (p2[s] >= threshold).astype(int))
         else:
@@ -36,26 +45,34 @@ def paired_bootstrap_metric_diff(y, p1, p2, metric_func, n_boot=10000, seed=123,
     ci_low, ci_high = np.percentile(diffs, [2.5, 97.5])
     return float(diffs.mean()), (float(ci_low), float(ci_high)), diffs
 
+
 def wilcoxon_rank_biserial_from_trueprob(y, p1, p2):
-    \"\"\"Wilcoxon signed-rank on true-class probabilities + rank-biserial effect size.\"\"\"
+    """
+    Wilcoxon signed-rank test on per-sample true-class probabilities,
+    plus rank-biserial effect size.
+    Returns: (W, p_value, rank_biserial)
+    """
     pt1 = np.where(y == 1, p1, 1.0 - p1)
     pt2 = np.where(y == 1, p2, 1.0 - p2)
-    stat, p = wilcoxon(pt1, pt2, zero_method=\"wilcox\", alternative=\"two-sided\", mode=\"auto\")
+    stat, p = wilcoxon(pt1, pt2, zero_method="wilcox", alternative="two-sided", mode="auto")
     n = len(y)
     max_W = n * (n + 1) / 2.0
     rbc = 1.0 - (2.0 * stat / max_W)
     return float(stat), float(p), float(rbc)
 
+
 def rank_biserial_to_label(r):
+    """Heuristic interpretation for rank-biserial effect size."""
     ar = abs(r)
     if ar >= 0.474:
-        return \"Large\"
+        return "Large"
     elif ar >= 0.33:
-        return \"Medium\"
+        return "Medium"
     elif ar >= 0.147:
-        return \"Small\"
+        return "Small"
     else:
-        return \"Negligible\"
+        return "Negligible"
+from scipy.stats import wilcoxon
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -600,9 +617,10 @@ class RealisticAnalysis:
                     'f1': f1_score(y_test, y_pred, zero_division=0),
                     'auc': roc_auc_score(y_test, y_pred_proba)
                 ,
-                    'y_test': y_test,
+                    'y_test': np.asarray(y_test),
                     'pred_test': y_pred,
-                    'proba_test': y_pred_proba}
+                    'proba_test': y_pred_proba
+                }
                 
                 results[model_name] = metrics
                 
@@ -707,91 +725,93 @@ class RealisticAnalysis:
         
         return cv_scores
 
-    def statistical_comparison_analysis(self, tier1_results):
-            """Paired statistical comparison using sample-level test probabilities (best model per approach).
-            Reports ΔAUC/ΔAcc/ΔF1 (paired bootstrap 95% CI) and Wilcoxon rank-biserial on true-class probabilities."""
-            print("\n📊 DETAILED STATISTICAL ANALYSIS (sample-level, paired):")
-            print("="*80)
-            
-            # Pick best model by test AUC per approach (needs y_test & proba_test stored)
-            best = {}
-            for approach_name, models in tier1_results.items():
-                best_auc = -1.0
-                best_entry = None
-                for model_name, metrics in models.items():
-                    if 'proba_test' in metrics and 'y_test' in metrics:
-                        auc = metrics.get('auc', -1.0)
-                        if auc > best_auc:
-                            best_auc = auc
-                            best_entry = (model_name, metrics)
-                if best_entry is not None:
-                    best[approach_name] = {
-                        'model': best_entry[0],
-                        'auc': best_auc,
-                        'y': np.asarray(best_entry[1]['y_test']),
-                        'p': np.asarray(best_entry[1]['proba_test'])
-                    }
-            
-            approaches = list(best.keys())
-            statistical_results = {}
-            
-            for i in range(len(approaches)):
-                for j in range(i+1, len(approaches)):
-                    a1, a2 = approaches[i], approaches[j]
-                    y1, p1 = best[a1]['y'], best[a1]['p']
-                    y2, p2 = best[a2]['y'], best[a2]['p']
-                    
-                    if len(y1) != len(y2) or not np.array_equal(y1, y2):
-                        print(f"\n⚠️ Skipping {a1} vs {a2}: mismatched test sets.")
-                        continue
-                    
-                    y = y1
-                    print(f"\n🔍 COMPARING (test level): {a1} vs {a2}")
-                    print("-"*60)
-                    
-                    from sklearn.metrics import roc_auc_score, accuracy_score, f1_score
-                    auc_diff, auc_ci, _ = paired_bootstrap_metric_diff(y, p1, p2, roc_auc_score, n_boot=10000, seed=123)
-                    print(f"AUC Δ = {auc_diff:+.3f}  (95% CI [{auc_ci[0]:.3f}, {auc_ci[1]:.3f}])")
-                    
-                    acc_diff, acc_ci, _ = paired_bootstrap_metric_diff(y, p1, p2, accuracy_score, n_boot=10000, seed=123, threshold=0.5)
-                    print(f"Acc Δ = {acc_diff:+.3f} (95% CI [{acc_ci[0]:.3f}, {acc_ci[1]:.3f}])")
-                    
-                    f1_diff, f1_ci, _ = paired_bootstrap_metric_diff(y, p1, p2, f1_score, n_boot=10000, seed=123, threshold=0.5)
-                    print(f" F1 Δ = {f1_diff:+.3f} (95% CI [{f1_ci[0]:.3f}, {f1_ci[1]:.3f}])")
-                    
-                    W, p_val, rbc = wilcoxon_rank_biserial_from_trueprob(y, p1, p2)
-                    label = rank_biserial_to_label(rbc)
-                    print(f"Wilcoxon (true prob): p = {p_val:.4f}, rank-biserial r = {rbc:+.3f} ({label})")
-                    
-                    key = f"{a1} vs {a2}"
-                    statistical_results[key] = {
-                        'approach1': a1,
-                        'approach2': a2,
-                        'auc_diff': auc_diff,
-                        'auc_ci': auc_ci,
-                        'acc_diff': acc_diff,
-                        'acc_ci': acc_ci,
-                        'f1_diff': f1_diff,
-                        'f1_ci': f1_ci,
-                        'w_statistic': W,
-                        'p_value': p_val,
-                        'rank_biserial': rbc,
-                        'effect_size': label
-                    }
-            
-            if statistical_results:
-                print(f"\n📋 STATISTICAL SUMMARY TABLE:")
-                print("="*110)
-                print(f"{'Comparison':<35} {'ΔAUC (95% CI)':<30} {'Wilcoxon p':<12} {'r (effect)':<15}")
-                print("="*110)
-                for comp, res in statistical_results.items():
-                    ci = res['auc_ci']
-                    print(f"{comp:<35} {res['auc_diff']:+.3f} [{ci[0]:.3f},{ci[1]:.3f}]   {res['p_value']:<12.4f} {res['rank_biserial']:+.3f} ({res['effect_size']})")
-                print("="*110)
-            else:
-                print("\n⚠️ No comparable approaches with aligned test sets.")
-            
-            return statistical_results
+    
+def statistical_comparison_analysis(self, tier1_results):
+        """Paired statistical comparison using sample-level test probabilities."""
+        print("\n📊 DETAILED STATISTICAL ANALYSIS (sample-level, paired):")
+        print("="*70)
+        
+        # Gather best model per approach (by test AUC) and their test predictions
+        best = {}
+        for approach_name, models in tier1_results.items():
+            best_auc = -1.0
+            best_entry = None
+            for model_name, metrics in models.items():
+                if 'proba_test' in metrics and 'y_test' in metrics:
+                    auc = metrics.get('auc', -1.0)
+                    if auc > best_auc:
+                        best_auc = auc
+                        best_entry = (model_name, metrics)
+            if best_entry is not None:
+                best[approach_name] = {
+                    'model': best_entry[0],
+                    'auc': best_auc,
+                    'y': np.asarray(best_entry[1]['y_test']),
+                    'p': np.asarray(best_entry[1]['proba_test'])
+                }
+        
+        approaches = list(best.keys())
+        statistical_results = {}
+        
+        # Pairwise comparisons
+        for i in range(len(approaches)):
+            for j in range(i+1, len(approaches)):
+                a1, a2 = approaches[i], approaches[j]
+                y1, p1 = best[a1]['y'], best[a1]['p']
+                y2, p2 = best[a2]['y'], best[a2]['p']
+                
+                if len(y1) != len(y2) or not np.array_equal(y1, y2):
+                    print(f"\n⚠️ Skipping {a1} vs {a2}: mismatched test sets.")
+                    continue
+                
+                y = y1
+                print(f"\n🔍 COMPARING (test level): {a1} vs {a2}")
+                print("-"*60)
+                
+                from sklearn.metrics import roc_auc_score, accuracy_score, f1_score
+                auc_diff, auc_ci, _ = paired_bootstrap_metric_diff(y, p1, p2, roc_auc_score, n_boot=10000, seed=123)
+                print(f"AUC Δ = {auc_diff:+.3f}  (95% CI [{auc_ci[0]:.3f}, {auc_ci[1]:.3f}])")
+                
+                acc_diff, acc_ci, _ = paired_bootstrap_metric_diff(y, p1, p2, accuracy_score, n_boot=10000, seed=123, threshold=0.5)
+                print(f"Acc Δ = {acc_diff:+.3f} (95% CI [{acc_ci[0]:.3f}, {acc_ci[1]:.3f}])")
+                
+                f1_diff, f1_ci, _ = paired_bootstrap_metric_diff(y, p1, p2, f1_score, n_boot=10000, seed=123, threshold=0.5)
+                print(f" F1 Δ = {f1_diff:+.3f} (95% CI [{f1_ci[0]:.3f}, {f1_ci[1]:.3f}])")
+                
+                W, p_val, rbc = wilcoxon_rank_biserial_from_trueprob(y, p1, p2)
+                label = rank_biserial_to_label(rbc)
+                print(f"Wilcoxon (true prob): p = {p_val:.4f}, rank-biserial r = {rbc:+.3f} ({label})")
+                
+                key = f"{a1} vs {a2}"
+                statistical_results[key] = {
+                    'approach1': a1,
+                    'approach2': a2,
+                    'auc_diff': auc_diff,
+                    'auc_ci': auc_ci,
+                    'acc_diff': acc_diff,
+                    'acc_ci': acc_ci,
+                    'f1_diff': f1_diff,
+                    'f1_ci': f1_ci,
+                    'w_statistic': W,
+                    'p_value': p_val,
+                    'rank_biserial': rbc,
+                    'effect_size': label
+                }
+        
+        # Summary table
+        if statistical_results:
+            print(f"\n📋 STATISTICAL SUMMARY TABLE (paired bootstrap & Wilcoxon):")
+            print("="*110)
+            print(f"{'Comparison':<35} {'ΔAUC (95% CI)':<30} {'Wilcoxon p':<12} {'r (effect)':<15}")
+            print("="*110)
+            for comp, res in statistical_results.items():
+                ci = res['auc_ci']
+                print(f"{comp:<35} {res['auc_diff']:+.3f} [{ci[0]:.3f},{ci[1]:.3f}]   {res['p_value']:<12.4f} {res['rank_biserial']:+.3f} ({res['effect_size']})")
+            print("="*110)
+        else:
+            print("\n⚠️ No comparable approaches with aligned test sets.")
+        
+        return statistical_results
 
 
     def print_basic_comparison_results_with_stats(self, raw_results, kg_results, statistical_results,
@@ -830,7 +850,7 @@ class RealisticAnalysis:
             print(f"   Statistical Analysis:")
             if not np.isnan(p_val):
                 print(f"      p-value: {p_val:.4f}")
-                print(f"      Effect size: {effect_size} (d={main_comparison['cohens_d']:+.3f})")
+                print(f"      Effect size: {effect_size} (rank-biserial r={main_comparison['rank_biserial']:+.3f})")
                 if p_val < 0.05:
                     print(f"      Result: ✅ STATISTICALLY SIGNIFICANT")
                 else:
@@ -1326,7 +1346,7 @@ class RealisticAnalysis:
                     if raw_vs_kg_key and not np.isnan(statistical_results[raw_vs_kg_key]['p_value']):
                         p_val = statistical_results[raw_vs_kg_key]['p_value']
                         effect_size = statistical_results[raw_vs_kg_key]['effect_size']
-                        print(f"   Statistical significance: p={p_val:.4f} ({effect_size} effect size)")
+                        print(f"   Statistical significance: p={p_val:.4f} (rank-biserial: {effect_size})")
                         
                         if p_val < 0.05:
                             print("   ✅ STATISTICALLY SIGNIFICANT improvement!")
