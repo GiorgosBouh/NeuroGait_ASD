@@ -2150,4 +2150,4 @@ if __name__ == "__main__":
         )
         
         y_train = train_data['diagnosis']
-        y_test = test_data['diagnosis
+        y_test = test_data['diagnosis']
