@@ -1126,7 +1126,7 @@ class RealisticAnalysis:
         )
         
         y_train = train_data['diagnosis']
-        y_test = test_data['diagnosis']
+        y_test = test_data['diagnosis']']
         X_train_scaled, X_test_scaled = self.prepare_data_properly(X_train, X_test)
         
         # Raw features analysis
