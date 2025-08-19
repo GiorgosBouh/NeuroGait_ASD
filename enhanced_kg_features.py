@@ -11,7 +11,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, classification_report
 import logging
-from enhanced_kg_graph_features import GraphBasedKGFeatureBuilder
+from enhanced_kg_features import GraphBasedKGFeatureBuilder
 
 # Setup logging
 logging.basicConfig(
