@@ -14,8 +14,9 @@ from sklearn.svm import SVC
 from sklearn.feature_selection import SelectKBest, f_classif
 import xgboost as xgb
 from sklearn.metrics import roc_auc_score, f1_score, accuracy_score, precision_score, recall_score
-
 from scipy.stats import wilcoxon
+import warnings
+warnings.filterwarnings('ignore')
 
 # =====================
 # Statistical utilities
@@ -45,7 +46,6 @@ def paired_bootstrap_metric_diff(y, p1, p2, metric_func, n_boot=10000, seed=123,
     ci_low, ci_high = np.percentile(diffs, [2.5, 97.5])
     return float(diffs.mean()), (float(ci_low), float(ci_high)), diffs
 
-
 def wilcoxon_rank_biserial_from_trueprob(y, p1, p2):
     """
     Wilcoxon signed-rank test on per-sample true-class probabilities,
@@ -60,7 +60,6 @@ def wilcoxon_rank_biserial_from_trueprob(y, p1, p2):
     rbc = 1.0 - (2.0 * stat / max_W)
     return float(stat), float(p), float(rbc)
 
-
 def rank_biserial_to_label(r):
     """Heuristic interpretation for rank-biserial effect size."""
     ar = abs(r)
@@ -72,9 +71,6 @@ def rank_biserial_to_label(r):
         return "Small"
     else:
         return "Negligible"
-from scipy.stats import wilcoxon
-import warnings
-warnings.filterwarnings('ignore')
 
 # ΠΡΟΣΘΗΚΗ - Enhanced Features Support
 try:
@@ -87,19 +83,20 @@ except ImportError:
     ENHANCED_FEATURES_AVAILABLE = False
 
 # ΠΡΟΣΘΗΚΗ - GNN Support
-    try:
-        import sys
-        from pathlib import Path
-        # Add the parent directory to Python path
-        sys.path.append(str(Path(__file__).parent.parent))
-        from neurogait_with_graph_features import TrueGraphAnalysis
-        GNN_ANALYSIS_AVAILABLE = True
-        print("✅ GNN Analysis available (using neurogait_with_graph_features.py)")
-    except Exception as e:
-        print(f"⚠️ GNN analysis not available - {str(e)}")
-        print("   Install: pip install torch torch-geometric")
-        print("   Ensure neurogait_with_graph_features.py exists")
-        GNN_ANALYSIS_AVAILABLE = False
+try:
+    import sys
+    from pathlib import Path
+    # Add the parent directory to Python path
+    sys.path.append(str(Path(__file__).parent.parent))
+    from neurogait_with_graph_features import TrueGraphAnalysis
+    GNN_ANALYSIS_AVAILABLE = True
+    print("✅ GNN Analysis available (using neurogait_with_graph_features.py)")
+except Exception as e:
+    print(f"⚠️ GNN analysis not available - {str(e)}")
+    print("   Install: pip install torch torch-geometric")
+    print("   Ensure neurogait_with_graph_features.py exists")
+    GNN_ANALYSIS_AVAILABLE = False
+
 class RealisticAnalysis:
     def __init__(self):
         self.random_state = 42
@@ -268,7 +265,7 @@ class RealisticAnalysis:
         for col in numeric_cols:
             try:
                 if df[col].dtype == 'object':
-                    converted_col = pd.to_numeric(df[col].astype(str).str.replace(',', '.'), errors='coerce')
+                    converted_col = pd.to_numeric(df[col].ast(str).str.replace(',', '.'), errors='coerce')
                     if not converted_col.isna().all() and converted_col.var() > 1e-10:
                         df[col] = converted_col
                         converted_features.append(col)
@@ -618,8 +615,7 @@ class RealisticAnalysis:
                     'precision': precision_score(y_test, y_pred, zero_division=0),
                     'recall': recall_score(y_test, y_pred, zero_division=0),
                     'f1': f1_score(y_test, y_pred, zero_division=0),
-                    'auc': roc_auc_score(y_test, y_pred_proba)
-                ,
+                    'auc': roc_auc_score(y_test, y_pred_proba),
                     'y_test': np.asarray(y_test),
                     'pred_test': y_pred,
                     'proba_test': y_pred_proba
@@ -728,8 +724,7 @@ class RealisticAnalysis:
         
         return cv_scores
 
-    
-def statistical_comparison_analysis(self, tier1_results):
+    def statistical_comparison_analysis(self, tier1_results):
         """Paired statistical comparison using sample-level test probabilities."""
         print("\n📊 DETAILED STATISTICAL ANALYSIS (sample-level, paired):")
         print("="*70)
@@ -815,7 +810,6 @@ def statistical_comparison_analysis(self, tier1_results):
             print("\n⚠️ No comparable approaches with aligned test sets.")
         
         return statistical_results
-
 
     def print_basic_comparison_results_with_stats(self, raw_results, kg_results, statistical_results,
                                                 selected_count, original_count, clinical_set):
@@ -1648,7 +1642,7 @@ def statistical_comparison_analysis(self, tier1_results):
         print(f"\n🧠 GNN vs TRADITIONAL METHODS:")
         
         # Best traditional (non-GNN) method
-        traditional_approaches = {k: v for k, v in approach_summaries.items() if k != "True GNN"}
+        traditional_approaches = {k for k in approach_summaries.keys() if k != "True GNN"}
         if traditional_approaches:
             best_traditional = max(traditional_approaches.items(), key=lambda x: x[1]["best_auc"])
             best_traditional_name = best_traditional[0]
@@ -1732,7 +1726,7 @@ def statistical_comparison_analysis(self, tier1_results):
         print(f"\n🚀 RECOMMENDATIONS:")
         print("   • Test on larger clinical datasets for GNN stability")
         print("   • Optimize graph construction (edge thresholds, features)")
-        print("   • Implement graph-specific data augmentation")
+        print("   • Apply graph-specific data augmentation")
         print("   • Try advanced GNN architectures (GraphTransformer, etc.)")
         print("   • Ensemble graph and non-graph methods")
         print("   • Validate with temporal gait sequences")
@@ -1798,7 +1792,6 @@ def statistical_comparison_analysis(self, tier1_results):
             'clinical_set': best_set_name
         }
 
-
 # MAIN FUNCTION με GNN Support
 def main():
     """Main execution with clinical features, comprehensive statistical analysis, hyperparameter tuning, and GNN support"""
@@ -1815,7 +1808,7 @@ def main():
         "1. Basic Analysis (Raw vs KG με clinical features και statistics)",
         "2. Enhanced Analysis (All tiers με comprehensive statistics)",
         "3. Tuned Analysis (Enhanced + Hyperparameter tuning)",
-        "4. GNN Analysis (Raw vs KG vs Enhanced KG vs True GNN)"  # NEW OPTION
+        "4. GNN Analysis (Raw vs KG vs Enhanced KG vs True GNN)"
     ]
     
     # Check availability
@@ -1973,7 +1966,6 @@ def main():
             print(f"❌ Fallback also failed: {str(fallback_error)}")
             return None
 
-
 def run_demo_analysis():
     """Run a demonstration analysis with synthetic data if no dataset is available"""
     print("🔬 DEMO MODE - Synthetic NeuroGait Analysis")
@@ -2064,7 +2056,6 @@ def run_demo_analysis():
     finally:
         # Restore original method
         analyzer.load_and_prepare_data = original_method
-
 
 if __name__ == "__main__":
     print("🏥 NEUROGAIT ANALYSIS SYSTEM")
