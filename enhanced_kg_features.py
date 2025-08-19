@@ -11,7 +11,6 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, classification_report
 import logging
-from enhanced_kg_features import GraphBasedKGFeatureBuilder
 
 # Setup logging
 logging.basicConfig(
@@ -23,7 +22,14 @@ logger = logging.getLogger(__name__)
 class GraphEnhancedNeuroGaitAnalysis:
     def __init__(self, samples_per_participant=8):
         self.samples_per_participant = samples_per_participant
-        self.graph_builder = GraphBasedKGFeatureBuilder(samples_per_participant)
+        
+        # Dynamic import to avoid circular imports
+        try:
+            from enhanced_kg_graph_features import GraphBasedKGFeatureBuilder
+            self.graph_builder = GraphBasedKGFeatureBuilder(samples_per_participant)
+        except ImportError:
+            logger.error("Could not import GraphBasedKGFeatureBuilder from enhanced_kg_graph_features")
+            self.graph_builder = None
         
     def load_data(self, filepath="Final dataset.csv"):
         """Load the dataset"""
@@ -101,34 +107,44 @@ class GraphEnhancedNeuroGaitAnalysis:
         
         # 2. Enhanced Features (Domain Knowledge, No Graph)
         logger.info("\n🔷 Approach 2: Enhanced Features (Domain Knowledge, No Graph)")
-        from enhanced_kg_features_2 import EnhancedKGFeatureBuilder
-        
-        enhancer = EnhancedKGFeatureBuilder()
-        X_enhanced, enhanced_names = enhancer.create_enhanced_kg_features(df, available_features)
-        
-        X_train_enh = X_enhanced[train_mask]
-        X_test_enh = X_enhanced[test_mask]
-        
-        # Standardize
-        scaler_enh = StandardScaler()
-        X_train_enh_scaled = scaler_enh.fit_transform(X_train_enh)
-        X_test_enh_scaled = scaler_enh.transform(X_test_enh)
-        
-        # Train and evaluate
-        rf_enh = RandomForestClassifier(n_estimators=100, random_state=42)
-        rf_enh.fit(X_train_enh_scaled, y_train)
-        
-        acc_enh = accuracy_score(y_test, rf_enh.predict(X_test_enh_scaled))
-        results['enhanced_no_graph'] = acc_enh
-        logger.info(f"   Accuracy: {acc_enh:.3f}")
-        logger.info(f"   Features: {X_enhanced.shape[1]} (added {X_enhanced.shape[1] - len(available_features)})")
+        try:
+            from enhanced_kg_features_2 import EnhancedKGFeatureBuilder
+            
+            enhancer = EnhancedKGFeatureBuilder()
+            X_enhanced, enhanced_names = enhancer.create_enhanced_kg_features(df, available_features)
+            
+            X_train_enh = X_enhanced[train_mask]
+            X_test_enh = X_enhanced[test_mask]
+            
+            # Standardize
+            scaler_enh = StandardScaler()
+            X_train_enh_scaled = scaler_enh.fit_transform(X_train_enh)
+            X_test_enh_scaled = scaler_enh.transform(X_test_enh)
+            
+            # Train and evaluate
+            rf_enh = RandomForestClassifier(n_estimators=100, random_state=42)
+            rf_enh.fit(X_train_enh_scaled, y_train)
+            
+            acc_enh = accuracy_score(y_test, rf_enh.predict(X_test_enh_scaled))
+            results['enhanced_no_graph'] = acc_enh
+            logger.info(f"   Accuracy: {acc_enh:.3f}")
+            logger.info(f"   Features: {X_enhanced.shape[1]} (added {X_enhanced.shape[1] - len(available_features)})")
+        except ImportError:
+            logger.error("Could not import EnhancedKGFeatureBuilder from enhanced_kg_features_2")
+            results['enhanced_no_graph'] = 0.0
         
         # 3. Graph-Based Features
         logger.info("\n🔷 Approach 3: Graph-Based Features")
         
+        if self.graph_builder is None:
+            logger.error("Graph builder not available. Skipping graph-based approach.")
+            results['graph_based'] = 0.0
+            return results
+        
         # Connect to graph
         if not self.graph_builder.connect():
             logger.error("Could not connect to Neo4j!")
+            results['graph_based'] = 0.0
             return results
         
         try:
