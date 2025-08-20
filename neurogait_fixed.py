@@ -84,12 +84,13 @@ except ImportError as e:
 
 # ΠΡΟΣΘΗΚΗ - GNN Support
 # ΠΡΟΣΘΗΚΗ - GNN Support
+# Στο GNN import section (γραμμή ~55), άλλαξε το import to:
 try:
     import sys
     from pathlib import Path
     # Add the parent directory to Python path
     sys.path.append(str(Path(__file__).parent))
-    from true_gnn_analysis import TrueGraphAnalysis  # ΑΛΛΑΓΗ ΕΔΩ!
+    from true_gnn_analysis import TrueGraphAnalysis, align_test_predictions  # ΠΡΟΣΘΗΚΗ ΕΔΩ!
     GNN_ANALYSIS_AVAILABLE = True
     print("✅ GNN Analysis available (using true_gnn_analysis.py)")
 except Exception as e:
@@ -1652,6 +1653,23 @@ class RealisticAnalysis:
 
         print(f"\n📊 GNN vs ALL METHODS - STATISTICAL COMPARISON:")
         print("="*60)
+        if "True GNN" in approach_summaries:
+            # ΠΡΟΣΘΗΚΗ: Align GNN predictions first
+            reference_labels = None
+            for approach_name in approach_summaries:
+                if approach_name != "True GNN":
+                    for model_metrics in all_results[approach_name].values():
+                        if 'y_test' in model_metrics:
+                            reference_labels = model_metrics['y_test']
+                            break
+                    if reference_labels is not None:
+                        break
+            
+            if reference_labels is not None:
+                # Align GNN predictions with reference
+                all_results['True GNN'] = align_test_predictions(
+                    all_results['True GNN'], reference_labels
+                )
 
         if "True GNN" in approach_summaries:
             gnn_best_auc = approach_summaries["True GNN"]["best_auc"]
