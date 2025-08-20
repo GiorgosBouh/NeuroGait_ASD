@@ -1745,7 +1745,7 @@ class RealisticAnalysis:
                 
             except Exception as e:
                 print(f"   GNN vs {approach_name:<25}: {improvement:+.1f}% ⚠️ ({str(e)[:30]})")
-    else:
+        else:
             print("   GNN results not available for comparison")    
     
 
