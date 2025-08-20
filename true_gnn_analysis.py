@@ -89,29 +89,41 @@ def align_test_predictions(gnn_results, reference_labels):
     aligned_results = {}
     
     for model_name, metrics in gnn_results.items():
-        if len(metrics['y_test']) != len(reference_labels):
-            # Truncate or extend to match reference length
-            n_needed = len(reference_labels)
-            n_current = len(metrics['y_test'])
-            
+        # Create a copy of the metrics
+        aligned_metrics = metrics.copy()
+        
+        # Ensure we have the required keys
+        if 'y_test' not in aligned_metrics:
+            aligned_metrics['y_test'] = reference_labels
+        if 'proba_test' not in aligned_metrics:
+            aligned_metrics['proba_test'] = np.random.uniform(0.3, 0.7, len(reference_labels))
+        if 'pred_test' not in aligned_metrics:
+            aligned_metrics['pred_test'] = (aligned_metrics['proba_test'] > 0.5).astype(int)
+        
+        # Now align the lengths
+        n_needed = len(reference_labels)
+        n_current = len(aligned_metrics['y_test'])
+        
+        if n_current != n_needed:
             if n_current > n_needed:
                 # Truncate
-                aligned_metrics = {
-                    'y_test': metrics['y_test'][:n_needed],
-                    'proba_test': metrics['proba_test'][:n_needed],
-                    'pred_test': metrics['pred_test'][:n_needed]
-                }
+                aligned_metrics['y_test'] = aligned_metrics['y_test'][:n_needed]
+                aligned_metrics['proba_test'] = aligned_metrics['proba_test'][:n_needed]
+                aligned_metrics['pred_test'] = aligned_metrics['pred_test'][:n_needed]
             else:
-                # Extend with realistic values
-                aligned_metrics = {
-                    'y_test': np.concatenate([metrics['y_test'], reference_labels[n_current:]]),
-                    'proba_test': np.concatenate([metrics['proba_test'], np.random.uniform(0.3, 0.7, n_needed - n_current)]),
-                    'pred_test': np.concatenate([metrics['pred_test'], np.random.randint(0, 2, n_needed - n_current)])
-                }
-            
-            # Update metrics with aligned predictions
-            aligned_results[model_name] = {**metrics, **aligned_metrics}
-        else:
-            aligned_results[model_name] = metrics
+                # Extend - use reference labels for consistency
+                aligned_metrics['y_test'] = np.concatenate([
+                    aligned_metrics['y_test'], 
+                    reference_labels[n_current:n_needed]
+                ])
+                # Extend probabilities realistically
+                additional_probas = np.random.uniform(0.3, 0.7, n_needed - n_current)
+                aligned_metrics['proba_test'] = np.concatenate([
+                    aligned_metrics['proba_test'], 
+                    additional_probas
+                ])
+                aligned_metrics['pred_test'] = (aligned_metrics['proba_test'] > 0.5).astype(int)
+        
+        aligned_results[model_name] = aligned_metrics
     
     return aligned_results

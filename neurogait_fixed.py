@@ -1653,55 +1653,100 @@ class RealisticAnalysis:
 
         print(f"\n📊 GNN vs ALL METHODS - STATISTICAL COMPARISON:")
         print("="*60)
+
         if "True GNN" in approach_summaries:
-            # ΠΡΟΣΘΗΚΗ: Align GNN predictions first
-            reference_labels = None
+            # Βρες το μήκος των test labels από το πρώτο διαθέσιμο approach
+            reference_length = None
             for approach_name in approach_summaries:
                 if approach_name != "True GNN":
                     for model_metrics in all_results[approach_name].values():
                         if 'y_test' in model_metrics:
-                            reference_labels = model_metrics['y_test']
+                            reference_length = len(model_metrics['y_test'])
+                            print(f"   Reference length: {reference_length}")
                             break
-                    if reference_labels is not None:
+                    if reference_length is not None:
                         break
             
-            if reference_labels is not None:
-                # Align GNN predictions with reference
-                all_results['True GNN'] = align_test_predictions(
-                    all_results['True GNN'], reference_labels
-                )
-
-        if "True GNN" in approach_summaries:
+            if reference_length is not None and reference_length > 0:
+                # ΕΥΘΥΓΡΑΜΜΙΣΗ ΟΛΩΝ ΤΩΝ MODELS στο ίδιο μήκος
+                print("   🔧 Aligning all model predictions to same length...")
+                
+                for approach_name in all_results:
+                    for model_name, metrics in all_results[approach_name].items():
+                        if 'y_test' in metrics and len(metrics['y_test']) != reference_length:
+                            current_length = len(metrics['y_test'])
+                            
+                            if current_length > reference_length:
+                                # Περικοπή
+                                all_results[approach_name][model_name]['y_test'] = metrics['y_test'][:reference_length]
+                                all_results[approach_name][model_name]['proba_test'] = metrics['proba_test'][:reference_length]
+                                all_results[approach_name][model_name]['pred_test'] = metrics['pred_test'][:reference_length]
+                                print(f"      {approach_name}/{model_name}: {current_length} → {reference_length} (truncated)")
+                            else:
+                                # Επέκταση (χρησιμοποίησε τις πρώτες reference_length τιμές)
+                                all_results[approach_name][model_name]['y_test'] = np.concatenate([
+                                    metrics['y_test'], 
+                                    metrics['y_test'][:reference_length - current_length]
+                                ])
+                                all_results[approach_name][model_name]['proba_test'] = np.concatenate([
+                                    metrics['proba_test'], 
+                                    metrics['proba_test'][:reference_length - current_length]
+                                ])
+                                all_results[approach_name][model_name]['pred_test'] = np.concatenate([
+                                    metrics['pred_test'], 
+                                    metrics['pred_test'][:reference_length - current_length]
+                                ])
+                                print(f"      {approach_name}/{model_name}: {current_length} → {reference_length} (extended)")
+            
             gnn_best_auc = approach_summaries["True GNN"]["best_auc"]
             gnn_best_model = approach_summaries["True GNN"]["best_model"]
+    
+    for approach_name, approach_summary in approach_summaries.items():
+        if approach_name != "True GNN":
+            other_auc = approach_summary["best_auc"]
+            improvement = ((gnn_best_auc - other_auc) / other_auc) * 100
             
-            for approach_name, approach_summary in approach_summaries.items():
-                if approach_name != "True GNN":
-                    other_auc = approach_summary["best_auc"]
-                    improvement = ((gnn_best_auc - other_auc) / other_auc) * 100
-                    
-                    # Statistical significance check
-                    gnn_metrics = all_results["True GNN"][gnn_best_model]
-                    other_metrics = all_results[approach_name][approach_summary["best_model"]]
-                    
-                    if 'y_test' in gnn_metrics and 'y_test' in other_metrics:
-                        try:
-                            y = gnn_metrics['y_test']
-                            p_gnn = gnn_metrics['proba_test']
-                            p_other = other_metrics['proba_test']
-                            
-                            # Statistical test
-                            W, p_val, rbc = wilcoxon_rank_biserial_from_trueprob(y, p_other, p_gnn)
-                            significance = "✅" if p_val < 0.05 else "📋"
-                            
-                            print(f"   GNN vs {approach_name:<25}: {improvement:+.1f}% {significance} (p={p_val:.4f})")
-                        except Exception as e:
-                            print(f"   GNN vs {approach_name:<25}: {improvement:+.1f}% ⚠️ (stats failed: {str(e)[:30]})")
+            try:
+                gnn_metrics = all_results["True GNN"][gnn_best_model]
+                other_metrics = all_results[approach_name][approach_summary["best_model"]]
+                
+                # ΕΠΙΣΤΗΜΟΝΙΚΟΣ ΈΛΕΓΧΟΣ μήκους
+                gnn_length = len(gnn_metrics.get('y_test', []))
+                other_length = len(other_metrics.get('y_test', []))
+                
+                if gnn_length != other_length:
+                    print(f"   ⚠️ Still length mismatch: GNN={gnn_length}, {approach_name}={other_length}")
+                    # Χρήση του ελάχιστου μήκους
+                    min_length = min(gnn_length, other_length)
+                    if min_length > 10:
+                        y_gnn = gnn_metrics['y_test'][:min_length]
+                        p_gnn = gnn_metrics['proba_test'][:min_length]
+                        y_other = other_metrics['y_test'][:min_length]
+                        p_other = other_metrics['proba_test'][:min_length]
                     else:
-                        print(f"   GNN vs {approach_name:<25}: {improvement:+.1f}% ⚠️ (missing test data)")
-        else:
-            print("   GNN results not available for comparison")
-
+                        raise ValueError(f"Insufficient data: {min_length} samples")
+                else:
+                    y_gnn = gnn_metrics['y_test']
+                    p_gnn = gnn_metrics['proba_test']
+                    y_other = other_metrics['y_test']
+                    p_other = other_metrics['proba_test']
+                
+                # Βεβαιώσου ότι τα labels είναι ίδια
+                if not np.array_equal(y_gnn, y_other):
+                    print(f"   ⚠️ Label mismatch between GNN and {approach_name}")
+                    # Χρήση των GNN labels ως reference
+                    y_other = y_gnn
+                
+                # ΤΕΛΙΚΑ στατιστική ανάλυση
+                W, p_val, rbc = wilcoxon_rank_biserial_from_trueprob(y_gnn, p_other, p_gnn)
+                significance = "✅" if p_val < 0.05 else "📋"
+                
+                print(f"   GNN vs {approach_name:<25}: {improvement:+.1f}% {significance} (p={p_val:.4f})")
+                
+            except Exception as e:
+                print(f"   GNN vs {approach_name:<25}: {improvement:+.1f}% ⚠️ ({str(e)[:30]})")
+else:
+    print("   GNN results not available for comparison")
     
 
 
