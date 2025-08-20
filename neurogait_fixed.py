@@ -1639,12 +1639,58 @@ class RealisticAnalysis:
         print(f"   AUC: {best_overall_auc:.3f}")
         
         # GNN vs Traditional Comparison
+
         print(f"\n🧠 GNN vs TRADITIONAL METHODS:")
-        
+
         # Best traditional (non-GNN) method
-        traditional_approaches = {k for k in approach_summaries.keys() if k != "True GNN"}
+        traditional_approaches = {k: v for k, v in approach_summaries.items() if k != "True GNN"}  # ΔΙΟΡΘΩΣΗ: dict comprehension
         if traditional_approaches:
             best_traditional = max(traditional_approaches.items(), key=lambda x: x[1]["best_auc"])
+            # ... υπόλοιπος κώδικας ...
+        else:
+            print("   No traditional methods available for comparison")
+
+        print(f"\n📊 GNN vs ALL METHODS - STATISTICAL COMPARISON:")
+        print("="*60)
+
+        if "True GNN" in approach_summaries:
+            gnn_best_auc = approach_summaries["True GNN"]["best_auc"]
+            gnn_best_model = approach_summaries["True GNN"]["best_model"]
+            
+            for approach_name, approach_summary in approach_summaries.items():
+                if approach_name != "True GNN":
+                    other_auc = approach_summary["best_auc"]
+                    improvement = ((gnn_best_auc - other_auc) / other_auc) * 100
+                    
+                    # Statistical significance check
+                    gnn_metrics = all_results["True GNN"][gnn_best_model]
+                    other_metrics = all_results[approach_name][approach_summary["best_model"]]
+                    
+                    if 'y_test' in gnn_metrics and 'y_test' in other_metrics:
+                        try:
+                            y = gnn_metrics['y_test']
+                            p_gnn = gnn_metrics['proba_test']
+                            p_other = other_metrics['proba_test']
+                            
+                            # Statistical test
+                            W, p_val, rbc = wilcoxon_rank_biserial_from_trueprob(y, p_other, p_gnn)
+                            significance = "✅" if p_val < 0.05 else "📋"
+                            
+                            print(f"   GNN vs {approach_name:<25}: {improvement:+.1f}% {significance} (p={p_val:.4f})")
+                        except Exception as e:
+                            print(f"   GNN vs {approach_name:<25}: {improvement:+.1f}% ⚠️ (stats failed: {str(e)[:30]})")
+                    else:
+                        print(f"   GNN vs {approach_name:<25}: {improvement:+.1f}% ⚠️ (missing test data)")
+        else:
+            print("   GNN results not available for comparison")
+
+    
+
+
+        # Best traditional (non-GNN) method
+        traditional_approaches = {k: v for k, v in approach_summaries.items() if k != "True GNN"}
+        if traditional_approaches:
+            best_traditional = max(traditional_approaches.items(), key=lambda x: x[1]["best_auc"])       
             best_traditional_name = best_traditional[0]
             best_traditional_auc = best_traditional[1]["best_auc"]
             
@@ -1810,6 +1856,7 @@ def main():
         "3. Tuned Analysis (Enhanced + Hyperparameter tuning)",
         "4. GNN Analysis (Raw vs KG vs Enhanced KG vs True GNN)"
     ]
+    
     
     # Check availability
     if ENHANCED_FEATURES_AVAILABLE:
