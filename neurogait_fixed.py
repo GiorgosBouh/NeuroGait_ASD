@@ -448,6 +448,10 @@ class RealisticAnalysis:
         
         print(f"   📊 Shapes: Train{X_train.shape}, Test{X_test.shape}")
         
+        # Convert to numpy arrays first
+        X_train_arr = np.asarray(X_train)
+        X_test_arr = np.asarray(X_test)
+        
         # Handle outliers before scaling
         def cap_outliers(X, lower_percentile=1, upper_percentile=99):
             X_capped = X.copy()
@@ -458,18 +462,18 @@ class RealisticAnalysis:
             return X_capped
         
         # Cap outliers in training data
-        X_train_capped = cap_outliers(X_train)
+        X_train_capped = cap_outliers(X_train_arr)
         
         # Scale using training data statistics only
         scaler = StandardScaler()
         X_train_scaled = scaler.fit_transform(X_train_capped)
         
         # Cap outliers in test data using training percentiles
-        X_test_capped = X_test.copy()
-        for i in range(X_test.shape[1]):
-            lower_bound = np.percentile(X_train[:, i], 1)
-            upper_bound = np.percentile(X_train[:, i], 99)
-            X_test_capped[:, i] = np.clip(X_test[:, i], lower_bound, upper_bound)
+        X_test_capped = X_test_arr.copy()
+        for i in range(X_test_arr.shape[1]):
+            lower_bound = np.percentile(X_train_arr[:, i], 1)
+            upper_bound = np.percentile(X_train_arr[:, i], 99)
+            X_test_capped[:, i] = np.clip(X_test_arr[:, i], lower_bound, upper_bound)
         
         X_test_scaled = scaler.transform(X_test_capped)
         
@@ -478,7 +482,7 @@ class RealisticAnalysis:
         print(f"   📊 Test range: [{X_test_scaled.min():.2f}, {X_test_scaled.max():.2f}]")
         
         return X_train_scaled, X_test_scaled
-    
+        
     def create_enhanced_kg_embeddings(self, X_train, X_test):
         """Create enhanced KG embeddings with better parameters"""
         print(f"\n🧠 ENHANCED KG EMBEDDINGS:")
