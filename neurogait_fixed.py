@@ -1500,17 +1500,88 @@ class RealisticAnalysis:
             'Enhanced KG': enhanced_kg_results,
             'True GNN': gnn_results
         }
-        
-        # Print comprehensive comparison with statistics
-        print_gnn_comparison_results( 
-            all_results, best_set_name,
-            {
-                'train_participants': len(set(train_pids)),
-                'test_participants': len(set(test_pids)),
-                'original_features': len(best_features),
-                'selected_features': len(selected_features)
-            }
-        )
+
+        # =========================================================================
+        # 🎯 ΝΕΟΣ ΚΩΔΙΚΑΣ: AUTOMATED STATISTICAL COMPARISON TABLE
+        # =========================================================================
+        print(f"\n📊 COMPREHENSIVE STATISTICAL COMPARISON TABLE")
+        print("="*100)
+        print(f"{'Comparison':<25} {'AUC 1':<6} {'AUC 2':<6} {'ΔAUC':<7} {'p-value':<10} {'Effect Size':<12} {'Sig.':<6}")
+        print("="*100)
+
+        # Get best AUC for each approach
+        best_aucs = {}
+        best_models = {}
+
+        for approach_name, results in all_results.items():
+            best_auc = 0
+            best_model = ""
+            for model_name, metrics in results.items():
+                if metrics['auc'] > best_auc:
+                    best_auc = metrics['auc']
+                    best_model = model_name
+            best_aucs[approach_name] = best_auc
+            best_models[approach_name] = best_model
+
+        # Compare all pairs of approaches
+        approaches = list(best_aucs.keys())
+        for i in range(len(approaches)):
+            for j in range(i + 1, len(approaches)):
+                approach1 = approaches[i]
+                approach2 = approaches[j]
+                auc1 = best_aucs[approach1]
+                auc2 = best_aucs[approach2]
+                
+                diff = auc1 - auc2
+                improvement = ((auc1 - auc2) / auc2) * 100 if auc2 > 0 else 0
+                
+                # Perform statistical test
+                p_value = "N/A"
+                effect_size = "N/A"
+                significance = "📋"
+                
+                try:
+                    # Get metrics for statistical testing
+                    metrics1 = all_results[approach1][best_models[approach1]]
+                    metrics2 = all_results[approach2][best_models[approach2]]
+                    
+                    if ('y_test' in metrics1 and 'proba_test' in metrics1 and 
+                        'y_test' in metrics2 and 'proba_test' in metrics2):
+                        
+                        y_test = metrics1['y_test']
+                        proba1 = metrics1['proba_test']
+                        proba2 = metrics2['proba_test']
+                        
+                        # Ensure same length
+                        min_length = min(len(y_test), len(proba1), len(proba2))
+                        if min_length > 10:
+                            y_test = y_test[:min_length]
+                            proba1 = proba1[:min_length]
+                            proba2 = proba2[:min_length]
+                            
+                            # Wilcoxon signed-rank test
+                            W, p_val, rbc = wilcoxon_rank_biserial_from_trueprob(
+                                np.array(y_test), 
+                                np.array(proba1), 
+                                np.array(proba2)
+                            )
+                            
+                            p_value = f"{p_val:.4f}"
+                            effect_size = f"r={rbc:.3f}"
+                            significance = "✅" if p_val < 0.05 else "📋"
+                            
+                except Exception as e:
+                    p_value = f"Error"
+                    effect_size = f"Error"
+                
+                print(f"{approach1[:12]} vs {approach2[:12]:<12} {auc1:.3f}  {auc2:.3f}  {diff:+.3f}  {p_value:<10} {effect_size:<12} {significance:<4}")
+
+        print(f"\n📋 Significance: ✅ p<0.05, 📋 p≥0.05")
+        print(f"📊 Effect Size: r≥0.474(Large), r≥0.33(Medium), r≥0.147(Small)")
+
+        # =========================================================================
+        # 🔚 ΣΥΝΕΧΙΣΕ ΜΕ ΤΟ ΥΠΑΡΧΟΝ CODE
+        # =========================================================================
         
         return {
             'all_results': all_results,
