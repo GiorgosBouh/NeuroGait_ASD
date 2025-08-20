@@ -2063,22 +2063,22 @@ class RealisticAnalysis:
             # Restore original method
             analyzer.load_and_prepare_data = original_method
 
-    if __name__ == "__main__":
-        print("🏥 NEUROGAIT ANALYSIS SYSTEM")
-        print("="*50)
-        
-        # Check if real dataset exists
-        import os
-        if os.path.exists('Final dataset.csv'):
-            print("✅ Real dataset found - running full analysis")
-            results = main()
-        else:
-            print("⚠️ 'Final dataset.csv' not found")
-            print("🔬 Running demonstration with synthetic data")
-            print()
-            results = run_demo_analysis()
-        
-        if results:
-            print("\n✅ Analysis pipeline completed successfully!")
-        else:
-            print("\n❌ Analysis failed - check error messages above")
+if __name__ == "__main__":
+    print("🏥 NEUROGAIT ANALYSIS SYSTEM")
+    print("="*50)
+    
+    # Check if real dataset exists
+    import os
+    if os.path.exists('Final dataset.csv'):
+        print("✅ Real dataset found - running full analysis")
+        results = main()
+    else:
+        print("⚠️ 'Final dataset.csv' not found")
+        print("🔬 Running demonstration with synthetic data")
+        print()
+        results = run_demo_analysis()
+    
+    if results:
+        print("\n✅ Analysis pipeline completed successfully!")
+    else:
+        print("\n❌ Analysis failed - check error messages above")
