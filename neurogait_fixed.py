@@ -77,9 +77,9 @@ try:
     from enhanced_kg_features import EnhancedKGFeatureBuilder
     ENHANCED_FEATURES_AVAILABLE = True
     print("✅ Enhanced KG Features available")
-except ImportError:
-    print("⚠️ Enhanced features not available - using basic comparison only")
-    print("   Create enhanced_kg_features.py to enable enhanced analysis")
+except ImportError as e:
+    print(f"⚠️ Enhanced features not available - {str(e)}")
+    print("   Ensure enhanced_kg_features.py contains EnhancedKGFeatureBuilder class")
     ENHANCED_FEATURES_AVAILABLE = False
 
 # ΠΡΟΣΘΗΚΗ - GNN Support
