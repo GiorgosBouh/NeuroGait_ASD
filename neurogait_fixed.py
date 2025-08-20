@@ -443,16 +443,37 @@ class RealisticAnalysis:
             return X_train, test_data[features], features
     
     def prepare_data_properly(self, X_train, X_test):
-        """Prepare data with proper scaling (fitted on train only)"""
+        """Prepare data with proper scaling and outlier handling"""
         print(f"\n📊 PROPER DATA PREPARATION:")
         
         print(f"   📊 Shapes: Train{X_train.shape}, Test{X_test.shape}")
         
-        scaler = StandardScaler()
-        X_train_scaled = scaler.fit_transform(X_train)
-        X_test_scaled = scaler.transform(X_test)
+        # Handle outliers before scaling
+        def cap_outliers(X, lower_percentile=1, upper_percentile=99):
+            X_capped = X.copy()
+            for i in range(X.shape[1]):
+                lower_bound = np.percentile(X[:, i], lower_percentile)
+                upper_bound = np.percentile(X[:, i], upper_percentile)
+                X_capped[:, i] = np.clip(X[:, i], lower_bound, upper_bound)
+            return X_capped
         
-        print(f"   ✅ Scaling completed (fitted on train only)")
+        # Cap outliers in training data
+        X_train_capped = cap_outliers(X_train)
+        
+        # Scale using training data statistics only
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train_capped)
+        
+        # Cap outliers in test data using training percentiles
+        X_test_capped = X_test.copy()
+        for i in range(X_test.shape[1]):
+            lower_bound = np.percentile(X_train[:, i], 1)
+            upper_bound = np.percentile(X_train[:, i], 99)
+            X_test_capped[:, i] = np.clip(X_test[:, i], lower_bound, upper_bound)
+        
+        X_test_scaled = scaler.transform(X_test_capped)
+        
+        print(f"   ✅ Scaling completed with outlier capping (fitted on train only)")
         print(f"   📊 Train range: [{X_train_scaled.min():.2f}, {X_train_scaled.max():.2f}]")
         print(f"   📊 Test range: [{X_test_scaled.min():.2f}, {X_test_scaled.max():.2f}]")
         
@@ -648,22 +669,15 @@ class RealisticAnalysis:
                 }
         
         return results
-    
     def _proper_cross_validation(self, X_train, y_train, train_pids, model, cv_folds=5):
         """Proper participant-level cross-validation without data leakage"""
         try:
-            # Get unique participant IDs and their labels
+            # Get unique participant IDs
             unique_pids = np.unique(train_pids)
-            pid_to_label = {}
-            for pid in unique_pids:
-                pid_indices = np.where(train_pids == pid)[0]
-                if len(pid_indices) > 0:
-                    pid_to_label[pid] = y_train.iloc[pid_indices[0]]
-            
-            pid_labels = [pid_to_label[pid] for pid in unique_pids]
             
             if len(unique_pids) < cv_folds:
-                cv_folds = max(3, len(unique_pids) // 2)
+                cv_folds = max(2, len(unique_pids))
+                print(f"   ⚠️ Reduced CV folds to {cv_folds} due to limited participants")
             
             # Use GroupKFold for proper participant-level CV
             group_kfold = GroupKFold(n_splits=cv_folds)
@@ -673,41 +687,48 @@ class RealisticAnalysis:
             X_train_arr = np.asarray(X_train) if not isinstance(X_train, np.ndarray) else X_train
             y_train_arr = np.asarray(y_train) if not isinstance(y_train, np.ndarray) else y_train
             
-            for train_idx, val_idx in group_kfold.split(unique_pids, pid_labels, groups=unique_pids):
+            fold = 0
+            for train_idx, val_idx in group_kfold.split(X_train_arr, y_train_arr, groups=train_pids):
+                fold += 1
                 try:
-                    train_fold_pids = unique_pids[train_idx]
-                    val_fold_pids = unique_pids[val_idx]
-                    
-                    train_fold_mask = np.isin(train_pids, train_fold_pids)
-                    val_fold_mask = np.isin(train_pids, val_fold_pids)
-                    
-                    X_fold_train = X_train_arr[train_fold_mask]
-                    X_fold_val = X_train_arr[val_fold_mask]
-                    y_fold_train = y_train_arr[train_fold_mask]
-                    y_fold_val = y_train_arr[val_fold_mask]
+                    X_fold_train, X_fold_val = X_train_arr[train_idx], X_train_arr[val_idx]
+                    y_fold_train, y_fold_val = y_train_arr[train_idx], y_train_arr[val_idx]
                     
                     if (len(np.unique(y_fold_train)) < 2 or len(np.unique(y_fold_val)) < 2 or
-                        len(y_fold_train) < 3 or len(y_fold_val) < 2):
+                        len(y_fold_train) < 10 or len(y_fold_val) < 5):
+                        print(f"   ⚠️ Fold {fold}: Insufficient data for proper CV")
                         continue
                     
                     # Train model with fixed parameters
                     model_copy = type(model)(**model.get_params())
                     model_copy.fit(X_fold_train, y_fold_train)
-                    y_val_proba = model_copy.predict_proba(X_fold_val)[:, 1]
+                    
+                    # Get probabilities for the positive class
+                    if hasattr(model_copy, "predict_proba"):
+                        y_val_proba = model_copy.predict_proba(X_fold_val)[:, 1]
+                    else:
+                        y_val_proba = model_copy.decision_function(X_fold_val)
+                    
                     fold_auc = roc_auc_score(y_fold_val, y_val_proba)
                     
                     if not np.isnan(fold_auc) and 0.3 <= fold_auc <= 0.95:
                         cv_scores.append(fold_auc)
+                        print(f"   Fold {fold}: AUC={fold_auc:.3f}")
+                    else:
+                        print(f"   ⚠️ Fold {fold}: Invalid AUC score ({fold_auc})")
                         
                 except Exception as e:
+                    print(f"   ⚠️ Fold {fold} failed: {str(e)[:50]}")
                     continue
             
-            # If we couldn't get proper CV scores, return empty list
-            if len(cv_scores) == 0:
-                return []
-                
+            # If we couldn't get proper CV scores, use a more robust approach
+            if len(cv_scores) < 2:
+                print("   ⚠️ Insufficient CV folds, using repeated train-test split")
+                cv_scores = self._fallback_cv(X_train_arr, y_train_arr, train_pids, model)
+                    
         except Exception as e:
-            return []
+            print(f"   ❌ CV failed: {str(e)}")
+            cv_scores = []
         
         return cv_scores
 
