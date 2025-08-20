@@ -1797,8 +1797,8 @@ class RealisticAnalysis:
             'clinical_set': best_set_name
         }
 
-    # MAIN FUNCTION με GNN Support
-    def main():
+# MAIN FUNCTION με GNN Support
+def main():
         """Main execution with clinical features, comprehensive statistical analysis, hyperparameter tuning, and GNN support"""
         print("🏥 ENHANCED NEUROGAIT ANALYSIS με Clinical Features, Statistics, και GNN")
         print("🎯 Raw vs KG vs GNN comparison με καλύτερα clinical features")
@@ -1972,7 +1972,7 @@ class RealisticAnalysis:
                 print(f"❌ Fallback also failed: {str(fallback_error)}")
                 return None
 
-    def run_demo_analysis():
+def run_demo_analysis():
         """Run a demonstration analysis with synthetic data if no dataset is available"""
         print("🔬 DEMO MODE - Synthetic NeuroGait Analysis")
         print("="*60)
@@ -2061,7 +2061,7 @@ class RealisticAnalysis:
             return None
         finally:
             # Restore original method
-            analyzer.load_and_prepare_data = original_method
+            analyzer.load_and_prepare_data = original_method    
 
 if __name__ == "__main__":
     print("🏥 NEUROGAIT ANALYSIS SYSTEM")
