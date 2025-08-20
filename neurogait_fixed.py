@@ -1797,271 +1797,271 @@ class RealisticAnalysis:
             'clinical_set': best_set_name
         }
 
-# MAIN FUNCTION με GNN Support
-def main():
-    """Main execution with clinical features, comprehensive statistical analysis, hyperparameter tuning, and GNN support"""
-    print("🏥 ENHANCED NEUROGAIT ANALYSIS με Clinical Features, Statistics, και GNN")
-    print("🎯 Raw vs KG vs GNN comparison με καλύτερα clinical features")
-    print("🔒 Less conservative για realistic metrics")
-    print("📊 Complete statistical analysis με Wilcoxon tests")
-    print("🎛️ Hyperparameter tuning για optimal performance")
-    print("🤖 Graph Neural Networks για advanced analysis")
-    print()
-    
-    # Show available analysis options
-    available_options = [
-        "1. Basic Analysis (Raw vs KG με clinical features και statistics)",
-        "2. Enhanced Analysis (All tiers με comprehensive statistics)",
-        "3. Tuned Analysis (Enhanced + Hyperparameter tuning)",
-        "4. GNN Analysis (Raw vs KG vs Enhanced KG vs True GNN)"
-    ]
-    
-    
-    # Check availability
-    if ENHANCED_FEATURES_AVAILABLE:
-        enhanced_status = "✅"
-    else:
-        enhanced_status = "⚠️"
-    
-    if GNN_ANALYSIS_AVAILABLE:
-        gnn_status = "✅"
-    else:
-        gnn_status = "⚠️"
-    
-    print("Available analysis types:")
-    for i, option in enumerate(available_options, 1):
-        if i == 2 or i == 3:
-            print(f"   {enhanced_status} {option}")
-        elif i == 4:
-            print(f"   {gnn_status} {option}")
-        else:
-            print(f"   ✅ {option}")
-    
-    if not GNN_ANALYSIS_AVAILABLE:
-        print("\n📋 For GNN analysis, install requirements:")
-        print("   pip install torch torch-geometric")
-        print("   Create true_gnn_analysis.py module")
-    
-    if not ENHANCED_FEATURES_AVAILABLE:
-        print("\n📋 For enhanced KG features, create enhanced_kg_features.py module")
-    
-    print("\n" + "="*70)
-    
-    # Initialize analyzer
-    analyzer = RealisticAnalysis()
-    
-    try:
-        # Get user choice
-        print("\nChoose analysis type (1-4): ", end="")
-        choice = input().strip()
+    # MAIN FUNCTION με GNN Support
+    def main():
+        """Main execution with clinical features, comprehensive statistical analysis, hyperparameter tuning, and GNN support"""
+        print("🏥 ENHANCED NEUROGAIT ANALYSIS με Clinical Features, Statistics, και GNN")
+        print("🎯 Raw vs KG vs GNN comparison με καλύτερα clinical features")
+        print("🔒 Less conservative για realistic metrics")
+        print("📊 Complete statistical analysis με Wilcoxon tests")
+        print("🎛️ Hyperparameter tuning για optimal performance")
+        print("🤖 Graph Neural Networks για advanced analysis")
+        print()
         
-        if choice == "1":
-            print("\n🚀 Running Basic Analysis...")
-            results = analyzer.run_realistic_analysis()
-            
-        elif choice == "2":
-            print("\n🚀 Running Enhanced Analysis...")
-            if ENHANCED_FEATURES_AVAILABLE:
-                # Run enhanced analysis with all tiers
-                df, best_features, best_set_name = analyzer.load_and_prepare_data()
-                df_clean, clean_features = analyzer.conservative_preprocessing(df, best_features)
-                train_data, test_data, train_pids, test_pids = analyzer.proper_train_test_split(df_clean)
-                X_train, X_test, selected_features = analyzer.optimized_feature_selection(
-                    train_data, test_data, clean_features
-                )
-                
-                y_train = train_data['diagnosis']
-                y_test = test_data['diagnosis']
-                X_train_scaled, X_test_scaled = analyzer.prepare_data_properly(X_train, X_test)
-                
-                # Raw features
-                raw_results = analyzer.train_optimized_models(
-                    X_train_scaled, X_test_scaled, y_train, y_test, train_pids, 
-                    f"Raw Clinical Features ({best_set_name})"
-                )
-                
-                # Simple KG
-                X_train_kg_simple, X_test_kg_simple = analyzer.create_conservative_kg_embeddings(
-                    X_train_scaled, X_test_scaled
-                )
-                simple_kg_results = analyzer.train_optimized_models(
-                    X_train_kg_simple, X_test_kg_simple, y_train, y_test, train_pids, "Simple KG"
-                )
-                
-                # Enhanced KG
-                X_train_kg_enhanced, X_test_kg_enhanced = analyzer.create_enhanced_kg_embeddings(
-                    X_train_scaled, X_test_scaled
-                )
-                enhanced_kg_results = analyzer.train_optimized_models(
-                    X_train_kg_enhanced, X_test_kg_enhanced, y_train, y_test, train_pids, "Enhanced KG"
-                )
-                
-                # Enhanced KG features (if available)
-                enhanced_kg_features_results = None
-                if ENHANCED_FEATURES_AVAILABLE:
-                    try:
-                        enhanced_builder = EnhancedKGFeatureBuilder()
-                        X_train_enhanced, feature_names = enhanced_builder.create_enhanced_kg_features(
-                            train_data, selected_features
-                        )
-                        X_test_enhanced, _ = enhanced_builder.create_enhanced_kg_features(
-                            test_data, selected_features
-                        )
-                        
-                        scaler_enhanced = StandardScaler()
-                        X_train_enhanced_scaled = scaler_enhanced.fit_transform(X_train_enhanced)
-                        X_test_enhanced_scaled = scaler_enhanced.transform(X_test_enhanced)
-                        
-                        enhanced_kg_features_results = analyzer.train_optimized_models(
-                            X_train_enhanced_scaled, X_test_enhanced_scaled, y_train, y_test,
-                            train_pids, "Enhanced KG Features"
-                        )
-                    except Exception as e:
-                        print(f"❌ Enhanced KG features failed: {e}")
-                
-                # Comprehensive comparison
-                tier_results = {
-                    'Raw Clinical Features': raw_results,
-                    'Simple KG': simple_kg_results,
-                    'Enhanced KG': enhanced_kg_results
-                }
-                
-                if enhanced_kg_features_results:
-                    tier_results['Enhanced KG Features'] = enhanced_kg_features_results
-                
-                statistical_results = analyzer.statistical_comparison_analysis(tier_results)
-                
-                results = {
-                    'tier_results': tier_results,
-                    'statistical_results': statistical_results,
-                    'best_set_name': best_set_name
-                }
+        # Show available analysis options
+        available_options = [
+            "1. Basic Analysis (Raw vs KG με clinical features και statistics)",
+            "2. Enhanced Analysis (All tiers με comprehensive statistics)",
+            "3. Tuned Analysis (Enhanced + Hyperparameter tuning)",
+            "4. GNN Analysis (Raw vs KG vs Enhanced KG vs True GNN)"
+        ]
+        
+        
+        # Check availability
+        if ENHANCED_FEATURES_AVAILABLE:
+            enhanced_status = "✅"
+        else:
+            enhanced_status = "⚠️"
+        
+        if GNN_ANALYSIS_AVAILABLE:
+            gnn_status = "✅"
+        else:
+            gnn_status = "⚠️"
+        
+        print("Available analysis types:")
+        for i, option in enumerate(available_options, 1):
+            if i == 2 or i == 3:
+                print(f"   {enhanced_status} {option}")
+            elif i == 4:
+                print(f"   {gnn_status} {option}")
             else:
-                print("⚠️ Enhanced features not available, running basic analysis instead")
-                results = analyzer.run_realistic_analysis()
-                
-        elif choice == "3":
-            print("\n🚀 Running Tuned Analysis...")
-            results = analyzer.run_enhanced_analysis_with_tuning()
-            
-        elif choice == "4":
-            print("\n🚀 Running GNN Analysis...")
-            results = analyzer.run_gnn_comparison_analysis()
-            
-        else:
-            print("❌ Invalid choice. Running default basic analysis...")
-            results = analyzer.run_realistic_analysis()
+                print(f"   ✅ {option}")
         
-        print("\n" + "="*80)
-        print("🎉 ANALYSIS COMPLETED SUCCESSFULLY!")
-        print("="*80)
+        if not GNN_ANALYSIS_AVAILABLE:
+            print("\n📋 For GNN analysis, install requirements:")
+            print("   pip install torch torch-geometric")
+            print("   Create true_gnn_analysis.py module")
         
-        return results
+        if not ENHANCED_FEATURES_AVAILABLE:
+            print("\n📋 For enhanced KG features, create enhanced_kg_features.py module")
         
-    except KeyboardInterrupt:
-        print("\n\n⚠️ Analysis interrupted by user")
-        return None
+        print("\n" + "="*70)
         
-    except Exception as e:
-        print(f"\n\n❌ Analysis failed with error: {str(e)}")
-        print("📋 Trying fallback basic analysis...")
+        # Initialize analyzer
+        analyzer = RealisticAnalysis()
         
         try:
-            return analyzer.run_realistic_analysis()
-        except Exception as fallback_error:
-            print(f"❌ Fallback also failed: {str(fallback_error)}")
+            # Get user choice
+            print("\nChoose analysis type (1-4): ", end="")
+            choice = input().strip()
+            
+            if choice == "1":
+                print("\n🚀 Running Basic Analysis...")
+                results = analyzer.run_realistic_analysis()
+                
+            elif choice == "2":
+                print("\n🚀 Running Enhanced Analysis...")
+                if ENHANCED_FEATURES_AVAILABLE:
+                    # Run enhanced analysis with all tiers
+                    df, best_features, best_set_name = analyzer.load_and_prepare_data()
+                    df_clean, clean_features = analyzer.conservative_preprocessing(df, best_features)
+                    train_data, test_data, train_pids, test_pids = analyzer.proper_train_test_split(df_clean)
+                    X_train, X_test, selected_features = analyzer.optimized_feature_selection(
+                        train_data, test_data, clean_features
+                    )
+                    
+                    y_train = train_data['diagnosis']
+                    y_test = test_data['diagnosis']
+                    X_train_scaled, X_test_scaled = analyzer.prepare_data_properly(X_train, X_test)
+                    
+                    # Raw features
+                    raw_results = analyzer.train_optimized_models(
+                        X_train_scaled, X_test_scaled, y_train, y_test, train_pids, 
+                        f"Raw Clinical Features ({best_set_name})"
+                    )
+                    
+                    # Simple KG
+                    X_train_kg_simple, X_test_kg_simple = analyzer.create_conservative_kg_embeddings(
+                        X_train_scaled, X_test_scaled
+                    )
+                    simple_kg_results = analyzer.train_optimized_models(
+                        X_train_kg_simple, X_test_kg_simple, y_train, y_test, train_pids, "Simple KG"
+                    )
+                    
+                    # Enhanced KG
+                    X_train_kg_enhanced, X_test_kg_enhanced = analyzer.create_enhanced_kg_embeddings(
+                        X_train_scaled, X_test_scaled
+                    )
+                    enhanced_kg_results = analyzer.train_optimized_models(
+                        X_train_kg_enhanced, X_test_kg_enhanced, y_train, y_test, train_pids, "Enhanced KG"
+                    )
+                    
+                    # Enhanced KG features (if available)
+                    enhanced_kg_features_results = None
+                    if ENHANCED_FEATURES_AVAILABLE:
+                        try:
+                            enhanced_builder = EnhancedKGFeatureBuilder()
+                            X_train_enhanced, feature_names = enhanced_builder.create_enhanced_kg_features(
+                                train_data, selected_features
+                            )
+                            X_test_enhanced, _ = enhanced_builder.create_enhanced_kg_features(
+                                test_data, selected_features
+                            )
+                            
+                            scaler_enhanced = StandardScaler()
+                            X_train_enhanced_scaled = scaler_enhanced.fit_transform(X_train_enhanced)
+                            X_test_enhanced_scaled = scaler_enhanced.transform(X_test_enhanced)
+                            
+                            enhanced_kg_features_results = analyzer.train_optimized_models(
+                                X_train_enhanced_scaled, X_test_enhanced_scaled, y_train, y_test,
+                                train_pids, "Enhanced KG Features"
+                            )
+                        except Exception as e:
+                            print(f"❌ Enhanced KG features failed: {e}")
+                    
+                    # Comprehensive comparison
+                    tier_results = {
+                        'Raw Clinical Features': raw_results,
+                        'Simple KG': simple_kg_results,
+                        'Enhanced KG': enhanced_kg_results
+                    }
+                    
+                    if enhanced_kg_features_results:
+                        tier_results['Enhanced KG Features'] = enhanced_kg_features_results
+                    
+                    statistical_results = analyzer.statistical_comparison_analysis(tier_results)
+                    
+                    results = {
+                        'tier_results': tier_results,
+                        'statistical_results': statistical_results,
+                        'best_set_name': best_set_name
+                    }
+                else:
+                    print("⚠️ Enhanced features not available, running basic analysis instead")
+                    results = analyzer.run_realistic_analysis()
+                    
+            elif choice == "3":
+                print("\n🚀 Running Tuned Analysis...")
+                results = analyzer.run_enhanced_analysis_with_tuning()
+                
+            elif choice == "4":
+                print("\n🚀 Running GNN Analysis...")
+                results = analyzer.run_gnn_comparison_analysis()
+                
+            else:
+                print("❌ Invalid choice. Running default basic analysis...")
+                results = analyzer.run_realistic_analysis()
+            
+            print("\n" + "="*80)
+            print("🎉 ANALYSIS COMPLETED SUCCESSFULLY!")
+            print("="*80)
+            
+            return results
+            
+        except KeyboardInterrupt:
+            print("\n\n⚠️ Analysis interrupted by user")
             return None
+            
+        except Exception as e:
+            print(f"\n\n❌ Analysis failed with error: {str(e)}")
+            print("📋 Trying fallback basic analysis...")
+            
+            try:
+                return analyzer.run_realistic_analysis()
+            except Exception as fallback_error:
+                print(f"❌ Fallback also failed: {str(fallback_error)}")
+                return None
 
-def run_demo_analysis():
-    """Run a demonstration analysis with synthetic data if no dataset is available"""
-    print("🔬 DEMO MODE - Synthetic NeuroGait Analysis")
-    print("="*60)
-    print("📋 This demonstrates the analysis pipeline with synthetic data")
-    print("🎯 Replace with 'Final dataset.csv' for real analysis")
-    print()
-    
-    # Generate synthetic data that mimics the structure
-    np.random.seed(42)
-    n_participants = 20
-    samples_per_participant = 8
-    n_samples = n_participants * samples_per_participant
-    n_features = 25
-    
-    # Create synthetic features with realistic names
-    feature_names = [
-        'SpineBase_X', 'SpineBase_Y', 'SpineBase_Z',
-        'SPKNL_angle', 'SPKNR_angle', 'HIANL_angle', 'HIANR_angle',
-        'GaCT_duration', 'StaT_duration', 'SwiT_duration',
-        'HESHL_velocity', 'HESHR_velocity', 'SHWRL_position', 'SHWRR_position',
-        'balance_score', 'stability_metric', 'gait_rhythm',
-        'step_length', 'stride_width', 'walking_speed',
-        'coordination_index', 'symmetry_measure', 'timing_variability',
-        'postural_sway', 'movement_smoothness'
-    ]
-    
-    # Generate synthetic data
-    X = np.random.randn(n_samples, n_features)
-    
-    # Add some structure to make it more realistic
-    for i in range(n_features):
-        X[:, i] = X[:, i] * (i + 1) / 5  # Different scales
+    def run_demo_analysis():
+        """Run a demonstration analysis with synthetic data if no dataset is available"""
+        print("🔬 DEMO MODE - Synthetic NeuroGait Analysis")
+        print("="*60)
+        print("📋 This demonstrates the analysis pipeline with synthetic data")
+        print("🎯 Replace with 'Final dataset.csv' for real analysis")
+        print()
         
-    # Create participant IDs and diagnosis
-    participant_ids = np.repeat(np.arange(n_participants), samples_per_participant)
-    
-    # Create somewhat realistic diagnosis pattern (40% ASD)
-    asd_participants = np.random.choice(n_participants, size=int(n_participants * 0.4), replace=False)
-    diagnosis = np.array([1 if pid in asd_participants else 0 for pid in participant_ids])
-    
-    # Add slight correlation between features and diagnosis
-    asd_mask = diagnosis == 1
-    X[asd_mask, :5] += 0.3  # ASD participants have slightly different values
-    X[~asd_mask, 5:10] += 0.3  # Control participants have different pattern
-    
-    # Create DataFrame
-    df = pd.DataFrame(X, columns=feature_names)
-    df['participant_id'] = participant_ids
-    df['diagnosis'] = diagnosis
-    df['class'] = ['A' if d == 1 else 'T' for d in diagnosis]
-    
-    print(f"📊 Generated synthetic dataset:")
-    print(f"   Participants: {n_participants}")
-    print(f"   Samples: {n_samples}")
-    print(f"   Features: {n_features}")
-    print(f"   ASD cases: {np.sum(diagnosis)} ({np.mean(diagnosis)*100:.1f}%)")
-    
-    # Save synthetic data
-    df.to_csv('synthetic_neurogait_data.csv', index=False, sep=';')
-    print("💾 Saved as 'synthetic_neurogait_data.csv'")
-    
-    # Run basic analysis on synthetic data
-    analyzer = RealisticAnalysis()
-    
-    # Mock the load_and_prepare_data method for demo
-    def demo_load_and_prepare_data():
-        feature_names_only = [col for col in df.columns if col not in ['participant_id', 'diagnosis', 'class']]
-        return df, feature_names_only, "synthetic_demo"
-    
-    # Replace method temporarily
-    original_method = analyzer.load_and_prepare_data
-    analyzer.load_and_prepare_data = demo_load_and_prepare_data
-    
-    try:
-        print("\n🚀 Running demo analysis...")
-        results = analyzer.run_realistic_analysis()
+        # Generate synthetic data that mimics the structure
+        np.random.seed(42)
+        n_participants = 20
+        samples_per_participant = 8
+        n_samples = n_participants * samples_per_participant
+        n_features = 25
         
-        print("\n🎯 DEMO COMPLETED!")
-        print("📋 This was a demonstration with synthetic data")
-        print("🔄 Use real 'Final dataset.csv' for actual analysis")
+        # Create synthetic features with realistic names
+        feature_names = [
+            'SpineBase_X', 'SpineBase_Y', 'SpineBase_Z',
+            'SPKNL_angle', 'SPKNR_angle', 'HIANL_angle', 'HIANR_angle',
+            'GaCT_duration', 'StaT_duration', 'SwiT_duration',
+            'HESHL_velocity', 'HESHR_velocity', 'SHWRL_position', 'SHWRR_position',
+            'balance_score', 'stability_metric', 'gait_rhythm',
+            'step_length', 'stride_width', 'walking_speed',
+            'coordination_index', 'symmetry_measure', 'timing_variability',
+            'postural_sway', 'movement_smoothness'
+        ]
         
-        return results
+        # Generate synthetic data
+        X = np.random.randn(n_samples, n_features)
         
-    except Exception as e:
-        print(f"❌ Demo failed: {str(e)}")
-        return None
-    finally:
-        # Restore original method
-        analyzer.load_and_prepare_data = original_method
+        # Add some structure to make it more realistic
+        for i in range(n_features):
+            X[:, i] = X[:, i] * (i + 1) / 5  # Different scales
+            
+        # Create participant IDs and diagnosis
+        participant_ids = np.repeat(np.arange(n_participants), samples_per_participant)
+        
+        # Create somewhat realistic diagnosis pattern (40% ASD)
+        asd_participants = np.random.choice(n_participants, size=int(n_participants * 0.4), replace=False)
+        diagnosis = np.array([1 if pid in asd_participants else 0 for pid in participant_ids])
+        
+        # Add slight correlation between features and diagnosis
+        asd_mask = diagnosis == 1
+        X[asd_mask, :5] += 0.3  # ASD participants have slightly different values
+        X[~asd_mask, 5:10] += 0.3  # Control participants have different pattern
+        
+        # Create DataFrame
+        df = pd.DataFrame(X, columns=feature_names)
+        df['participant_id'] = participant_ids
+        df['diagnosis'] = diagnosis
+        df['class'] = ['A' if d == 1 else 'T' for d in diagnosis]
+        
+        print(f"📊 Generated synthetic dataset:")
+        print(f"   Participants: {n_participants}")
+        print(f"   Samples: {n_samples}")
+        print(f"   Features: {n_features}")
+        print(f"   ASD cases: {np.sum(diagnosis)} ({np.mean(diagnosis)*100:.1f}%)")
+        
+        # Save synthetic data
+        df.to_csv('synthetic_neurogait_data.csv', index=False, sep=';')
+        print("💾 Saved as 'synthetic_neurogait_data.csv'")
+        
+        # Run basic analysis on synthetic data
+        analyzer = RealisticAnalysis()
+        
+        # Mock the load_and_prepare_data method for demo
+        def demo_load_and_prepare_data():
+            feature_names_only = [col for col in df.columns if col not in ['participant_id', 'diagnosis', 'class']]
+            return df, feature_names_only, "synthetic_demo"
+        
+        # Replace method temporarily
+        original_method = analyzer.load_and_prepare_data
+        analyzer.load_and_prepare_data = demo_load_and_prepare_data
+        
+        try:
+            print("\n🚀 Running demo analysis...")
+            results = analyzer.run_realistic_analysis()
+            
+            print("\n🎯 DEMO COMPLETED!")
+            print("📋 This was a demonstration with synthetic data")
+            print("🔄 Use real 'Final dataset.csv' for actual analysis")
+            
+            return results
+            
+        except Exception as e:
+            print(f"❌ Demo failed: {str(e)}")
+            return None
+        finally:
+            # Restore original method
+            analyzer.load_and_prepare_data = original_method
 
 if __name__ == "__main__":
     print("🏥 NEUROGAIT ANALYSIS SYSTEM")
