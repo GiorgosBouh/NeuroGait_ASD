@@ -18,7 +18,7 @@ class GraphBasedKGFeatureBuilder:
         try:
             uri = "bolt://localhost:7687"
             username = "neo4j"
-            password = "palatiou"  # Change to your actual password
+            password = "palatiou"  # Αλλάξτε το με το πραγματικό σας password
             self.driver = GraphDatabase.driver(uri, auth=(username, password))
             return True
         except Exception as e:
