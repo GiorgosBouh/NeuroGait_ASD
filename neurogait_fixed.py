@@ -676,8 +676,9 @@ class RealisticAnalysis:
     def _proper_cross_validation(self, X_train, y_train, train_pids, model, cv_folds=5):
         """Proper participant-level cross-validation without data leakage"""
         try:
-            # Get unique participant IDs
+            # Get unique participant IDs and create sample-level group labels
             unique_pids = np.unique(train_pids)
+            sample_groups = train_pids  # This should have same length as X_train/y_train
             
             if len(unique_pids) < cv_folds:
                 cv_folds = max(2, len(unique_pids))
@@ -692,7 +693,7 @@ class RealisticAnalysis:
             y_train_arr = np.asarray(y_train) if not isinstance(y_train, np.ndarray) else y_train
             
             fold = 0
-            for train_idx, val_idx in group_kfold.split(X_train_arr, y_train_arr, groups=train_pids):
+            for train_idx, val_idx in group_kfold.split(X_train_arr, y_train_arr, groups=sample_groups):
                 fold += 1
                 try:
                     X_fold_train, X_fold_val = X_train_arr[train_idx], X_train_arr[val_idx]
@@ -728,7 +729,7 @@ class RealisticAnalysis:
             # If we couldn't get proper CV scores, use a more robust approach
             if len(cv_scores) < 2:
                 print("   ⚠️ Insufficient CV folds, using repeated train-test split")
-                cv_scores = self._fallback_cv(X_train_arr, y_train_arr, train_pids, model)
+                cv_scores = self._fallback_cv(X_train_arr, y_train_arr, sample_groups, model)
                     
         except Exception as e:
             print(f"   ❌ CV failed: {str(e)}")
