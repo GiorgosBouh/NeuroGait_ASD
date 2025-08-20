@@ -83,18 +83,18 @@ except ImportError as e:
     ENHANCED_FEATURES_AVAILABLE = False
 
 # ΠΡΟΣΘΗΚΗ - GNN Support
+# ΠΡΟΣΘΗΚΗ - GNN Support
 try:
     import sys
     from pathlib import Path
     # Add the parent directory to Python path
-    sys.path.append(str(Path(__file__).parent.parent))
-    from neurogait_with_graph_features import TrueGraphAnalysis
+    sys.path.append(str(Path(__file__).parent))
+    from true_gnn_analysis import TrueGraphAnalysis  # ΑΛΛΑΓΗ ΕΔΩ!
     GNN_ANALYSIS_AVAILABLE = True
-    print("✅ GNN Analysis available (using neurogait_with_graph_features.py)")
+    print("✅ GNN Analysis available (using true_gnn_analysis.py)")
 except Exception as e:
     print(f"⚠️ GNN analysis not available - {str(e)}")
-    print("   Install: pip install torch torch-geometric")
-    print("   Ensure neurogait_with_graph_features.py exists")
+    print("   Ensure true_gnn_analysis.py exists in the same directory")
     GNN_ANALYSIS_AVAILABLE = False
 
 class RealisticAnalysis:
