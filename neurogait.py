@@ -1418,92 +1418,7 @@ class RealisticAnalysis:
         
         print("🧠 GRAPH NEURAL NETWORK COMPARISON ANALYSIS")
         print("="*70)
-        print("🎯 Comparing: Raw, Simple KG, Enhanced KG, and True GNN")
-        print("🔒 Using actual Neo4j graph structure for GNN")
-        print("📊 Complete statistical comparison")
-        print()
-        
-        # Enhanced preprocessing with clinical features
-        df, best_features, best_set_name = self.load_and_prepare_data()
-        df_clean, clean_features = self.conservative_preprocessing(df, best_features)
-        train_data, test_data, train_pids, test_pids = self.proper_train_test_split(df_clean)
-        X_train, X_test, selected_features = self.optimized_feature_selection(
-            train_data, test_data, clean_features
-        )
-        
-        y_train = train_data['diagnosis']
-        y_test = test_data['diagnosis']
-        X_train_scaled, X_test_scaled = self.prepare_data_properly(X_train, X_test)
-        
-        # === TIER 1: RAW CLINICAL FEATURES ===
-        print(f"\n{'='*50}")
-        print("📊 TIER 1: RAW CLINICAL FEATURES")
-        print(f"{'='*50}")
-        
-        raw_results = self.train_optimized_models(
-            X_train_scaled, X_test_scaled, y_train, y_test, train_pids, 
-            f"Raw Clinical Features ({best_set_name})"
-        )
-        
-        # === TIER 2: SIMPLE KG ===
-        print(f"\n{'='*50}")
-        print("🧠 TIER 2: SIMPLE KG EMBEDDINGS")
-        print(f"{'='*50}")
-        
-        X_train_kg_simple, X_test_kg_simple = self.create_conservative_kg_embeddings(
-            X_train_scaled, X_test_scaled
-        )
-        simple_kg_results = self.train_optimized_models(
-            X_train_kg_simple, X_test_kg_simple, y_train, y_test, train_pids, "Simple KG"
-        )
-        
-        # === TIER 3: ENHANCED KG ===
-        print(f"\n{'='*50}")
-        print("🔥 TIER 3: ENHANCED KG EMBEDDINGS")
-        print(f"{'='*50}")
-        
-        X_train_kg_enhanced, X_test_kg_enhanced = self.create_enhanced_kg_embeddings(
-            X_train_scaled, X_test_scaled
-        )
-        enhanced_kg_results = self.train_optimized_models(
-            X_train_kg_enhanced, X_test_kg_enhanced, y_train, y_test, train_pids, "Enhanced KG"
-        )
-        
-        # === TIER 4: TRUE GNN ===
-        print(f"\n{'='*50}")
-        print("🤖 TIER 4: GRAPH NEURAL NETWORKS (Neo4j)")
-        print(f"{'='*50}")
-        
-        gnn_results = {}
-        
-        if GNN_ANALYSIS_AVAILABLE:
-            try:
-                print("   🔗 Initializing GNN analyzer...")
-                gnn_analyzer = TrueGraphAnalysis(samples_per_participant=self.samples_per_participant)
-                
-                # Convert participant IDs to integers
-                train_pids_int = [int(pid) for pid in train_pids]
-                test_pids_int = [int(pid) for pid in test_pids]
-                
-                print("   🧠 Running GNN analysis...")
-                gnn_model_results = gnn_analyzer.run_gnn_analysis(train_pids_int, test_pids_int)
-                
-                if gnn_model_results and len(gnn_model_results) > 0:
-                    gnn_results = gnn_model_results
-                    print(f"   ✅ GNN analysis completed with {len(gnn_results)} models")
-                else:
-                    print("   ❌ GNN analysis returned no valid results")
-                    gnn_results = self._create_placeholder_gnn_results()
-                    
-            except Exception as e:
-                print(f"   ❌ GNN analysis failed: {str(e)}")
-                print("   📋 Using placeholder results for comparison")
-                gnn_results = self._create_placeholder_gnn_results()
-        else:
-            print("   ⚠️ GNN analysis not available")
-            print("   📋 Install PyTorch Geometric and create true_gnn_analysis.py")
-            print("   🔄 Using placeholder results for demonstration")
-            gnn_results = self._create_placeholder_gnn_results()
+        # ... [όλος ο υπάρχων κώδικας] ...
         
         # === COMPREHENSIVE COMPARISON ===
         print(f"\n{'='*70}")
@@ -1518,7 +1433,93 @@ class RealisticAnalysis:
             'True GNN': gnn_results
         }
         
-       # Print comprehensive comparison with statistics
+        
+        # Automated comparison table with statistical tests
+        print(f"\n📊 COMPREHENSIVE STATISTICAL COMPARISON TABLE")
+        print("="*120)
+        print(f"{'Comparison':<25} {'AUC 1':<6} {'AUC 2':<6} {'ΔAUC':<7} {'p-value':<10} {'Effect Size':<12} {'Sig.':<6} {'Best Models':<20}")
+        print("="*120)
+
+        # Get best AUC and predictions for each approach
+        best_metrics = {}
+
+        for approach_name, results in all_results.items():
+            best_auc = 0
+            best_model_name = ""
+            best_model_metrics = None
+            
+            for model_name, metrics in results.items():
+                if metrics['auc'] > best_auc:
+                    best_auc = metrics['auc']
+                    best_model_name = model_name
+                    best_model_metrics = metrics
+            
+            best_metrics[approach_name] = {
+                'auc': best_auc,
+                'model': best_model_name,
+                'metrics': best_model_metrics
+            }
+
+        # Compare all pairs of approaches
+        approaches = list(best_metrics.keys())
+        for i in range(len(approaches)):
+            for j in range(i + 1, len(approaches)):
+                approach1 = approaches[i]
+                approach2 = approaches[j]
+                
+                auc1 = best_metrics[approach1]['auc']
+                auc2 = best_metrics[approach2]['auc']
+                model1 = best_metrics[approach1]['model']
+                model2 = best_metrics[approach2]['model']
+                
+                # Get predictions for statistical testing
+                metrics1 = best_metrics[approach1]['metrics']
+                metrics2 = best_metrics[approach2]['metrics']
+                
+                diff = auc1 - auc2
+                improvement = ((auc1 - auc2) / auc2) * 100 if auc2 > 0 else 0
+                
+                # Perform statistical test if we have the required data
+                p_value = "N/A"
+                effect_size = "N/A"
+                significance = "📋"
+                
+                if ('y_test' in metrics1 and 'proba_test' in metrics1 and 
+                    'y_test' in metrics2 and 'proba_test' in metrics2):
+                    
+                    try:
+                        y_test = metrics1['y_test']
+                        proba1 = metrics1['proba_test']
+                        proba2 = metrics2['proba_test']
+                        
+                        # Ensure same length
+                        min_length = min(len(y_test), len(proba1), len(proba2))
+                        if min_length > 10:
+                            y_test = y_test[:min_length]
+                            proba1 = proba1[:min_length]
+                            proba2 = proba2[:min_length]
+                            
+                            # Wilcoxon signed-rank test
+                            W, p_val, rbc = wilcoxon_rank_biserial_from_trueprob(
+                                np.array(y_test), 
+                                np.array(proba1), 
+                                np.array(proba2)
+                            )
+                            
+                            p_value = f"{p_val:.4f}"
+                            effect_size = f"r={rbc:.3f}"
+                            significance = "✅" if p_val < 0.05 else "📋"
+                            
+                    except Exception as e:
+                        p_value = f"Error"
+                        effect_size = f"Error"
+                
+                print(f"{approach1[:12]} vs {approach2[:12]:<12} {auc1:.3f}  {auc2:.3f}  {diff:+.3f}  {p_value:<10} {effect_size:<12} {significance:<4} {model1[:8]}/{model2[:8]}")
+
+        print(f"\n📋 Significance: ✅ p<0.05, 📋 p≥0.05")
+        print(f"📊 Effect Size: r≥0.474(Large), r≥0.33(Medium), r≥0.147(Small)")
+
+        # Print comprehensive comparison with statistics
         try:
             self.print_gnn_comparison_results(
                 all_results, best_set_name,
@@ -1532,13 +1533,7 @@ class RealisticAnalysis:
         except Exception as e:
             print(f"❌ GNN comparison failed: {str(e)}")
             print("📋 Showing basic results instead...")
-            # Εμφάνισε έστω τα βασικά αποτελέσματα
-            print(f"🏆 GNN Best: AUC=0.770 (GNN_GAT)")
-            print(f"🏆 Simple KG Best: AUC=0.750 (Random Forest)") 
-            print(f"🏆 Enhanced KG Best: AUC=0.679 (Random Forest)")
-            print(f"🏆 Raw Best: AUC=0.531 (Random Forest)")
-            print(f"📊 GNN Improvement: +45.0% over Raw Features")
-                
+        
         return {
             'all_results': all_results,
             'data_summary': {
