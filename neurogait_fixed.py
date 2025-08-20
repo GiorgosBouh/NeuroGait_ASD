@@ -1502,7 +1502,7 @@ class RealisticAnalysis:
         }
         
         # Print comprehensive comparison with statistics
-        self.print_gnn_comparison_results(
+        print_gnn_comparison_results( 
             all_results, best_set_name,
             {
                 'train_participants': len(set(train_pids)),
