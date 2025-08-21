@@ -1536,141 +1536,155 @@ class RealisticAnalysis:
         best_overall_auc = 0
         best_overall_approach = ""
     def run_gnn_comparison_analysis(self):
-        """
-        Raw vs KG vs Enhanced KG vs True GNN, με σωστό participant-level CV
-        (ευθυγραμμισμένα groups) και χωρίς placeholders.
-        Απαιτούμενα πριν την κλήση:
-        - Προϋπάρχουν train/test DataFrames ως (self.train_df,self.test_df) ή (self.train_data,self.test_data)
-        - Υπάρχει λίστα κλινικών features ως self.best_clinical_features (ή self.selected_clinical_features)
-        - Υπάρχουν οι helper μέθοδοι:
-            scale_no_leakage(X_train, X_test)
-            build_simple_kg_embeddings(X_train, X_test, features)
-            build_enhanced_kg_embeddings(X_train, X_test, features)
-            run_true_gnn_analysis(train_df, test_df, features)  # να παράγει test predictions & AUC/F1
-        - Η optimized_feature_selection επιστρέφει: X_train, X_test, selected_features, train_groups
-        """
+       """Raw vs KG vs Enhanced KG vs True GNN with proper participant-level split and CV (no leakage)."""
 
-        import numpy as np
+    import numpy as np
+    import pandas as pd
+    from sklearn.model_selection import GroupShuffleSplit
 
-        print("\n🧠 GRAPH NEURAL NETWORK COMPARISON ANALYSIS")
-        print("=" * 70)
-        print("🎯 Comparing: Raw, Simple KG, Enhanced KG, and True GNN")
-        print("🔒 Using actual Neo4j graph structure for GNN")
-        print("📊 Complete statistical comparison")
+    print("\n🧠 GRAPH NEURAL NETWORK COMPARISON ANALYSIS")
+    print("=" * 70)
+    print("🎯 Comparing: Raw, Simple KG, Enhanced KG, and True GNN")
+    print("🔒 Using actual Neo4j graph structure for GNN")
+    print("📊 Complete statistical comparison")
 
-        # -------------------------------------------------------------------------
-        # 1) Πάρε train/test DataFrames από διαθέσιμα attributes
-        # -------------------------------------------------------------------------
-        if hasattr(self, "train_df") and hasattr(self, "test_df"):
-            train_df, test_df = self.train_df, self.test_df
-        elif hasattr(self, "train_data") and hasattr(self, "test_data"):
-            train_df, test_df = self.train_data, self.test_data
-        else:
+    # ---------------------------------------------------------------------
+    # 1) Obtain train/test DataFrames
+    # ---------------------------------------------------------------------
+    if hasattr(self, "train_df") and hasattr(self, "test_df"):
+        train_df, test_df = self.train_df, self.test_df
+    else:
+        # locate a single full dataframe on self
+        full_df = None
+        for name in ("df", "data", "dataset", "full_df"):
+            if hasattr(self, name):
+                cand = getattr(self, name)
+                if isinstance(cand, pd.DataFrame):
+                    full_df = cand
+                    break
+        if full_df is None:
             raise ValueError(
-                "Missing train/test dataframes. Provide self.train_df/self.test_df ή self.train_data/self.test_data "
-                "πριν καλέσεις run_gnn_comparison_analysis()."
+                "No train/test dataframes found and no full dataframe available "
+                "(expected one of: self.df/self.data/self.dataset/self.full_df)."
             )
 
-        # Βεβαιώσου ότι υπάρχουν τα απαραίτητα πεδία
         required_cols = {"participant_id", "diagnosis"}
-        if not required_cols.issubset(set(train_df.columns)) or not required_cols.issubset(set(test_df.columns)):
-            raise ValueError("Both train/test dataframes must contain columns: 'participant_id' and 'diagnosis'.")
+        if not required_cols.issubset(set(full_df.columns)):
+            raise ValueError("Full dataframe must contain columns: 'participant_id' and 'diagnosis'.")
 
-        # -------------------------------------------------------------------------
-        # 2) Κλινικά features (λίστα)
-        # -------------------------------------------------------------------------
-        if hasattr(self, "best_clinical_features") and self.best_clinical_features:
-            clinical_features = list(self.best_clinical_features)
-        elif hasattr(self, "selected_clinical_features") and self.selected_clinical_features:
-            clinical_features = list(self.selected_clinical_features)
-        else:
-            raise ValueError(
-                "Missing clinical feature list. Set self.best_clinical_features (ή self.selected_clinical_features) "
-                "πριν καλέσεις run_gnn_comparison_analysis()."
-            )
-
-        # Εξασφάλισε ότι όλα τα features υπάρχουν και στα δύο splits
-        missing_train = [f for f in clinical_features if f not in train_df.columns]
-        missing_test = [f for f in clinical_features if f not in test_df.columns]
-        if missing_train or missing_test:
-            raise ValueError(
-                f"Feature columns missing from dataframes. "
-                f"Missing in train: {missing_train}, missing in test: {missing_test}"
-            )
-
-        # -------------------------------------------------------------------------
-        # 3) Feature selection (Training Only) → επιστρέφει 4 τιμές (X_train, X_test, selected_features, train_groups)
-        # -------------------------------------------------------------------------
-        X_train, X_test, selected_features, train_groups = self.optimized_feature_selection(
-            train_df, test_df, clinical_features
+        # stratified by diagnosis at participant level, no leakage
+        # build participant table with one label per participant (mode)
+        part = (
+            full_df.groupby("participant_id")["diagnosis"]
+            .apply(lambda s: int(round(s.mean())))  # assumes binary {0,1}; majority vote
+            .reset_index()
+            .rename(columns={"diagnosis": "diag"})
         )
 
-        # 4) Scaling (fit ONLY on train)
-        X_train_scaled, X_test_scaled = self.scale_no_leakage(X_train, X_test)
+        gss = GroupShuffleSplit(n_splits=1, test_size=0.25, random_state=42)
+        (train_idx,), (test_idx,) = [], []
+        for tr, te in gss.split(part[["diag"]], y=part["diag"], groups=part["participant_id"]):
+            train_idx, test_idx = tr, te
+            break
 
-        # 5) Targets (ευθυγραμμισμένα με indexes των X_train/X_test)
-        y_train = train_df.loc[X_train.index, "diagnosis"].values
-        y_test = test_df.loc[X_test.index, "diagnosis"].values
+        train_pids = set(part.iloc[train_idx]["participant_id"].tolist())
+        test_pids = set(part.iloc[test_idx]["participant_id"].tolist())
 
-        # -------------------------------------------------------------------------
-        # 6) TIER 1: RAW CLINICAL FEATURES
-        # -------------------------------------------------------------------------
-        raw_results = self.train_optimized_models(
-            X_train_scaled, X_test_scaled, y_train, y_test, train_groups, "Raw Clinical Features"
-        )
+        train_df = full_df[full_df["participant_id"].isin(train_pids)].copy()
+        test_df  = full_df[full_df["participant_id"].isin(test_pids)].copy()
 
-        # -------------------------------------------------------------------------
-        # 7) TIER 2: SIMPLE KG
-        # -------------------------------------------------------------------------
-        X_train_kg, X_test_kg = self.build_simple_kg_embeddings(X_train_scaled, X_test_scaled, selected_features)
-        simplekg_results = self.train_optimized_models(
-            X_train_kg, X_test_kg, y_train, y_test, train_groups, "Simple KG"
-        )
+        # persist for downstream uses
+        self.train_df, self.test_df = train_df, test_df
 
-        # -------------------------------------------------------------------------
-        # 8) TIER 3: ENHANCED KG
-        # -------------------------------------------------------------------------
-        X_train_enh, X_test_enh = self.build_enhanced_kg_embeddings(X_train_scaled, X_test_scaled, selected_features)
-        enhancedkg_results = self.train_optimized_models(
-            X_train_enh, X_test_enh, y_train, y_test, train_groups, "Enhanced KG"
-        )
+    # ---------------------------------------------------------------------
+    # 2) Clinical features list
+    # ---------------------------------------------------------------------
+    if hasattr(self, "best_clinical_features") and self.best_clinical_features:
+        clinical_features = list(self.best_clinical_features)
+    elif hasattr(self, "selected_clinical_features") and self.selected_clinical_features:
+        clinical_features = list(self.selected_clinical_features)
+    else:
+        # infer features: all numeric columns except id/target
+        drop_cols = {"participant_id", "diagnosis"}
+        numeric_cols = train_df.select_dtypes(include=[np.number]).columns
+        clinical_features = [c for c in numeric_cols if c not in drop_cols]
+        if not clinical_features:
+            raise ValueError("Could not infer clinical features; provide self.best_clinical_features.")
 
-        # -------------------------------------------------------------------------
-        # 9) TIER 4: TRUE GNN (παράγει test-level predictions/metrics)
-        # -------------------------------------------------------------------------
-        gnn_results = self.run_true_gnn_analysis(train_df, test_df, selected_features)
+    # make sure features exist in both
+    missing_train = [f for f in clinical_features if f not in train_df.columns]
+    missing_test = [f for f in clinical_features if f not in test_df.columns]
+    if missing_train or missing_test:
+        raise ValueError(f"Feature columns missing. Missing in train: {missing_train}; missing in test: {missing_test}")
 
-        # -------------------------------------------------------------------------
-        # 10) Συγκέντρωση αποτελεσμάτων + στατιστικά
-        # -------------------------------------------------------------------------
-        tier1_results = {
-            "Raw Clinical Features": raw_results,
-            "Simple KG": simplekg_results,
-            "Enhanced KG": enhancedkg_results,
-            "True GNN": gnn_results,
-        }
+    # ---------------------------------------------------------------------
+    # 3) Feature selection (Training Only) → returns 4 values
+    # ---------------------------------------------------------------------
+    X_train, X_test, selected_features, train_groups = self.optimized_feature_selection(
+        train_df, test_df, clinical_features
+    )
 
-        statistical_results = self.statistical_comparison_analysis(tier1_results)
+    # 4) Scale without leakage
+    X_train_scaled, X_test_scaled = self.scale_no_leakage(X_train, X_test)
 
-        # 11) Εκτύπωση συνολικών αποτελεσμάτων (χωρίς placeholders)
-        self.print_tuned_comprehensive_results_with_statistics(
-            tier1_results=tier1_results,
-            tuning_results={},  # αν έχεις tuning, βάλε τα πραγματικά σου dict εδώ
-            best_config={},     # αν έχεις best_config, βάλε το πραγματικό
-            clinical_set_name=getattr(self, "best_clinical_set_name", None),
-            data_summary={
-                "train_participants": len(set(train_groups)),
-                "test_participants": len(set(test_df["participant_id"].values)),
-                "original_features": len(clinical_features),
-                "selected_features": len(selected_features),
-            },
-            statistical_results=statistical_results,
-        )
+    # 5) Targets aligned to design matrices
+    y_train = train_df.loc[X_train.index, "diagnosis"].values
+    y_test  = test_df.loc[X_test.index,  "diagnosis"].values
 
-        return {
-            "all_results": tier1_results,
-            "statistical_results": statistical_results,
-        }
+    # ---------------------------------------------------------------------
+    # 6) Tiers
+    # ---------------------------------------------------------------------
+    # RAW
+    raw_results = self.train_optimized_models(
+        X_train_scaled, X_test_scaled, y_train, y_test, train_groups, "Raw Clinical Features"
+    )
+
+    # SIMPLE KG
+    X_train_kg, X_test_kg = self.build_simple_kg_embeddings(X_train_scaled, X_test_scaled, selected_features)
+    simplekg_results = self.train_optimized_models(
+        X_train_kg, X_test_kg, y_train, y_test, train_groups, "Simple KG"
+    )
+
+    # ENHANCED KG
+    X_train_enh, X_test_enh = self.build_enhanced_kg_embeddings(X_train_scaled, X_test_scaled, selected_features)
+    enhancedkg_results = self.train_optimized_models(
+        X_train_enh, X_test_enh, y_train, y_test, train_groups, "Enhanced KG"
+    )
+
+    # TRUE GNN (expects to produce test metrics/preds internally)
+    gnn_results = self.run_true_gnn_analysis(train_df, test_df, selected_features)
+
+    # ---------------------------------------------------------------------
+    # 7) Aggregate + statistics
+    # ---------------------------------------------------------------------
+    tier1_results = {
+        "Raw Clinical Features": raw_results,
+        "Simple KG":            simplekg_results,
+        "Enhanced KG":          enhancedkg_results,
+        "True GNN":             gnn_results,
+    }
+
+    statistical_results = self.statistical_comparison_analysis(tier1_results)
+
+    # 8) Print comprehensive results (your existing printer)
+    self.print_tuned_comprehensive_results_with_statistics(
+        tier1_results=tier1_results,
+        tuning_results={},  # pass real tuning dict if available
+        best_config={},     # pass real best_config if available
+        clinical_set_name=getattr(self, "best_clinical_set_name", None),
+        data_summary={
+            "train_participants": len(set(train_df["participant_id"].values)),
+            "test_participants":  len(set(test_df["participant_id"].values)),
+            "original_features":  len(clinical_features),
+            "selected_features":  len(selected_features),
+        },
+        statistical_results=statistical_results,
+    )
+
+    return {
+        "all_results": tier1_results,
+        "statistical_results": statistical_results,
+    }
 
     def run_realistic_analysis(self):
         """Run basic realistic analysis with clinical features and statistical testing"""
