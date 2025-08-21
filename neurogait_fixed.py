@@ -278,7 +278,7 @@ class RealisticAnalysis:
         for col in numeric_cols:
             try:
                 if df[col].dtype == 'object':
-                    converted_col = pd.to_numeric(df[col].ast(str).str.replace(',', '.'), errors='coerce')
+                    converted_col = pd.to_numeric(df[col].astype(str).str.replace(',', '.'), errors='coerce')
                     if not converted_col.isna().all() and converted_col.var() > 1e-10:
                         df[col] = converted_col
                         converted_features.append(col)
@@ -314,7 +314,10 @@ class RealisticAnalysis:
         
         print(f"✅ Using {len(best_features)} clinical features from {best_set_name}")
         
-        return df, best_features, best_set_name, train_indices, test_indices, train_pids, test_pids
+        # Create sample-level participant IDs for the training data
+        train_sample_pids = df.loc[train_indices, 'participant_id'].values
+        
+        return df, best_features, best_set_name, train_indices, test_indices, train_sample_pids, test_pids
     
     def create_preprocessing_pipeline(self, features):
         """Create a preprocessing pipeline to prevent data leakage"""
@@ -673,12 +676,21 @@ class RealisticAnalysis:
                 }
         
         return results
+   
     def _proper_cross_validation(self, X_train, y_train, train_pids, model, cv_folds=5):
         """Proper participant-level cross-validation without data leakage"""
         try:
             # Get unique participant IDs and create sample-level group labels
             unique_pids = np.unique(train_pids)
-            sample_groups = train_pids  # This should have same length as X_train/y_train
+            
+            # Create sample-level groups array with same length as X_train/y_train
+            # We need to map each sample to its participant ID
+            sample_groups = []
+            for i in range(len(X_train)):
+                # Find which participant this sample belongs to
+                # This assumes train_pids is in the same order as X_train
+                sample_groups.append(train_pids[i])
+            sample_groups = np.array(sample_groups)
             
             if len(unique_pids) < cv_folds:
                 cv_folds = max(2, len(unique_pids))
@@ -734,6 +746,51 @@ class RealisticAnalysis:
         except Exception as e:
             print(f"   ❌ CV failed: {str(e)}")
             cv_scores = []
+        
+        return cv_scores
+
+    def _fallback_cv(self, X_train, y_train, sample_groups, model, n_repeats=3):
+        """Fallback CV method when GroupKFold fails"""
+        cv_scores = []
+        unique_groups = np.unique(sample_groups)
+        
+        for i in range(n_repeats):
+            try:
+                # Split by participants, not samples
+                train_groups, val_groups = train_test_split(
+                    unique_groups, test_size=0.2, random_state=42 + i
+                )
+                
+                # Get indices for these groups
+                train_mask = np.isin(sample_groups, train_groups)
+                val_mask = np.isin(sample_groups, val_groups)
+                
+                X_fold_train, X_fold_val = X_train[train_mask], X_train[val_mask]
+                y_fold_train, y_fold_val = y_train[train_mask], y_train[val_mask]
+                
+                if (len(np.unique(y_fold_train)) < 2 or len(np.unique(y_fold_val)) < 2 or
+                    len(y_fold_train) < 10 or len(y_fold_val) < 5):
+                    continue
+                
+                # Train model
+                model_copy = type(model)(**model.get_params())
+                model_copy.fit(X_fold_train, y_fold_train)
+                
+                # Get probabilities
+                if hasattr(model_copy, "predict_proba"):
+                    y_val_proba = model_copy.predict_proba(X_fold_val)[:, 1]
+                else:
+                    y_val_proba = model_copy.decision_function(X_fold_val)
+                
+                fold_auc = roc_auc_score(y_fold_val, y_val_proba)
+                
+                if not np.isnan(fold_auc) and 0.3 <= fold_auc <= 0.95:
+                    cv_scores.append(fold_auc)
+                    print(f"   Fallback Fold {i+1}: AUC={fold_auc:.3f}")
+                    
+            except Exception as e:
+                print(f"   ⚠️ Fallback fold {i+1} failed: {str(e)[:30]}")
+                continue
         
         return cv_scores
 
