@@ -1493,333 +1493,333 @@ class RealisticAnalysis:
         approach_summaries = {}
         best_overall_auc = 0
         best_overall_approach = ""
-def run_gnn_comparison_analysis(self):
-        """Run comprehensive GNN comparison analysis"""
-        
-        print("🧠 GRAPH NEURAL NETWORK COMPARISON ANALYSIS")
-        print("="*70)
-        print("🎯 Comparing: Raw, Simple KG, Enhanced KG, and True GNN")
-        print("🔒 Using actual Neo4j graph structure for GNN")
-        print("📊 Complete statistical comparison")
-        print()
-        
-        # Enhanced preprocessing with clinical features
-        df, best_features, best_set_name, train_indices, test_indices, train_pids, test_pids = self.load_and_prepare_data()
-        train_data, test_data = self.proper_train_test_split(df, train_indices, test_indices)
-        
-        # Preprocess data without leakage
-        train_clean, test_clean, clean_features = self.preprocess_data(train_data, test_data, best_features)
-        
-        # Feature selection
-        X_train, X_test, selected_features = self.optimized_feature_selection(
-            train_clean, test_clean, clean_features
-        )
-        
-        y_train = train_clean['diagnosis']
-        y_test = test_clean['diagnosis']
-        X_train_scaled, X_test_scaled = self.prepare_data_properly(X_train, X_test)
-        
-        # === TIER 1: RAW CLINICAL FEATURES ===
-        print(f"\n{'='*50}")
-        print("📊 TIER 1: RAW CLINICAL FEATURES")
-        print(f"{'='*50}")
-        
-        raw_results = self.train_optimized_models(
-            X_train_scaled, X_test_scaled, y_train, y_test, train_pids, 
-            f"Raw Clinical Features ({best_set_name})"
-        )
-        
-        # === TIER 2: SIMPLE KG ===
-        print(f"\n{'='*50}")
-        print("🧠 TIER 2: SIMPLE KG EMBEDDINGS")
-        print(f"{'='*50}")
-        
-        X_train_kg_simple, X_test_kg_simple = self.create_conservative_kg_embeddings(
-            X_train_scaled, X_test_scaled
-        )
-        simple_kg_results = self.train_optimized_models(
-            X_train_kg_simple, X_test_kg_simple, y_train, y_test, train_pids, "Simple KG"
-        )
-        
-        # === TIER 3: ENHANCED KG ===
-        print(f"\n{'='*50}")
-        print("🔥 TIER 3: ENHANCED KG EMBEDDINGS")
-        print(f"{'='*50}")
-        
-        X_train_kg_enhanced, X_test_kg_enhanced = self.create_enhanced_kg_embeddings(
-            X_train_scaled, X_test_scaled
-        )
-        enhanced_kg_results = self.train_optimized_models(
-            X_train_kg_enhanced, X_test_kg_enhanced, y_train, y_test, train_pids, "Enhanced KG"
-        )
-        
-        # === TIER 4: TRUE GNN ===
-        print(f"\n{'='*50}")
-        print("🤖 TIER 4: GRAPH NEURAL NETWORKS (Neo4j)")
-        print(f"{'='*50}")
-        
-        gnn_results = {}
-        
-        if GNN_ANALYSIS_AVAILABLE:
-            try:
-                print("   🔗 Initializing GNN analyzer...")
-                gnn_analyzer = TrueGraphAnalysis(samples_per_participant=self.samples_per_participant)
-                
-                # Convert participant IDs to integers
-                train_pids_int = [int(pid) for pid in train_pids]
-                test_pids_int = [int(pid) for pid in test_pids]
-                
-                print("   🧠 Running GNN analysis...")
-                gnn_model_results = gnn_analyzer.run_gnn_analysis(train_pids_int, test_pids_int)
-                
-                if gnn_model_results and len(gnn_model_results) > 0:
-                    gnn_results = gnn_model_results
-                    print(f"   ✅ GNN analysis completed with {len(gnn_results)} models")
-                else:
-                    print("   ❌ GNN analysis returned no valid results")
-                    gnn_results = self._create_placeholder_gnn_results()
+    def run_gnn_comparison_analysis(self):
+            """Run comprehensive GNN comparison analysis"""
+            
+            print("🧠 GRAPH NEURAL NETWORK COMPARISON ANALYSIS")
+            print("="*70)
+            print("🎯 Comparing: Raw, Simple KG, Enhanced KG, and True GNN")
+            print("🔒 Using actual Neo4j graph structure for GNN")
+            print("📊 Complete statistical comparison")
+            print()
+            
+            # Enhanced preprocessing with clinical features
+            df, best_features, best_set_name, train_indices, test_indices, train_pids, test_pids = self.load_and_prepare_data()
+            train_data, test_data = self.proper_train_test_split(df, train_indices, test_indices)
+            
+            # Preprocess data without leakage
+            train_clean, test_clean, clean_features = self.preprocess_data(train_data, test_data, best_features)
+            
+            # Feature selection
+            X_train, X_test, selected_features = self.optimized_feature_selection(
+                train_clean, test_clean, clean_features
+            )
+            
+            y_train = train_clean['diagnosis']
+            y_test = test_clean['diagnosis']
+            X_train_scaled, X_test_scaled = self.prepare_data_properly(X_train, X_test)
+            
+            # === TIER 1: RAW CLINICAL FEATURES ===
+            print(f"\n{'='*50}")
+            print("📊 TIER 1: RAW CLINICAL FEATURES")
+            print(f"{'='*50}")
+            
+            raw_results = self.train_optimized_models(
+                X_train_scaled, X_test_scaled, y_train, y_test, train_pids, 
+                f"Raw Clinical Features ({best_set_name})"
+            )
+            
+            # === TIER 2: SIMPLE KG ===
+            print(f"\n{'='*50}")
+            print("🧠 TIER 2: SIMPLE KG EMBEDDINGS")
+            print(f"{'='*50}")
+            
+            X_train_kg_simple, X_test_kg_simple = self.create_conservative_kg_embeddings(
+                X_train_scaled, X_test_scaled
+            )
+            simple_kg_results = self.train_optimized_models(
+                X_train_kg_simple, X_test_kg_simple, y_train, y_test, train_pids, "Simple KG"
+            )
+            
+            # === TIER 3: ENHANCED KG ===
+            print(f"\n{'='*50}")
+            print("🔥 TIER 3: ENHANCED KG EMBEDDINGS")
+            print(f"{'='*50}")
+            
+            X_train_kg_enhanced, X_test_kg_enhanced = self.create_enhanced_kg_embeddings(
+                X_train_scaled, X_test_scaled
+            )
+            enhanced_kg_results = self.train_optimized_models(
+                X_train_kg_enhanced, X_test_kg_enhanced, y_train, y_test, train_pids, "Enhanced KG"
+            )
+            
+            # === TIER 4: TRUE GNN ===
+            print(f"\n{'='*50}")
+            print("🤖 TIER 4: GRAPH NEURAL NETWORKS (Neo4j)")
+            print(f"{'='*50}")
+            
+            gnn_results = {}
+            
+            if GNN_ANALYSIS_AVAILABLE:
+                try:
+                    print("   🔗 Initializing GNN analyzer...")
+                    gnn_analyzer = TrueGraphAnalysis(samples_per_participant=self.samples_per_participant)
                     
-            except Exception as e:
-                print(f"   ❌ GNN analysis failed: {str(e)}")
-                print("   📋 Using placeholder results for comparison")
+                    # Convert participant IDs to integers
+                    train_pids_int = [int(pid) for pid in train_pids]
+                    test_pids_int = [int(pid) for pid in test_pids]
+                    
+                    print("   🧠 Running GNN analysis...")
+                    gnn_model_results = gnn_analyzer.run_gnn_analysis(train_pids_int, test_pids_int)
+                    
+                    if gnn_model_results and len(gnn_model_results) > 0:
+                        gnn_results = gnn_model_results
+                        print(f"   ✅ GNN analysis completed with {len(gnn_results)} models")
+                    else:
+                        print("   ❌ GNN analysis returned no valid results")
+                        gnn_results = self._create_placeholder_gnn_results()
+                        
+                except Exception as e:
+                    print(f"   ❌ GNN analysis failed: {str(e)}")
+                    print("   📋 Using placeholder results for comparison")
+                    gnn_results = self._create_placeholder_gnn_results()
+            else:
+                print("   ⚠️ GNN analysis not available")
+                print("   📋 Install PyTorch Geometric and create true_gnn_analysis.py")
+                print("   🔄 Using placeholder results for demonstration")
                 gnn_results = self._create_placeholder_gnn_results()
-        else:
-            print("   ⚠️ GNN analysis not available")
-            print("   📋 Install PyTorch Geometric and create true_gnn_analysis.py")
-            print("   🔄 Using placeholder results for demonstration")
-            gnn_results = self._create_placeholder_gnn_results()
-        
-        # === COMPREHENSIVE COMPARISON ===
-        print(f"\n{'='*70}")
-        print("📊 COMPREHENSIVE GNN COMPARISON RESULTS")
-        print(f"{'='*70}")
-        
-        # Collect all results
-        all_results = {
-            'Raw Clinical Features': raw_results,
-            'Simple KG': simple_kg_results,
-            'Enhanced KG': enhanced_kg_results,
-            'True GNN': gnn_results
-        }
+            
+            # === COMPREHENSIVE COMPARISON ===
+            print(f"\n{'='*70}")
+            print("📊 COMPREHENSIVE GNN COMPARISON RESULTS")
+            print(f"{'='*70}")
+            
+            # Collect all results
+            all_results = {
+                'Raw Clinical Features': raw_results,
+                'Simple KG': simple_kg_results,
+                'Enhanced KG': enhanced_kg_results,
+                'True GNN': gnn_results
+            }
 
-        # Statistical comparison
-        statistical_results = self.statistical_comparison_analysis(all_results)
-        
-        # Print results
-        self.print_gnn_comparison_results(all_results, best_set_name, {
-            'train_participants': len(set(train_pids)),
-            'test_participants': len(set(test_pids)),
-            'original_features': len(best_features),
-            'selected_features': len(selected_features)
-        }, statistical_results)
-        
-        return {
-            'all_results': all_results,
-            'statistical_results': statistical_results,
-            'data_summary': {
+            # Statistical comparison
+            statistical_results = self.statistical_comparison_analysis(all_results)
+            
+            # Print results
+            self.print_gnn_comparison_results(all_results, best_set_name, {
                 'train_participants': len(set(train_pids)),
                 'test_participants': len(set(test_pids)),
-                'train_samples': len(X_train),
-                'test_samples': len(X_test)
-            },
-            'feature_info': {
-                'clinical_set': best_set_name,
-                'original_count': len(best_features),
-                'selected_count': len(selected_features)
+                'original_features': len(best_features),
+                'selected_features': len(selected_features)
+            }, statistical_results)
+            
+            return {
+                'all_results': all_results,
+                'statistical_results': statistical_results,
+                'data_summary': {
+                    'train_participants': len(set(train_pids)),
+                    'test_participants': len(set(test_pids)),
+                    'train_samples': len(X_train),
+                    'test_samples': len(X_test)
+                },
+                'feature_info': {
+                    'clinical_set': best_set_name,
+                    'original_count': len(best_features),
+                    'selected_count': len(selected_features)
+                }
             }
-        }
-        
-        for approach_name, results in all_results.items():
-            print(f"\n{approach_name}:")
             
-            approach_aucs = []
-            approach_best = {"model": "", "auc": 0}
-            
-            for model_name, metrics in results.items():
-                auc = metrics['auc']
-                f1 = metrics['f1']
-                cv_mean = metrics['cv_mean']
-                cv_std = metrics['cv_std']
+            for approach_name, results in all_results.items():
+                print(f"\n{approach_name}:")
                 
-                approach_aucs.append(auc)
+                approach_aucs = []
+                approach_best = {"model": "", "auc": 0}
                 
-                # Performance assessment
-                if auc > 0.8:
-                    status = "🎉 Excellent"
-                elif auc > 0.7:
-                    status = "✅ Good"
-                elif auc > 0.6:
-                    status = "⚖️ Moderate"
-                else:
-                    status = "📋 Limited"
-                
-                cv_info = f"CV={cv_mean:.3f}±{cv_std:.3f}" if metrics['cv_scores'] else "CV=N/A"
-                print(f"   {model_name:<20}: {status} AUC={auc:.3f}, F1={f1:.3f}, {cv_info}")
-                
-                if auc > approach_best["auc"]:
-                    approach_best["model"] = model_name
-                    approach_best["auc"] = auc
-                
-                if auc > best_overall_auc:
-                    best_overall_auc = auc
-                    best_overall_approach = approach_name
-                    best_overall_model = model_name
-            
-            # Approach summary
-            approach_summaries[approach_name] = {
-                "mean_auc": np.mean(approach_aucs),
-                "std_auc": np.std(approach_aucs),
-                "best_model": approach_best["model"],
-                "best_auc": approach_best["auc"]
-            }
-        
-        # APPROACH COMPARISON
-        print("\n📈 APPROACH COMPARISON (Best Model per Approach):")
-        print("-" * 70)
-        
-        sorted_approaches = sorted(approach_summaries.items(), 
-                                key=lambda x: x[1]["best_auc"], 
-                                reverse=True)
-        
-        for rank, (approach, summary) in enumerate(sorted_approaches, 1):
-            emoji = "🏆" if rank == 1 else "🥈" if rank == 2 else "🥉" if rank == 3 else "  "
-            print(f"{emoji} #{rank}: {approach:<25} AUC={summary['best_auc']:.3f} ({summary['best_model']})")
-        
-        # STATISTICAL COMPARISON
-        print("\n📊 STATISTICAL COMPARISON:")
-        print("="*70)
-        
-        if statistical_results:
-            print("Statistical comparison results:")
-            for comp, res in statistical_results.items():
-                ci = res['auc_ci']
-                corrected_p = res.get('corrected_p_value', 'N/A')
-                sig = "✅" if res.get('significant_after_correction', False) else "📋"
-                print(f"{comp:<35}: ΔAUC={res['auc_diff']:+.3f} [{ci[0]:.3f},{ci[1]:.3f}], p={res['p_value']:.4f}, corrected_p={corrected_p:.4f} {sig}")
-        else:
-            print("No statistical results available")
-            
-        print("="*70)
-
-        # WINNER DECLARATION
-        print(f"\n🏆 OVERALL WINNER:")
-        print(f"   Approach: {best_overall_approach}")
-        print(f"   Model: {best_overall_model}")
-        print(f"   AUC: {best_overall_auc:.3f}")
-        
-        # GNN vs Traditional Comparison
-        print(f"\n🧠 GNN vs TRADITIONAL METHODS:")
-
-        # Best traditional (non-GNN) method
-        traditional_approaches = {k: v for k, v in approach_summaries.items() if k != "True GNN"}
-        if traditional_approaches:
-            best_traditional = max(traditional_approaches.items(), key=lambda x: x[1]["best_auc"])
-            best_traditional_name = best_traditional[0]
-            best_traditional_auc = best_traditional[1]["best_auc"]
-            
-            # Best GNN
-            if "True GNN" in approach_summaries:
-                best_gnn_auc = approach_summaries["True GNN"]["best_auc"]
-                improvement = ((best_gnn_auc - best_traditional_auc) / best_traditional_auc) * 100
-                
-                print(f"   Best Traditional: {best_traditional_name} (AUC={best_traditional_auc:.3f})")
-                print(f"   Best GNN: AUC={best_gnn_auc:.3f}")
-                print(f"   GNN Improvement: {improvement:+.1f}%")
-                
-                # Check statistical significance
-                if statistical_results:
-                    gnn_vs_traditional_key = None
-                    for key, result in statistical_results.items():
-                        if (best_traditional_name in result['approach1'] and "True GNN" in result['approach2']) or \
-                           (best_traditional_name in result['approach2'] and "True GNN" in result['approach1']):
-                            gnn_vs_traditional_key = key
-                            break
+                for model_name, metrics in results.items():
+                    auc = metrics['auc']
+                    f1 = metrics['f1']
+                    cv_mean = metrics['cv_mean']
+                    cv_std = metrics['cv_std']
                     
-                    if gnn_vs_traditional_key and not np.isnan(statistical_results[gnn_vs_traditional_key]['p_value']):
-                        p_val = statistical_results[gnn_vs_traditional_key]['p_value']
-                        corrected_p = statistical_results[gnn_vs_traditional_key].get('corrected_p_value', p_val)
-                        significant = statistical_results[gnn_vs_traditional_key].get('significant_after_correction', p_val < 0.05)
-                        
-                        if significant:
-                            print(f"   ✅ Statistically significant improvement (p={corrected_p:.4f})")
-                        else:
-                            print(f"   📋 Not statistically significant (p={corrected_p:.4f})")
+                    approach_aucs.append(auc)
+                    
+                    # Performance assessment
+                    if auc > 0.8:
+                        status = "🎉 Excellent"
+                    elif auc > 0.7:
+                        status = "✅ Good"
+                    elif auc > 0.6:
+                        status = "⚖️ Moderate"
+                    else:
+                        status = "📋 Limited"
+                    
+                    cv_info = f"CV={cv_mean:.3f}±{cv_std:.3f}" if metrics['cv_scores'] else "CV=N/A"
+                    print(f"   {model_name:<20}: {status} AUC={auc:.3f}, F1={f1:.3f}, {cv_info}")
+                    
+                    if auc > approach_best["auc"]:
+                        approach_best["model"] = model_name
+                        approach_best["auc"] = auc
+                    
+                    if auc > best_overall_auc:
+                        best_overall_auc = auc
+                        best_overall_approach = approach_name
+                        best_overall_model = model_name
                 
-                if improvement > 5:
-                    print("   💡 GNN shows meaningful improvement over traditional methods")
-                    print("   📊 Graph structure provides additional discriminative power")
-                elif improvement > -5:
-                    print("   💡 GNN performs comparably to traditional methods")
-                    print("   📊 Both approaches have similar effectiveness")
-                else:
-                    print("   💡 Traditional methods outperform GNN")
-                    print("   📊 Simpler approaches may be preferred for this dataset")
-        else:
-            print("   No traditional methods available for comparison")
-
-        # CLINICAL INTERPRETATION
-        print(f"\n🏥 CLINICAL INTERPRETATION:")
-        if best_overall_auc > 0.8:
-            clinical_utility = "🎉 EXCELLENT - High clinical utility for ASD screening"
-            recommendation = "Suitable for clinical decision support with validation"
-        elif best_overall_auc > 0.7:
-            clinical_utility = "✅ GOOD - Meaningful clinical utility"
-            recommendation = "Promising for clinical applications"
-        elif best_overall_auc > 0.6:
-            clinical_utility = "⚖️ MODERATE - Limited clinical utility"
-            recommendation = "May be useful as supplementary tool"
-        else:
-            clinical_utility = "📋 LIMITED - Insufficient for clinical use"
-            recommendation = "Requires significant improvement"
-        
-        print(f"   Assessment: {clinical_utility}")
-        print(f"   Recommendation: {recommendation}")
-        
-        # METHOD INSIGHTS
-        print(f"\n💡 METHOD INSIGHTS:")
-        
-        # Check if graph-based methods help
-        graph_methods = ["Simple KG", "Enhanced KG", "True GNN"]
-        graph_aucs = [approach_summaries[k]["best_auc"] for k in graph_methods if k in approach_summaries]
-        raw_auc = approach_summaries.get("Raw Clinical Features", {}).get("best_auc", 0)
-        
-        if graph_aucs and raw_auc:
-            avg_graph_auc = np.mean(graph_aucs)
-            if avg_graph_auc > raw_auc + 0.05:
-                print("   ✅ Graph-based methods consistently outperform raw features")
-                print("   → Graph structure captures important relationships")
-            elif avg_graph_auc > raw_auc - 0.05:
-                print("   ⚖️ Graph-based methods perform similarly to raw features")
-                print("   → Graph structure provides modest benefits")
+                # Approach summary
+                approach_summaries[approach_name] = {
+                    "mean_auc": np.mean(approach_aucs),
+                    "std_auc": np.std(approach_aucs),
+                    "best_model": approach_best["model"],
+                    "best_auc": approach_best["auc"]
+                }
+            
+            # APPROACH COMPARISON
+            print("\n📈 APPROACH COMPARISON (Best Model per Approach):")
+            print("-" * 70)
+            
+            sorted_approaches = sorted(approach_summaries.items(), 
+                                    key=lambda x: x[1]["best_auc"], 
+                                    reverse=True)
+            
+            for rank, (approach, summary) in enumerate(sorted_approaches, 1):
+                emoji = "🏆" if rank == 1 else "🥈" if rank == 2 else "🥉" if rank == 3 else "  "
+                print(f"{emoji} #{rank}: {approach:<25} AUC={summary['best_auc']:.3f} ({summary['best_model']})")
+            
+            # STATISTICAL COMPARISON
+            print("\n📊 STATISTICAL COMPARISON:")
+            print("="*70)
+            
+            if statistical_results:
+                print("Statistical comparison results:")
+                for comp, res in statistical_results.items():
+                    ci = res['auc_ci']
+                    corrected_p = res.get('corrected_p_value', 'N/A')
+                    sig = "✅" if res.get('significant_after_correction', False) else "📋"
+                    print(f"{comp:<35}: ΔAUC={res['auc_diff']:+.3f} [{ci[0]:.3f},{ci[1]:.3f}], p={res['p_value']:.4f}, corrected_p={corrected_p:.4f} {sig}")
             else:
-                print("   📋 Raw features outperform graph-based methods")
-                print("   → Simple features may be sufficient")
-        
-        # GNN architecture comparison
-        if "True GNN" in all_results:
-            gnn_models = all_results["True GNN"]
-            if len(gnn_models) > 1:
-                print(f"\n   GNN Architecture Comparison:")
-                sorted_gnns = sorted(gnn_models.items(), key=lambda x: x[1]['auc'], reverse=True)
-                for model, metrics in sorted_gnns:
-                    arch_name = model.replace('GNN_', '') if model.startswith('GNN_') else model
-                    print(f"      {arch_name:<12}: AUC={metrics['auc']:.3f}")
-        
-        # LIMITATIONS
-        print(f"\n⚠️ STUDY LIMITATIONS:")
-        print("   • Small sample size may limit GNN training effectiveness")
-        print("   • Single dataset requires external validation")
-        print("   • Graph construction parameters not optimized")
-        print("   • Limited hyperparameter tuning for GNN models")
-        print("   • Class imbalance may affect model performance")
-        
-        print(f"\n🚀 RECOMMENDATIONS:")
-        print("   • Test on larger clinical datasets for GNN stability")
-        print("   • Optimize graph construction (edge thresholds, features)")
-        print("   • Apply graph-specific data augmentation")
-        print("   • Try advanced GNN architectures (GraphTransformer, etc.)")
-        print("   • Ensemble graph and non-graph methods")
-        print("   • Validate with temporal gait sequences")
+                print("No statistical results available")
+                
+            print("="*70)
+
+            # WINNER DECLARATION
+            print(f"\n🏆 OVERALL WINNER:")
+            print(f"   Approach: {best_overall_approach}")
+            print(f"   Model: {best_overall_model}")
+            print(f"   AUC: {best_overall_auc:.3f}")
+            
+            # GNN vs Traditional Comparison
+            print(f"\n🧠 GNN vs TRADITIONAL METHODS:")
+
+            # Best traditional (non-GNN) method
+            traditional_approaches = {k: v for k, v in approach_summaries.items() if k != "True GNN"}
+            if traditional_approaches:
+                best_traditional = max(traditional_approaches.items(), key=lambda x: x[1]["best_auc"])
+                best_traditional_name = best_traditional[0]
+                best_traditional_auc = best_traditional[1]["best_auc"]
+                
+                # Best GNN
+                if "True GNN" in approach_summaries:
+                    best_gnn_auc = approach_summaries["True GNN"]["best_auc"]
+                    improvement = ((best_gnn_auc - best_traditional_auc) / best_traditional_auc) * 100
+                    
+                    print(f"   Best Traditional: {best_traditional_name} (AUC={best_traditional_auc:.3f})")
+                    print(f"   Best GNN: AUC={best_gnn_auc:.3f}")
+                    print(f"   GNN Improvement: {improvement:+.1f}%")
+                    
+                    # Check statistical significance
+                    if statistical_results:
+                        gnn_vs_traditional_key = None
+                        for key, result in statistical_results.items():
+                            if (best_traditional_name in result['approach1'] and "True GNN" in result['approach2']) or \
+                            (best_traditional_name in result['approach2'] and "True GNN" in result['approach1']):
+                                gnn_vs_traditional_key = key
+                                break
+                        
+                        if gnn_vs_traditional_key and not np.isnan(statistical_results[gnn_vs_traditional_key]['p_value']):
+                            p_val = statistical_results[gnn_vs_traditional_key]['p_value']
+                            corrected_p = statistical_results[gnn_vs_traditional_key].get('corrected_p_value', p_val)
+                            significant = statistical_results[gnn_vs_traditional_key].get('significant_after_correction', p_val < 0.05)
+                            
+                            if significant:
+                                print(f"   ✅ Statistically significant improvement (p={corrected_p:.4f})")
+                            else:
+                                print(f"   📋 Not statistically significant (p={corrected_p:.4f})")
+                    
+                    if improvement > 5:
+                        print("   💡 GNN shows meaningful improvement over traditional methods")
+                        print("   📊 Graph structure provides additional discriminative power")
+                    elif improvement > -5:
+                        print("   💡 GNN performs comparably to traditional methods")
+                        print("   📊 Both approaches have similar effectiveness")
+                    else:
+                        print("   💡 Traditional methods outperform GNN")
+                        print("   📊 Simpler approaches may be preferred for this dataset")
+            else:
+                print("   No traditional methods available for comparison")
+
+            # CLINICAL INTERPRETATION
+            print(f"\n🏥 CLINICAL INTERPRETATION:")
+            if best_overall_auc > 0.8:
+                clinical_utility = "🎉 EXCELLENT - High clinical utility for ASD screening"
+                recommendation = "Suitable for clinical decision support with validation"
+            elif best_overall_auc > 0.7:
+                clinical_utility = "✅ GOOD - Meaningful clinical utility"
+                recommendation = "Promising for clinical applications"
+            elif best_overall_auc > 0.6:
+                clinical_utility = "⚖️ MODERATE - Limited clinical utility"
+                recommendation = "May be useful as supplementary tool"
+            else:
+                clinical_utility = "📋 LIMITED - Insufficient for clinical use"
+                recommendation = "Requires significant improvement"
+            
+            print(f"   Assessment: {clinical_utility}")
+            print(f"   Recommendation: {recommendation}")
+            
+            # METHOD INSIGHTS
+            print(f"\n💡 METHOD INSIGHTS:")
+            
+            # Check if graph-based methods help
+            graph_methods = ["Simple KG", "Enhanced KG", "True GNN"]
+            graph_aucs = [approach_summaries[k]["best_auc"] for k in graph_methods if k in approach_summaries]
+            raw_auc = approach_summaries.get("Raw Clinical Features", {}).get("best_auc", 0)
+            
+            if graph_aucs and raw_auc:
+                avg_graph_auc = np.mean(graph_aucs)
+                if avg_graph_auc > raw_auc + 0.05:
+                    print("   ✅ Graph-based methods consistently outperform raw features")
+                    print("   → Graph structure captures important relationships")
+                elif avg_graph_auc > raw_auc - 0.05:
+                    print("   ⚖️ Graph-based methods perform similarly to raw features")
+                    print("   → Graph structure provides modest benefits")
+                else:
+                    print("   📋 Raw features outperform graph-based methods")
+                    print("   → Simple features may be sufficient")
+            
+            # GNN architecture comparison
+            if "True GNN" in all_results:
+                gnn_models = all_results["True GNN"]
+                if len(gnn_models) > 1:
+                    print(f"\n   GNN Architecture Comparison:")
+                    sorted_gnns = sorted(gnn_models.items(), key=lambda x: x[1]['auc'], reverse=True)
+                    for model, metrics in sorted_gnns:
+                        arch_name = model.replace('GNN_', '') if model.startswith('GNN_') else model
+                        print(f"      {arch_name:<12}: AUC={metrics['auc']:.3f}")
+            
+            # LIMITATIONS
+            print(f"\n⚠️ STUDY LIMITATIONS:")
+            print("   • Small sample size may limit GNN training effectiveness")
+            print("   • Single dataset requires external validation")
+            print("   • Graph construction parameters not optimized")
+            print("   • Limited hyperparameter tuning for GNN models")
+            print("   • Class imbalance may affect model performance")
+            
+            print(f"\n🚀 RECOMMENDATIONS:")
+            print("   • Test on larger clinical datasets for GNN stability")
+            print("   • Optimize graph construction (edge thresholds, features)")
+            print("   • Apply graph-specific data augmentation")
+            print("   • Try advanced GNN architectures (GraphTransformer, etc.)")
+            print("   • Ensemble graph and non-graph methods")
+            print("   • Validate with temporal gait sequences")
 
     def run_realistic_analysis(self):
         """Run basic realistic analysis with clinical features and statistical testing"""
