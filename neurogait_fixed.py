@@ -1536,406 +1536,166 @@ class RealisticAnalysis:
         best_overall_auc = 0
         best_overall_approach = ""
     def run_gnn_comparison_analysis(self):
-       """Raw vs KG vs Enhanced KG vs True GNN with proper participant-level split and CV (no leakage)."""
+        """Raw vs KG vs Enhanced KG vs True GNN with proper participant-level split and CV (no leakage)."""
 
-    import numpy as np
-    import pandas as pd
-    from sklearn.model_selection import GroupShuffleSplit
+        import numpy as np
+        import pandas as pd
+        from sklearn.model_selection import GroupShuffleSplit
 
-    print("\n🧠 GRAPH NEURAL NETWORK COMPARISON ANALYSIS")
-    print("=" * 70)
-    print("🎯 Comparing: Raw, Simple KG, Enhanced KG, and True GNN")
-    print("🔒 Using actual Neo4j graph structure for GNN")
-    print("📊 Complete statistical comparison")
+        print("\n🧠 GRAPH NEURAL NETWORK COMPARISON ANALYSIS")
+        print("=" * 70)
+        print("🎯 Comparing: Raw, Simple KG, Enhanced KG, and True GNN")
+        print("🔒 Using actual Neo4j graph structure for GNN")
+        print("📊 Complete statistical comparison")
 
-    # ---------------------------------------------------------------------
-    # 1) Obtain train/test DataFrames
-    # ---------------------------------------------------------------------
-    if hasattr(self, "train_df") and hasattr(self, "test_df"):
-        train_df, test_df = self.train_df, self.test_df
-    else:
-        # locate a single full dataframe on self
-        full_df = None
-        for name in ("df", "data", "dataset", "full_df"):
-            if hasattr(self, name):
-                cand = getattr(self, name)
-                if isinstance(cand, pd.DataFrame):
-                    full_df = cand
-                    break
-        if full_df is None:
-            raise ValueError(
-                "No train/test dataframes found and no full dataframe available "
-                "(expected one of: self.df/self.data/self.dataset/self.full_df)."
+        # ---------------------------------------------------------------------
+        # 1) Obtain train/test DataFrames
+        # ---------------------------------------------------------------------
+        if hasattr(self, "train_df") and hasattr(self, "test_df"):
+            train_df, test_df = self.train_df, self.test_df
+        else:
+            full_df = None
+            for name in ("df", "data", "dataset", "full_df"):
+                if hasattr(self, name):
+                    cand = getattr(self, name)
+                    if isinstance(cand, pd.DataFrame):
+                        full_df = cand
+                        break
+            if full_df is None:
+                raise ValueError(
+                    "No train/test dataframes found and no full dataframe available "
+                    "(expected one of: self.df/self.data/self.dataset/self.full_df)."
+                )
+
+            required_cols = {"participant_id", "diagnosis"}
+            if not required_cols.issubset(set(full_df.columns)):
+                raise ValueError("Full dataframe must contain columns: 'participant_id' and 'diagnosis'.")
+
+            part = (
+                full_df.groupby("participant_id")["diagnosis"]
+                .apply(lambda s: int(round(s.mean())))
+                .reset_index()
+                .rename(columns={"diagnosis": "diag"})
             )
 
-        required_cols = {"participant_id", "diagnosis"}
-        if not required_cols.issubset(set(full_df.columns)):
-            raise ValueError("Full dataframe must contain columns: 'participant_id' and 'diagnosis'.")
+            gss = GroupShuffleSplit(n_splits=1, test_size=0.25, random_state=42)
+            for tr, te in gss.split(part[["diag"]], y=part["diag"], groups=part["participant_id"]):
+                train_idx, test_idx = tr, te
+                break
 
-        # stratified by diagnosis at participant level, no leakage
-        # build participant table with one label per participant (mode)
-        part = (
-            full_df.groupby("participant_id")["diagnosis"]
-            .apply(lambda s: int(round(s.mean())))  # assumes binary {0,1}; majority vote
-            .reset_index()
-            .rename(columns={"diagnosis": "diag"})
+            train_pids = set(part.iloc[train_idx]["participant_id"].tolist())
+            test_pids = set(part.iloc[test_idx]["participant_id"].tolist())
+
+            train_df = full_df[full_df["participant_id"].isin(train_pids)].copy()
+            test_df = full_df[full_df["participant_id"].isin(test_pids)].copy()
+
+            self.train_df, self.test_df = train_df, test_df
+
+        # ---------------------------------------------------------------------
+        # 2) Clinical features list
+        # ---------------------------------------------------------------------
+        if hasattr(self, "best_clinical_features") and self.best_clinical_features:
+            clinical_features = list(self.best_clinical_features)
+        elif hasattr(self, "selected_clinical_features") and self.selected_clinical_features:
+            clinical_features = list(self.selected_clinical_features)
+        else:
+            drop_cols = {"participant_id", "diagnosis"}
+            numeric_cols = train_df.select_dtypes(include=[np.number]).columns
+            clinical_features = [c for c in numeric_cols if c not in drop_cols]
+            if not clinical_features:
+                raise ValueError("Could not infer clinical features; provide self.best_clinical_features.")
+
+        missing_train = [f for f in clinical_features if f not in train_df.columns]
+        missing_test = [f for f in clinical_features if f not in test_df.columns]
+        if missing_train or missing_test:
+            raise ValueError(f"Feature columns missing. Missing in train: {missing_train}; missing in test: {missing_test}")
+
+        # ---------------------------------------------------------------------
+        # 3) Feature selection
+        # ---------------------------------------------------------------------
+        X_train, X_test, selected_features, train_groups = self.optimized_feature_selection(
+            train_df, test_df, clinical_features
         )
 
-        gss = GroupShuffleSplit(n_splits=1, test_size=0.25, random_state=42)
-        (train_idx,), (test_idx,) = [], []
-        for tr, te in gss.split(part[["diag"]], y=part["diag"], groups=part["participant_id"]):
-            train_idx, test_idx = tr, te
-            break
+        # 4) Scale
+        X_train_scaled, X_test_scaled = self.scale_no_leakage(X_train, X_test)
 
-        train_pids = set(part.iloc[train_idx]["participant_id"].tolist())
-        test_pids = set(part.iloc[test_idx]["participant_id"].tolist())
+        y_train = train_df.loc[X_train.index, "diagnosis"].values
+        y_test = test_df.loc[X_test.index, "diagnosis"].values
 
-        train_df = full_df[full_df["participant_id"].isin(train_pids)].copy()
-        test_df  = full_df[full_df["participant_id"].isin(test_pids)].copy()
-
-        # persist for downstream uses
-        self.train_df, self.test_df = train_df, test_df
-
-    # ---------------------------------------------------------------------
-    # 2) Clinical features list
-    # ---------------------------------------------------------------------
-    if hasattr(self, "best_clinical_features") and self.best_clinical_features:
-        clinical_features = list(self.best_clinical_features)
-    elif hasattr(self, "selected_clinical_features") and self.selected_clinical_features:
-        clinical_features = list(self.selected_clinical_features)
-    else:
-        # infer features: all numeric columns except id/target
-        drop_cols = {"participant_id", "diagnosis"}
-        numeric_cols = train_df.select_dtypes(include=[np.number]).columns
-        clinical_features = [c for c in numeric_cols if c not in drop_cols]
-        if not clinical_features:
-            raise ValueError("Could not infer clinical features; provide self.best_clinical_features.")
-
-    # make sure features exist in both
-    missing_train = [f for f in clinical_features if f not in train_df.columns]
-    missing_test = [f for f in clinical_features if f not in test_df.columns]
-    if missing_train or missing_test:
-        raise ValueError(f"Feature columns missing. Missing in train: {missing_train}; missing in test: {missing_test}")
-
-    # ---------------------------------------------------------------------
-    # 3) Feature selection (Training Only) → returns 4 values
-    # ---------------------------------------------------------------------
-    X_train, X_test, selected_features, train_groups = self.optimized_feature_selection(
-        train_df, test_df, clinical_features
-    )
-
-    # 4) Scale without leakage
-    X_train_scaled, X_test_scaled = self.scale_no_leakage(X_train, X_test)
-
-    # 5) Targets aligned to design matrices
-    y_train = train_df.loc[X_train.index, "diagnosis"].values
-    y_test  = test_df.loc[X_test.index,  "diagnosis"].values
-
-    # ---------------------------------------------------------------------
-    # 6) Tiers
-    # ---------------------------------------------------------------------
-    # RAW
-    raw_results = self.train_optimized_models(
-        X_train_scaled, X_test_scaled, y_train, y_test, train_groups, "Raw Clinical Features"
-    )
-
-    # SIMPLE KG
-    X_train_kg, X_test_kg = self.build_simple_kg_embeddings(X_train_scaled, X_test_scaled, selected_features)
-    simplekg_results = self.train_optimized_models(
-        X_train_kg, X_test_kg, y_train, y_test, train_groups, "Simple KG"
-    )
-
-    # ENHANCED KG
-    X_train_enh, X_test_enh = self.build_enhanced_kg_embeddings(X_train_scaled, X_test_scaled, selected_features)
-    enhancedkg_results = self.train_optimized_models(
-        X_train_enh, X_test_enh, y_train, y_test, train_groups, "Enhanced KG"
-    )
-
-    # TRUE GNN (expects to produce test metrics/preds internally)
-    gnn_results = self.run_true_gnn_analysis(train_df, test_df, selected_features)
-
-    # ---------------------------------------------------------------------
-    # 7) Aggregate + statistics
-    # ---------------------------------------------------------------------
-    tier1_results = {
-        "Raw Clinical Features": raw_results,
-        "Simple KG":            simplekg_results,
-        "Enhanced KG":          enhancedkg_results,
-        "True GNN":             gnn_results,
-    }
-
-    statistical_results = self.statistical_comparison_analysis(tier1_results)
-
-    # 8) Print comprehensive results (your existing printer)
-    self.print_tuned_comprehensive_results_with_statistics(
-        tier1_results=tier1_results,
-        tuning_results={},  # pass real tuning dict if available
-        best_config={},     # pass real best_config if available
-        clinical_set_name=getattr(self, "best_clinical_set_name", None),
-        data_summary={
-            "train_participants": len(set(train_df["participant_id"].values)),
-            "test_participants":  len(set(test_df["participant_id"].values)),
-            "original_features":  len(clinical_features),
-            "selected_features":  len(selected_features),
-        },
-        statistical_results=statistical_results,
-    )
-
-    return {
-        "all_results": tier1_results,
-        "statistical_results": statistical_results,
-    }
-
-    def run_realistic_analysis(self):
-        """Run basic realistic analysis with clinical features and statistical testing"""
-        
-        # Use clinical features for enhanced basic analysis with proper leakage prevention
-        df, best_features, best_set_name, train_indices, test_indices, train_pids, test_pids = self.load_and_prepare_data()
-        
-        # Split data properly
-        train_data, test_data = self.proper_train_test_split(df, train_indices, test_indices)
-        
-        # Preprocess data without leakage
-        train_clean, test_clean, clean_features = self.preprocess_data(train_data, test_data, best_features)
-        
-        # Feature selection using training data only
-        X_train, X_test, selected_features = self.optimized_feature_selection(
-            train_clean, test_clean, clean_features
-        )
-        
-        y_train = train_clean['diagnosis']
-        y_test = test_clean['diagnosis']
-        X_train_scaled, X_test_scaled = self.prepare_data_properly(X_train, X_test)
-        
-        # Raw features analysis
-        print(f"\n{'='*50}")
-        print(f"📊 RAW CLINICAL FEATURES ANALYSIS")
-        print(f"{'='*50}")
-        
+        # ---------------------------------------------------------------------
+        # 6) Tiers
+        # ---------------------------------------------------------------------
         raw_results = self.train_optimized_models(
-            X_train_scaled, X_test_scaled, y_train, y_test, train_pids, "Raw Clinical Features"
+            X_train_scaled, X_test_scaled, y_train, y_test, train_groups, "Raw Clinical Features"
         )
-        
-        # KG embeddings analysis
-        X_train_kg, X_test_kg = self.create_enhanced_kg_embeddings(X_train_scaled, X_test_scaled)
-        
-        print(f"\n{'='*50}")
-        print(f"🧠 OPTIMIZED KG EMBEDDINGS ANALYSIS")
-        print(f"{'='*50}")
-        
-        kg_results = self.train_optimized_models(
-            X_train_kg, X_test_kg, y_train, y_test, train_pids, "Optimized KG Embeddings"
+
+        X_train_kg, X_test_kg = self.build_simple_kg_embeddings(X_train_scaled, X_test_scaled, selected_features)
+        simplekg_results = self.train_optimized_models(
+            X_train_kg, X_test_kg, y_train, y_test, train_groups, "Simple KG"
         )
-        
-        # Statistical comparison
+
+        X_train_enh, X_test_enh = self.build_enhanced_kg_embeddings(X_train_scaled, X_test_scaled, selected_features)
+        enhancedkg_results = self.train_optimized_models(
+            X_train_enh, X_test_enh, y_train, y_test, train_groups, "Enhanced KG"
+        )
+
+        gnn_results = self.run_true_gnn_analysis(train_df, test_df, selected_features)
+
+        # ---------------------------------------------------------------------
+        # 7) Aggregate + statistics
+        # ---------------------------------------------------------------------
         tier1_results = {
-            'Raw Clinical Features': raw_results,
-            'Optimized KG': kg_results
+            "Raw Clinical Features": raw_results,
+            "Simple KG": simplekg_results,
+            "Enhanced KG": enhancedkg_results,
+            "True GNN": gnn_results,
         }
-        
-        print(f"\n{'='*60}")
-        print("📊 STATISTICAL COMPARISON")
-        print(f"{'='*60}")
-        
+
         statistical_results = self.statistical_comparison_analysis(tier1_results)
-        
-        # Results
-        self.print_basic_comparison_results_with_stats(
-            raw_results, kg_results, statistical_results,
-            len(selected_features), len(best_features), best_set_name
+
+        self.print_tuned_comprehensive_results_with_statistics(
+            tier1_results=tier1_results,
+            tuning_results={},
+            best_config={},
+            clinical_set_name=getattr(self, "best_clinical_set_name", None),
+            data_summary={
+                "train_participants": len(set(train_df["participant_id"].values)),
+                "test_participants": len(set(test_df["participant_id"].values)),
+                "original_features": len(clinical_features),
+                "selected_features": len(selected_features),
+            },
+            statistical_results=statistical_results,
         )
-        
+
         return {
-            'raw_results': raw_results,
-            'kg_results': kg_results,
-            'statistical_results': statistical_results,
-            'selected_features': selected_features,
-            'clinical_set': best_set_name
+            "all_results": tier1_results,
+            "statistical_results": statistical_results,
         }
-
-# MAIN FUNCTION με GNN Support
-def main():
-        """Main execution with clinical features, comprehensive statistical analysis, hyperparameter tuning, and GNN support"""
-        print("🏥 ENHANCED NEUROGAIT ANALYSIS με Clinical Features, Statistics, και GNN")
-        print("🎯 Raw vs KG vs GNN comparison με καλύτερα clinical features")
-        print("🔒 No data leakage ensured")
-        print("📊 Complete statistical analysis με Wilcoxon tests and multiple testing correction")
-        print("🎛️ Hyperparameter tuning για optimal performance")
-        print("🤖 Graph Neural Networks για advanced analysis")
-        print()
-        
-        # Show available analysis options
-        available_options = [
-            "1. Basic Analysis (Raw vs KG με clinical features και statistics)",
-            "2. Enhanced Analysis (All tiers με comprehensive statistics)",
-            "3. Tuned Analysis (Enhanced + Hyperparameter tuning)",
-            "4. GNN Analysis (Raw vs KG vs Enhanced KG vs True GNN)"
-        ]
-        
-        # Check availability
-        if ENHANCED_FEATURES_AVAILABLE:
-            enhanced_status = "✅"
-        else:
-            enhanced_status = "⚠️"
-        
-        if GNN_ANALYSIS_AVAILABLE:
-            gnn_status = "✅"
-        else:
-            gnn_status = "⚠️"
-        
-        print("Available analysis types:")
-        for i, option in enumerate(available_options, 1):
-            if i == 2 or i == 3:
-                print(f"   {enhanced_status} {option}")
-            elif i == 4:
-                print(f"   {gnn_status} {option}")
-            else:
-                print(f"   ✅ {option}")
-        
-        if not GNN_ANALYSIS_AVAILABLE:
-            print("\n📋 For GNN analysis, install requirements:")
-            print("   pip install torch torch-geometric")
-            print("   Create true_gnn_analysis.py module")
-        
-        if not ENHANCED_FEATURES_AVAILABLE:
-            print("\n📋 For enhanced KG features, create enhanced_kg_features.py module")
-        
-        print("\n" + "="*70)
-        
-        # Initialize analyzer
-        analyzer = RealisticAnalysis()
-        
-        try:
-            # Get user choice
-            print("\nChoose analysis type (1-4): ", end="")
-            choice = input().strip()
+            def demo_load_and_prepare_data():
+                feature_names_only = [col for col in df.columns if col not in ['participant_id', 'diagnosis', 'class']]
+                return df, feature_names_only, "synthetic_demo", np.arange(len(df)), np.arange(len(df)), participant_ids, participant_ids
             
-            if choice == "1":
-                print("\n🚀 Running Basic Analysis...")
+            # Replace method temporarily
+            original_method = analyzer.load_and_prepare_data
+            analyzer.load_and_prepare_data = demo_load_and_prepare_data
+            
+            try:
+                print("\n🚀 Running demo analysis...")
                 results = analyzer.run_realistic_analysis()
                 
-            elif choice == "2":
-                print("\n🚀 Running Enhanced Analysis...")
-                results = analyzer.run_enhanced_analysis_with_tuning()
+                print("\n🎯 DEMO COMPLETED!")
+                print("📋 This was a demonstration with synthetic data")
+                print("🔄 Use real 'Final dataset.csv' for actual analysis")
                 
-            elif choice == "3":
-                print("\n🚀 Running Tuned Analysis...")
-                results = analyzer.run_enhanced_analysis_with_tuning()
+                return results
                 
-            elif choice == "4":
-                print("\n🚀 Running GNN Analysis...")
-                results = analyzer.run_gnn_comparison_analysis()
-                
-            else:
-                print("❌ Invalid choice. Running default basic analysis...")
-                results = analyzer.run_realistic_analysis()
-            
-            print("\n" + "="*80)
-            print("🎉 ANALYSIS COMPLETED SUCCESSFULLY!")
-            print("="*80)
-            
-            return results
-            
-        except KeyboardInterrupt:
-            print("\n\n⚠️ Analysis interrupted by user")
-            return None
-            
-        except Exception as e:
-            print(f"\n\n❌ Analysis failed with error: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            return None
-
-def run_demo_analysis():
-        """Run a demonstration analysis with synthetic data if no dataset is available"""
-        print("🔬 DEMO MODE - Synthetic NeuroGait Analysis")
-        print("="*60)
-        print("📋 This demonstrates the analysis pipeline with synthetic data")
-        print("🎯 Replace with 'Final dataset.csv' for real analysis")
-        print()
-        
-        # Generate synthetic data that mimics the structure
-        np.random.seed(42)
-        n_participants = 20
-        samples_per_participant = 8
-        n_samples = n_participants * samples_per_participant
-        n_features = 25
-        
-        # Create synthetic features with realistic names
-        feature_names = [
-            'SpineBase_X', 'SpineBase_Y', 'SpineBase_Z',
-            'SPKNL_angle', 'SPKNR_angle', 'HIANL_angle', 'HIANR_angle',
-            'GaCT_duration', 'StaT_duration', 'SwiT_duration',
-            'HESHL_velocity', 'HESHR_velocity', 'SHWRL_position', 'SHWRR_position',
-            'balance_score', 'stability_metric', 'gait_rhythm',
-            'step_length', 'stride_width', 'walking_speed',
-            'coordination_index', 'symmetry_measure', 'timing_variability',
-            'postural_sway', 'movement_smoothness'
-        ]
-        
-        # Generate synthetic data
-        X = np.random.randn(n_samples, n_features)
-        
-        # Add some structure to make it more realistic
-        for i in range(n_features):
-            X[:, i] = X[:, i] * (i + 1) / 5  # Different scales
-            
-        # Create participant IDs and diagnosis
-        participant_ids = np.repeat(np.arange(n_participants), samples_per_participant)
-        
-        # Create somewhat realistic diagnosis pattern (40% ASD)
-        asd_participants = np.random.choice(n_participants, size=int(n_participants * 0.4), replace=False)
-        diagnosis = np.array([1 if pid in asd_participants else 0 for pid in participant_ids])
-        
-        # Add slight correlation between features and diagnosis
-        asd_mask = diagnosis == 1
-        X[asd_mask, :5] += 0.3  # ASD participants have slightly different values
-        X[~asd_mask, 5:10] += 0.3  # Control participants have different pattern
-        
-        # Create DataFrame
-        df = pd.DataFrame(X, columns=feature_names)
-        df['participant_id'] = participant_ids
-        df['diagnosis'] = diagnosis
-        df['class'] = ['A' if d == 1 else 'T' for d in diagnosis]
-        
-        print(f"📊 Generated synthetic dataset:")
-        print(f"   Participants: {n_participants}")
-        print(f"   Samples: {n_samples}")
-        print(f"   Features: {n_features}")
-        print(f"   ASD cases: {np.sum(diagnosis)} ({np.mean(diagnosis)*100:.1f}%)")
-        
-        # Save synthetic data
-        df.to_csv('synthetic_neurogait_data.csv', index=False, sep=';')
-        print("💾 Saved as 'synthetic_neurogait_data.csv'")
-        
-        # Run basic analysis on synthetic data
-        analyzer = RealisticAnalysis()
-        
-        # Mock the load_and_prepare_data method for demo
-        def demo_load_and_prepare_data():
-            feature_names_only = [col for col in df.columns if col not in ['participant_id', 'diagnosis', 'class']]
-            return df, feature_names_only, "synthetic_demo", np.arange(len(df)), np.arange(len(df)), participant_ids, participant_ids
-        
-        # Replace method temporarily
-        original_method = analyzer.load_and_prepare_data
-        analyzer.load_and_prepare_data = demo_load_and_prepare_data
-        
-        try:
-            print("\n🚀 Running demo analysis...")
-            results = analyzer.run_realistic_analysis()
-            
-            print("\n🎯 DEMO COMPLETED!")
-            print("📋 This was a demonstration with synthetic data")
-            print("🔄 Use real 'Final dataset.csv' for actual analysis")
-            
-            return results
-            
-        except Exception as e:
-            print(f"❌ Demo failed: {str(e)}")
-            return None
-        finally:
-            # Restore original method
-            analyzer.load_and_prepare_data = original_method    
+            except Exception as e:
+                print(f"❌ Demo failed: {str(e)}")
+                return None
+            finally:
+                # Restore original method
+                analyzer.load_and_prepare_data = original_method    
 
 if __name__ == "__main__":
     print("🏥 NEUROGAIT ANALYSIS SYSTEM")
