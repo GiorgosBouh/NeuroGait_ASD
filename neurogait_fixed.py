@@ -1455,7 +1455,7 @@ class RealisticAnalysis:
         print("   • Clinical expert validation of feature relevance")
         print("   • Integration with other diagnostic modalities")
 
-    (train_pids)),
+    (train_pids),
                 'test_participants': len(set(test_pids)),
                 'train_samples': len(X_train),
                 'test_samples': len(X_test)
