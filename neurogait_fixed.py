@@ -677,7 +677,7 @@ class RealisticAnalysis:
         
         return results
    
-     def _proper_cross_validation(self, X_train, y_train, train_pids, model, cv_folds=5):
+    def _proper_cross_validation(self, X_train, y_train, train_pids, model, cv_folds=5):
         """Proper participant-level cross-validation without data leakage"""
         try:
             # Create sample-level groups array with same length as X_train/y_train
