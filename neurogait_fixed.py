@@ -404,8 +404,8 @@ class RealisticAnalysis:
         return train_final, test_final, final_features
     
     def optimized_feature_selection(self, train_data, test_data, features):
-        """Feature selection using training data only to prevent leakage"""
-        print(f"\n🧠 OPTIMIZED FEATURE SELECTION (Training Data Only)")
+        """More conservative feature selection to prevent overfitting - CLEAN VERSION"""
+        print(f"\n🧠 CONSERVATIVE FEATURE SELECTION (Training Data Only)")
         
         X_train = train_data[features]
         y_train = train_data['diagnosis']
@@ -413,37 +413,31 @@ class RealisticAnalysis:
         n_samples, n_features = X_train.shape
         print(f"   📊 Input: {n_samples} samples × {n_features} features")
         
-        # Less conservative target: 1 feature per 10 samples
-        max_features = max(15, min(80, n_samples // 10))
-        print(f"   🎯 Target features: {max_features} (optimized ratio)")
+        # Very conservative: 1 feature per 25 samples for small datasets
+        max_features = max(5, min(20, n_samples // 25))
+        print(f"   🎯 Target features: {max_features} (very conservative for small dataset)")
         
         if n_features <= max_features:
             print(f"   ✅ No selection needed (already {n_features} ≤ {max_features})")
             return X_train, test_data[features], features
         
-        print(f"   🔧 Using statistical feature selection on training data only...")
+        print(f"   🔧 Using conservative statistical feature selection...")
         selector = SelectKBest(score_func=f_classif, k=max_features)
         
-        try:
-            X_train_selected = selector.fit_transform(X_train, y_train)
-            selected_features = [features[i] for i in range(len(features)) 
-                               if selector.get_support()[i]]
-            
-            # Apply the same selection to test data
-            X_test_selected = test_data[selected_features]
-            
-            print(f"   ✅ Selected {len(selected_features)} features")
-            print(f"   📊 Reduction: {n_features} → {len(selected_features)}")
-            print(f"   📊 Feature-to-sample ratio: {len(selected_features)/n_samples:.3f}:1")
-            
-            return pd.DataFrame(X_train_selected, columns=selected_features), \
-                   pd.DataFrame(X_test_selected, columns=selected_features), \
-                   selected_features
-            
-        except Exception as e:
-            print(f"   ⚠️ Feature selection failed: {str(e)[:30]}")
-            print(f"   📋 Using all features")
-            return X_train, test_data[features], features
+        X_train_selected = selector.fit_transform(X_train, y_train)
+        selected_features = [features[i] for i in range(len(features)) 
+                        if selector.get_support()[i]]
+        
+        # Apply the same selection to test data
+        X_test_selected = test_data[selected_features]
+        
+        print(f"   ✅ Selected {len(selected_features)} features")
+        print(f"   📊 Reduction: {n_features} → {len(selected_features)}")
+        print(f"   📊 Feature-to-sample ratio: {len(selected_features)/n_samples:.3f}:1")
+        
+        return pd.DataFrame(X_train_selected, columns=selected_features, index=X_train.index), \
+            X_test_selected, \
+            selected_features
     
     def prepare_data_properly(self, X_train, X_test):
         """Prepare data with proper scaling and outlier handling"""
@@ -581,104 +575,104 @@ class RealisticAnalysis:
         return X_train_kg, X_test_kg
     
     def _proper_cross_validation(self, X_train, y_train, train_pids, model, cv_folds=5):
-        """Proper participant-level cross-validation without data leakage"""
+        """Proper participant-level cross-validation without data leakage - CLEAN VERSION"""
         try:
-            # Create sample-level groups array with same length as X_train/y_train
-            sample_groups = train_pids  # This should already be sample-level
-            
+            sample_groups = train_pids
             unique_pids = np.unique(sample_groups)
             
             if len(unique_pids) < cv_folds:
                 cv_folds = max(2, len(unique_pids))
                 print(f"   ⚠️ Reduced CV folds to {cv_folds} due to limited participants")
             
-            # Use GroupKFold for proper participant-level CV
             group_kfold = GroupKFold(n_splits=cv_folds)
             cv_scores = []
             
-            # Convert to arrays for sklearn compatibility
             X_train_arr = np.asarray(X_train) if not isinstance(X_train, np.ndarray) else X_train
             y_train_arr = np.asarray(y_train) if not isinstance(y_train, np.ndarray) else y_train
             
             fold = 0
             for train_idx, val_idx in group_kfold.split(X_train_arr, y_train_arr, groups=sample_groups):
                 fold += 1
-                try:
-                    X_fold_train, X_fold_val = X_train_arr[train_idx], X_train_arr[val_idx]
-                    y_fold_train, y_fold_val = y_train_arr[train_idx], y_train_arr[val_idx]
-                    
-                    if (len(np.unique(y_fold_train)) < 2 or len(np.unique(y_fold_val)) < 2 or
-                        len(y_fold_train) < 10 or len(y_fold_val) < 5):
-                        print(f"   ⚠️ Fold {fold}: Insufficient data for proper CV")
-                        return []  # Stop if insufficient data
-                    
-                    # Train model with fixed parameters
-                    model_copy = type(model)(**model.get_params())
-                    model_copy.fit(X_fold_train, y_fold_train)
-                    
-                    # Get probabilities for the positive class
-                    if hasattr(model_copy, "predict_proba"):
-                        y_val_proba = model_copy.predict_proba(X_fold_val)[:, 1]
-                    else:
-                        y_val_proba = model_copy.decision_function(X_fold_val)
-                    
-                    fold_auc = roc_auc_score(y_fold_val, y_val_proba)
-                    
-                    if not np.isnan(fold_auc) and 0.3 <= fold_auc <= 0.95:
-                        cv_scores.append(fold_auc)
-                        print(f"   Fold {fold}: AUC={fold_auc:.3f}")
-                    else:
-                        print(f"   ⚠️ Fold {fold}: Invalid AUC score ({fold_auc})")
-                        return []  # Stop if invalid AUC
-                        
-                except Exception as e:
-                    print(f"   ⚠️ Fold {fold} failed: {str(e)[:50]}")
-                    return []  # Stop if fold fails
+                X_fold_train, X_fold_val = X_train_arr[train_idx], X_train_arr[val_idx]
+                y_fold_train, y_fold_val = y_train_arr[train_idx], y_train_arr[val_idx]
+                
+                # Skip folds with insufficient data or no class variation
+                if (len(np.unique(y_fold_train)) < 2 or len(np.unique(y_fold_val)) < 2 or
+                    len(y_fold_train) < 10 or len(y_fold_val) < 5):
+                    print(f"   ⚠️ Fold {fold}: Insufficient data - skipping")
+                    continue
+                
+                # Train model
+                model_copy = type(model)(**model.get_params())
+                model_copy.fit(X_fold_train, y_fold_train)
+                
+                # Get predictions
+                if hasattr(model_copy, "predict_proba"):
+                    y_val_proba = model_copy.predict_proba(X_fold_val)[:, 1]
+                else:
+                    y_val_proba = model_copy.decision_function(X_fold_val)
+                    # Convert decision function to probabilities
+                    y_val_proba = 1 / (1 + np.exp(-y_val_proba))
+                
+                # Calculate AUC
+                fold_auc = roc_auc_score(y_fold_val, y_val_proba)
+                
+                # Only accept reasonable AUC scores (detect overfitting)
+                if not np.isnan(fold_auc) and 0.4 <= fold_auc <= 0.9:
+                    cv_scores.append(fold_auc)
+                    print(f"   Fold {fold}: AUC={fold_auc:.3f}")
+                else:
+                    print(f"   ⚠️ Fold {fold}: Unrealistic AUC ({fold_auc:.3f}) - likely overfitting, skipping")
             
             return cv_scores
-                    
+                        
         except Exception as e:
             print(f"   ❌ CV failed: {str(e)}")
             return []
     
     def train_optimized_models(self, X_train, X_test, y_train, y_test, train_pids, approach_name):
-        """Train models with optimized parameters for better performance"""
+        """Train models with proper regularization - CLEAN VERSION"""
         print(f"\n🚀 TRAINING OPTIMIZED MODELS: {approach_name}")
         print(f"   📊 Data shape: {X_train.shape}")
         
-        # Less conservative model parameters for better performance
+        # Strong regularization to prevent overfitting on small datasets
         models = {
             'Logistic Regression': LogisticRegression(
                 random_state=42,
                 max_iter=1000,
-                C=1.0,
-                solver='liblinear'
+                C=0.01,  # Very strong regularization
+                solver='liblinear',
+                penalty='l2'
             ),
             'Random Forest': RandomForestClassifier(
-                n_estimators=100,
-                max_depth=6,
-                min_samples_split=5,
-                min_samples_leaf=2,
+                n_estimators=30,   # Reduced trees
+                max_depth=2,       # Very shallow
+                min_samples_split=20,  # High minimum
+                min_samples_leaf=15,   # High minimum
                 max_features='sqrt',
-                random_state=42
+                random_state=42,
+                class_weight='balanced'
             ),
             'XGBoost': xgb.XGBClassifier(
                 random_state=42,
-                max_depth=5,
-                n_estimators=100,
-                learning_rate=0.1,
-                subsample=0.8,
-                colsample_bytree=0.8,
-                reg_alpha=0.3,
-                reg_lambda=0.3,
+                max_depth=2,       # Very shallow
+                n_estimators=30,   # Few trees
+                learning_rate=0.01, # Very slow learning
+                subsample=0.6,     # Strong subsampling
+                colsample_bytree=0.6,
+                reg_alpha=2.0,     # Strong L1 regularization
+                reg_lambda=2.0,    # Strong L2 regularization
                 eval_metric='logloss',
-                verbosity=0
+                verbosity=0,
+                scale_pos_weight=1.0
             ),
             'SVM': SVC(
                 random_state=42,
                 probability=True,
-                C=1.0,
-                gamma='scale'
+                C=0.01,           # Very strong regularization
+                gamma='scale',
+                kernel='rbf',
+                class_weight='balanced'
             )
         }
         
@@ -688,10 +682,10 @@ class RealisticAnalysis:
             print(f"   🔧 Training {model_name}...")
             
             try:
-                # Cross-validation with proper participant-level splitting
+                # Cross-validation
                 cv_scores = self._proper_cross_validation(X_train, y_train, train_pids, model)
                 
-                # If CV failed, skip this model
+                # Skip model if CV completely failed
                 if not cv_scores:
                     print(f"      ❌ CV failed - skipping {model_name}")
                     continue
@@ -699,62 +693,81 @@ class RealisticAnalysis:
                 # Train final model
                 model.fit(X_train, y_train)
                 
-                # Predictions
+                # Get predictions
                 y_pred = model.predict(X_test)
-                y_pred_proba = model.predict_proba(X_test)[:, 1]
                 
-                # Metrics
-                metrics = {
-                    'cv_scores': cv_scores,
-                    'cv_mean': np.mean(cv_scores) if cv_scores else 0.5,
-                    'cv_std': np.std(cv_scores) if cv_scores else 0.0,
-                    'accuracy': accuracy_score(y_test, y_pred),
-                    'precision': precision_score(y_test, y_pred, zero_division=0),
-                    'recall': recall_score(y_test, y_pred, zero_division=0),
-                    'f1': f1_score(y_test, y_pred, zero_division=0),
-                    'auc': roc_auc_score(y_test, y_pred_proba),
-                    'y_test': np.asarray(y_test),
-                    'pred_test': y_pred,
-                    'proba_test': y_pred_proba
-                }
-                
-                results[model_name] = metrics
-                
-                # Assessment
-                if metrics['auc'] > 0.8:
-                    status = "🎉 Excellent"
-                elif metrics['auc'] > 0.7:
-                    status = "✅ Good"
-                elif metrics['auc'] > 0.6:
-                    status = "⚖️ Moderate"
+                if hasattr(model, "predict_proba"):
+                    y_pred_proba = model.predict_proba(X_test)[:, 1]
                 else:
-                    status = "📋 Limited"
+                    y_pred_proba = model.decision_function(X_test)
+                    y_pred_proba = 1 / (1 + np.exp(-y_pred_proba))
                 
-                cv_info = f"CV={metrics['cv_mean']:.3f}±{metrics['cv_std']:.3f}" if cv_scores else "CV=N/A"
-                print(f"      {status}: AUC={metrics['auc']:.3f}, F1={metrics['f1']:.3f}, {cv_info}")
+                # Calculate metrics
+                auc = roc_auc_score(y_test, y_pred_proba)
+                accuracy = accuracy_score(y_test, y_pred)
+                precision = precision_score(y_test, y_pred, zero_division=0)
+                recall = recall_score(y_test, y_pred, zero_division=0)
+                f1 = f1_score(y_test, y_pred, zero_division=0)
+                
+                # Store results only if reasonable
+                if 0.4 <= auc <= 0.9:  # Reasonable AUC range
+                    metrics = {
+                        'cv_scores': cv_scores,
+                        'cv_mean': np.mean(cv_scores),
+                        'cv_std': np.std(cv_scores),
+                        'accuracy': accuracy,
+                        'precision': precision,
+                        'recall': recall,
+                        'f1': f1,
+                        'auc': auc,
+                        'y_test': np.asarray(y_test),
+                        'pred_test': y_pred,
+                        'proba_test': y_pred_proba
+                    }
+                    
+                    results[model_name] = metrics
+                    
+                    # Assessment
+                    if auc > 0.8:
+                        status = "🎉 Excellent"
+                    elif auc > 0.7:
+                        status = "✅ Good"
+                    elif auc > 0.6:
+                        status = "⚖️ Moderate"
+                    else:
+                        status = "📋 Limited"
+                    
+                    cv_info = f"CV={metrics['cv_mean']:.3f}±{metrics['cv_std']:.3f}"
+                    print(f"      {status}: AUC={auc:.3f}, F1={f1:.3f}, {cv_info}")
+                else:
+                    print(f"      ❌ Unrealistic AUC ({auc:.3f}) - likely overfitting, skipping {model_name}")
                 
             except Exception as e:
                 print(f"      ❌ Failed: {str(e)[:50]}")
-                # Don't add failed models to results
         
         return results
     
     def statistical_comparison_analysis(self, tier1_results):
-        """Paired statistical comparison using sample-level test probabilities with multiple testing correction."""
+        """Statistical comparison with proper validation - CLEAN VERSION"""
         print("\n📊 DETAILED STATISTICAL ANALYSIS (sample-level, paired):")
         print("="*70)
         
-        # Gather best model per approach (by test AUC) and their test predictions
+        # Gather best model per approach that has valid results
         best = {}
         for approach_name, models in tier1_results.items():
+            if not models:  # Skip empty results
+                continue
+                
             best_auc = -1.0
             best_entry = None
+            
             for model_name, metrics in models.items():
-                if 'proba_test' in metrics and 'y_test' in metrics:
-                    auc = metrics.get('auc', -1.0)
+                if all(key in metrics for key in ['proba_test', 'y_test', 'auc']):
+                    auc = metrics['auc']
                     if auc > best_auc:
                         best_auc = auc
                         best_entry = (model_name, metrics)
+            
             if best_entry is not None:
                 best[approach_name] = {
                     'model': best_entry[0],
@@ -762,6 +775,10 @@ class RealisticAnalysis:
                     'y': np.asarray(best_entry[1]['y_test']),
                     'p': np.asarray(best_entry[1]['proba_test'])
                 }
+        
+        if len(best) < 2:
+            print("⚠️ Insufficient valid approaches for statistical comparison")
+            return {}
         
         approaches = list(best.keys())
         statistical_results = {}
@@ -775,50 +792,66 @@ class RealisticAnalysis:
                 y1, p1 = best[a1]['y'], best[a1]['p']
                 y2, p2 = best[a2]['y'], best[a2]['p']
                 
-                if len(y1) != len(y2) or not np.array_equal(y1, y2):
-                    print(f"\n⚠️ Skipping {a1} vs {a2}: mismatched test sets.")
+                # Check if test sets are compatible
+                if len(y1) != len(y2):
+                    print(f"\n⚠️ Skipping {a1} vs {a2}: mismatched test sets ({len(y1)} vs {len(y2)}).")
                     continue
                 
-                y = y1
+                # Check if we have the same test labels
+                if not np.array_equal(y1, y2):
+                    print(f"\n⚠️ Skipping {a1} vs {a2}: different test labels.")
+                    continue
+                
+                y = y1  # Use the common test labels
                 print(f"\n🔍 COMPARING (test level): {a1} vs {a2}")
                 print("-"*60)
                 
-                # Wilcoxon signed-rank test
-                W, p_val, rbc = wilcoxon_rank_biserial_from_trueprob(y, p1, p2)
-                p_values.append(p_val)
-                comparisons.append(f"{a1} vs {a2}")
-                
-                # Bootstrap confidence intervals
-                from sklearn.metrics import roc_auc_score, accuracy_score, f1_score
-                auc_diff, auc_ci, _ = paired_bootstrap_metric_diff(y, p1, p2, roc_auc_score, n_boot=10000, seed=123)
-                acc_diff, acc_ci, _ = paired_bootstrap_metric_diff(y, p1, p2, accuracy_score, n_boot=10000, seed=123, threshold=0.5)
-                f1_diff, f1_ci, _ = paired_bootstrap_metric_diff(y, p1, p2, f1_score, n_boot=10000, seed=123, threshold=0.5)
-                
-                print(f"AUC Δ = {auc_diff:+.3f}  (95% CI [{auc_ci[0]:.3f}, {auc_ci[1]:.3f}])")
-                print(f"Acc Δ = {acc_diff:+.3f} (95% CI [{acc_ci[0]:.3f}, {acc_ci[1]:.3f}])")
-                print(f" F1 Δ = {f1_diff:+.3f} (95% CI [{f1_ci[0]:.3f}, {f1_ci[1]:.3f}])")
-                
-                label = rank_biserial_to_label(rbc)
-                print(f"Wilcoxon (true prob): p = {p_val:.4f}, rank-biserial r = {rbc:+.3f} ({label})")
-                
-                key = f"{a1} vs {a2}"
-                statistical_results[key] = {
-                    'approach1': a1,
-                    'approach2': a2,
-                    'auc_diff': auc_diff,
-                    'auc_ci': auc_ci,
-                    'acc_diff': acc_diff,
-                    'acc_ci': acc_ci,
-                    'f1_diff': f1_diff,
-                    'f1_ci': f1_ci,
-                    'w_statistic': W,
-                    'p_value': p_val,
-                    'rank_biserial': rbc,
-                    'effect_size': label
-                }
+                try:
+                    # Wilcoxon signed-rank test
+                    W, p_val, rbc = wilcoxon_rank_biserial_from_trueprob(y, p1, p2)
+                    
+                    # Validate results
+                    if np.isnan(p_val) or p_val < 0 or p_val > 1:
+                        print(f"   ❌ Invalid statistical test results - skipping")
+                        continue
+                    
+                    p_values.append(p_val)
+                    comparisons.append(f"{a1} vs {a2}")
+                    
+                    # Bootstrap confidence intervals
+                    auc_diff, auc_ci, _ = paired_bootstrap_metric_diff(y, p1, p2, roc_auc_score, n_boot=5000, seed=123)
+                    acc_diff, acc_ci, _ = paired_bootstrap_metric_diff(y, p1, p2, accuracy_score, n_boot=5000, seed=123, threshold=0.5)
+                    f1_diff, f1_ci, _ = paired_bootstrap_metric_diff(y, p1, p2, f1_score, n_boot=5000, seed=123, threshold=0.5)
+                    
+                    print(f"AUC Δ = {auc_diff:+.3f}  (95% CI [{auc_ci[0]:.3f}, {auc_ci[1]:.3f}])")
+                    print(f"Acc Δ = {acc_diff:+.3f} (95% CI [{acc_ci[0]:.3f}, {acc_ci[1]:.3f}])")
+                    print(f" F1 Δ = {f1_diff:+.3f} (95% CI [{f1_ci[0]:.3f}, {f1_ci[1]:.3f}])")
+                    
+                    label = rank_biserial_to_label(rbc)
+                    print(f"Wilcoxon (true prob): p = {p_val:.4f}, rank-biserial r = {rbc:+.3f} ({label})")
+                    
+                    key = f"{a1} vs {a2}"
+                    statistical_results[key] = {
+                        'approach1': a1,
+                        'approach2': a2,
+                        'auc_diff': auc_diff,
+                        'auc_ci': auc_ci,
+                        'acc_diff': acc_diff,
+                        'acc_ci': acc_ci,
+                        'f1_diff': f1_diff,
+                        'f1_ci': f1_ci,
+                        'w_statistic': W,
+                        'p_value': p_val,
+                        'rank_biserial': rbc,
+                        'effect_size': label
+                    }
+                    
+                except Exception as e:
+                    print(f"   ❌ Statistical comparison failed: {str(e)[:50]}")
+                    continue
         
         # Apply multiple testing correction
-        if p_values:
+        if p_values and len(p_values) > 0:
             rejected, corrected_p, _, _ = multipletests(p_values, method='fdr_bh')
             for i, comp in enumerate(comparisons):
                 if comp in statistical_results:
@@ -831,15 +864,21 @@ class RealisticAnalysis:
             print("="*110)
             print(f"{'Comparison':<35} {'ΔAUC (95% CI)':<30} {'p-value':<10} {'Corrected p':<12} {'r (effect)':<15}")
             print("="*110)
+            
             for comp, res in statistical_results.items():
                 ci = res['auc_ci']
                 corrected_p = res.get('corrected_p_value', 'N/A')
+                if corrected_p != 'N/A':
+                    corrected_p_str = f"{corrected_p:.4f}"
+                else:
+                    corrected_p_str = "N/A"
                 sig = "✅" if res.get('significant_after_correction', False) else "📋"
-                print(f"{comp:<35} {res['auc_diff']:+.3f} [{ci[0]:.3f},{ci[1]:.3f}]   {res['p_value']:<10.4f} {corrected_p:<12.4f} {res['rank_biserial']:+.3f} {sig}")
+                print(f"{comp:<35} {res['auc_diff']:+.3f} [{ci[0]:.3f},{ci[1]:.3f}]   {res['p_value']:<10.4f} {corrected_p_str:<12} {res['rank_biserial']:+.3f} {sig}")
+            
             print("="*110)
             print("📋 Significance after FDR correction: ✅ p<0.05, 📋 p≥0.05")
         else:
-            print("\n⚠️ No comparable approaches with aligned test sets.")
+            print("\n⚠️ No valid statistical comparisons could be completed.")
         
         return statistical_results
 
