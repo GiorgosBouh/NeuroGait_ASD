@@ -677,20 +677,13 @@ class RealisticAnalysis:
         
         return results
    
-    def _proper_cross_validation(self, X_train, y_train, train_pids, model, cv_folds=5):
+     def _proper_cross_validation(self, X_train, y_train, train_pids, model, cv_folds=5):
         """Proper participant-level cross-validation without data leakage"""
         try:
-            # Get unique participant IDs and create sample-level group labels
-            unique_pids = np.unique(train_pids)
-            
             # Create sample-level groups array with same length as X_train/y_train
-            # We need to map each sample to its participant ID
-            sample_groups = []
-            for i in range(len(X_train)):
-                # Find which participant this sample belongs to
-                # This assumes train_pids is in the same order as X_train
-                sample_groups.append(train_pids[i])
-            sample_groups = np.array(sample_groups)
+            sample_groups = train_pids  # This should already be sample-level
+            
+            unique_pids = np.unique(sample_groups)
             
             if len(unique_pids) < cv_folds:
                 cv_folds = max(2, len(unique_pids))
@@ -714,7 +707,7 @@ class RealisticAnalysis:
                     if (len(np.unique(y_fold_train)) < 2 or len(np.unique(y_fold_val)) < 2 or
                         len(y_fold_train) < 10 or len(y_fold_val) < 5):
                         print(f"   ⚠️ Fold {fold}: Insufficient data for proper CV")
-                        continue
+                        return []  # Stop if insufficient data
                     
                     # Train model with fixed parameters
                     model_copy = type(model)(**model.get_params())
@@ -733,66 +726,17 @@ class RealisticAnalysis:
                         print(f"   Fold {fold}: AUC={fold_auc:.3f}")
                     else:
                         print(f"   ⚠️ Fold {fold}: Invalid AUC score ({fold_auc})")
+                        return []  # Stop if invalid AUC
                         
                 except Exception as e:
                     print(f"   ⚠️ Fold {fold} failed: {str(e)[:50]}")
-                    continue
+                    return []  # Stop if fold fails
             
-            # If we couldn't get proper CV scores, use a more robust approach
-            if len(cv_scores) < 2:
-                print("   ⚠️ Insufficient CV folds, using repeated train-test split")
-                cv_scores = self._fallback_cv(X_train_arr, y_train_arr, sample_groups, model)
+            return cv_scores
                     
         except Exception as e:
             print(f"   ❌ CV failed: {str(e)}")
-            cv_scores = []
-        
-        return cv_scores
-
-    def _fallback_cv(self, X_train, y_train, sample_groups, model, n_repeats=3):
-        """Fallback CV method when GroupKFold fails"""
-        cv_scores = []
-        unique_groups = np.unique(sample_groups)
-        
-        for i in range(n_repeats):
-            try:
-                # Split by participants, not samples
-                train_groups, val_groups = train_test_split(
-                    unique_groups, test_size=0.2, random_state=42 + i
-                )
-                
-                # Get indices for these groups
-                train_mask = np.isin(sample_groups, train_groups)
-                val_mask = np.isin(sample_groups, val_groups)
-                
-                X_fold_train, X_fold_val = X_train[train_mask], X_train[val_mask]
-                y_fold_train, y_fold_val = y_train[train_mask], y_train[val_mask]
-                
-                if (len(np.unique(y_fold_train)) < 2 or len(np.unique(y_fold_val)) < 2 or
-                    len(y_fold_train) < 10 or len(y_fold_val) < 5):
-                    continue
-                
-                # Train model
-                model_copy = type(model)(**model.get_params())
-                model_copy.fit(X_fold_train, y_fold_train)
-                
-                # Get probabilities
-                if hasattr(model_copy, "predict_proba"):
-                    y_val_proba = model_copy.predict_proba(X_fold_val)[:, 1]
-                else:
-                    y_val_proba = model_copy.decision_function(X_fold_val)
-                
-                fold_auc = roc_auc_score(y_fold_val, y_val_proba)
-                
-                if not np.isnan(fold_auc) and 0.3 <= fold_auc <= 0.95:
-                    cv_scores.append(fold_auc)
-                    print(f"   Fallback Fold {i+1}: AUC={fold_auc:.3f}")
-                    
-            except Exception as e:
-                print(f"   ⚠️ Fallback fold {i+1} failed: {str(e)[:30]}")
-                continue
-        
-        return cv_scores
+            return []
 
     def statistical_comparison_analysis(self, tier1_results):
         """Paired statistical comparison using sample-level test probabilities with multiple testing correction."""
@@ -1511,7 +1455,61 @@ class RealisticAnalysis:
         print("   • Clinical expert validation of feature relevance")
         print("   • Integration with other diagnostic modalities")
 
-    def run_gnn_comparison_analysis(self):
+    (train_pids)),
+                'test_participants': len(set(test_pids)),
+                'train_samples': len(X_train),
+                'test_samples': len(X_test)
+            },
+            'feature_info': {
+                'clinical_set': best_set_name,
+                'original_count': len(best_features),
+                'selected_count': len(selected_features)
+            }
+        }
+    
+    def _create_placeholder_gnn_results(self):
+        """Create realistic placeholder GNN results"""
+        base_auc = 0.62
+        models = ['GCN', 'GraphSAGE', 'GAT']
+        
+        placeholder_results = {}
+        for i, model in enumerate(models):
+            auc_variation = 0.03 * (i - 1)  # -0.03, 0, +0.03
+            auc = np.clip(base_auc + auc_variation, 0.5, 0.8)
+            
+            placeholder_results[f'GNN_{model}'] = {
+                'auc': auc,
+                'f1': auc * 0.85,
+                'accuracy': auc * 0.9,
+                'precision': auc * 0.8,
+                'recall': auc * 0.9,
+                'cv_scores': [auc + np.random.normal(0, 0.02) for _ in range(3)],
+                'cv_mean': auc,
+                'cv_std': 0.02
+            }
+        
+        return placeholder_results
+    
+    def print_gnn_comparison_results(self, all_results, clinical_set_name, data_summary, statistical_results):
+        """Print comprehensive GNN comparison results with statistical analysis"""
+        
+        print("🎯 COMPREHENSIVE GNN COMPARISON RESULTS")
+        print("="*80)
+        
+        # CONTEXT
+        print("🏥 ANALYSIS CONTEXT:")
+        print(f"   Feature Set: {clinical_set_name.replace('_', ' ').title()}")
+        print(f"   Train/Test: {data_summary['train_participants']} / {data_summary['test_participants']} participants")
+        print(f"   Features: {data_summary['original_features']} → {data_summary['selected_features']} selected")
+        
+        # PERFORMANCE SUMMARY BY APPROACH
+        print("\n📊 PERFORMANCE SUMMARY BY APPROACH:")
+        print("-" * 80)
+        
+        approach_summaries = {}
+        best_overall_auc = 0
+        best_overall_approach = ""
+def run_gnn_comparison_analysis(self):
         """Run comprehensive GNN comparison analysis"""
         
         print("🧠 GRAPH NEURAL NETWORK COMPARISON ANALYSIS")
@@ -1635,61 +1633,7 @@ class RealisticAnalysis:
             'all_results': all_results,
             'statistical_results': statistical_results,
             'data_summary': {
-                'train_participants': len(set(train_pids)),
-                'test_participants': len(set(test_pids)),
-                'train_samples': len(X_train),
-                'test_samples': len(X_test)
-            },
-            'feature_info': {
-                'clinical_set': best_set_name,
-                'original_count': len(best_features),
-                'selected_count': len(selected_features)
-            }
-        }
-    
-    def _create_placeholder_gnn_results(self):
-        """Create realistic placeholder GNN results"""
-        base_auc = 0.62
-        models = ['GCN', 'GraphSAGE', 'GAT']
-        
-        placeholder_results = {}
-        for i, model in enumerate(models):
-            auc_variation = 0.03 * (i - 1)  # -0.03, 0, +0.03
-            auc = np.clip(base_auc + auc_variation, 0.5, 0.8)
-            
-            placeholder_results[f'GNN_{model}'] = {
-                'auc': auc,
-                'f1': auc * 0.85,
-                'accuracy': auc * 0.9,
-                'precision': auc * 0.8,
-                'recall': auc * 0.9,
-                'cv_scores': [auc + np.random.normal(0, 0.02) for _ in range(3)],
-                'cv_mean': auc,
-                'cv_std': 0.02
-            }
-        
-        return placeholder_results
-    
-    def print_gnn_comparison_results(self, all_results, clinical_set_name, data_summary, statistical_results):
-        """Print comprehensive GNN comparison results with statistical analysis"""
-        
-        print("🎯 COMPREHENSIVE GNN COMPARISON RESULTS")
-        print("="*80)
-        
-        # CONTEXT
-        print("🏥 ANALYSIS CONTEXT:")
-        print(f"   Feature Set: {clinical_set_name.replace('_', ' ').title()}")
-        print(f"   Train/Test: {data_summary['train_participants']} / {data_summary['test_participants']} participants")
-        print(f"   Features: {data_summary['original_features']} → {data_summary['selected_features']} selected")
-        
-        # PERFORMANCE SUMMARY BY APPROACH
-        print("\n📊 PERFORMANCE SUMMARY BY APPROACH:")
-        print("-" * 80)
-        
-        approach_summaries = {}
-        best_overall_auc = 0
-        best_overall_approach = ""
-        best_overall_model = ""
+                'train_participants': len(set        best_overall_model = ""
         
         for approach_name, results in all_results.items():
             print(f"\n{approach_name}:")
