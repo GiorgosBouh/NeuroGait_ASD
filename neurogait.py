@@ -670,23 +670,23 @@ class RealisticAnalysis:
     def statistical_comparison_analysis(self, tier1_results):
         """Comprehensive statistical comparison with Wilcoxon tests"""
         print("\n📊 DETAILED STATISTICAL ANALYSIS:")
-        print("="*70)
-        
+        print("=" * 70)
+
         approaches = list(tier1_results.keys())
         statistical_results = {}
-        
+
         # Pairwise comparisons
         for i in range(len(approaches)):
-            for j in range(i+1, len(approaches)):
+            for j in range(i + 1, len(approaches)):
                 approach1, approach2 = approaches[i], approaches[j]
-                
+
                 print(f"\n🔍 COMPARING: {approach1} vs {approach2}")
                 print("-" * 60)
-                
+
                 # Get AUC scores for all models
                 aucs1 = [metrics['auc'] for metrics in tier1_results[approach1].values()]
                 aucs2 = [metrics['auc'] for metrics in tier1_results[approach2].values()]
-                
+
                 # Get CV scores for all models (flattened)
                 cv_scores1 = []
                 cv_scores2 = []
@@ -694,20 +694,20 @@ class RealisticAnalysis:
                     if model_name in tier1_results[approach2]:
                         cv_scores1.extend(tier1_results[approach1][model_name]['cv_scores'])
                         cv_scores2.extend(tier1_results[approach2][model_name]['cv_scores'])
-                
+
                 # Basic statistics
                 mean1, mean2 = np.mean(aucs1), np.mean(aucs2)
                 std1, std2 = np.std(aucs1), np.std(aucs2)
-                
+
                 print(f"   AUC Summary:")
                 print(f"      {approach1}: {mean1:.3f} ± {std1:.3f}")
                 print(f"      {approach2}: {mean2:.3f} ± {std2:.3f}")
                 print(f"      Difference: {mean2 - mean1:+.3f}")
-                
+
                 # Effect size (Cohen's d)
                 pooled_std = np.sqrt((std1**2 + std2**2) / 2)
                 cohens_d = (mean2 - mean1) / (pooled_std + 1e-8)
-                
+
                 if abs(cohens_d) > 0.8:
                     effect_size = "Large"
                 elif abs(cohens_d) > 0.5:
@@ -716,9 +716,9 @@ class RealisticAnalysis:
                     effect_size = "Small"
                 else:
                     effect_size = "Negligible"
-                
+
                 print(f"   Effect Size: Cohen's d = {cohens_d:+.3f} ({effect_size})")
-                
+
                 # Statistical testing
                 print(f"   Statistical Testing:")
                 try:
@@ -726,7 +726,7 @@ class RealisticAnalysis:
                         # Check if CV scores have variance
                         cv1_var = np.var(cv_scores1) if len(cv_scores1) > 0 else 0
                         cv2_var = np.var(cv_scores2) if len(cv_scores2) > 0 else 0
-                        
+
                         if cv1_var > 1e-10 and cv2_var > 1e-10 and len(cv_scores1) == len(cv_scores2):
                             # Use CV scores if they have variance and equal length
                             test_data1, test_data2 = cv_scores1, cv_scores2
@@ -735,23 +735,26 @@ class RealisticAnalysis:
                             # Use AUC scores instead
                             test_data1, test_data2 = aucs1, aucs2
                             test_type = "AUC scores"
-                        
+
                         # Ensure equal length for paired test
                         min_length = min(len(test_data1), len(test_data2))
                         if min_length >= 3:
                             data1_paired = test_data1[:min_length]
                             data2_paired = test_data2[:min_length]
-                            
+
                             # Check for zero differences
                             differences = [data2_paired[k] - data1_paired[k] for k in range(min_length)]
                             non_zero_diffs = [d for d in differences if abs(d) > 1e-10]
-                            
+
                             if len(non_zero_diffs) >= 3:
-                                w_stat, p_value = wilcoxon(data2_paired, data1_paired, 
-                                                         alternative='two-sided', 
-                                                         mode='auto',
-                                                         zero_method='wilcox')
-                                
+                                w_stat, p_value = wilcoxon(
+                                    data2_paired,
+                                    data1_paired,
+                                    alternative='two-sided',
+                                    mode='auto',
+                                    zero_method='wilcox'
+                                )
+
                                 # Interpretation
                                 if p_value < 0.001:
                                     significance = "Highly significant (***)"
@@ -763,17 +766,17 @@ class RealisticAnalysis:
                                     significance = "Marginally significant"
                                 else:
                                     significance = "Not significant"
-                                
+
                                 print(f"      Test type: Wilcoxon on {test_type}")
                                 print(f"      W-statistic: {w_stat:.2f}")
                                 print(f"      p-value: {p_value:.4f}")
                                 print(f"      Result: {significance}")
-                                
+
                                 # Confidence interval for difference
                                 ci_lower = np.percentile(differences, 2.5)
                                 ci_upper = np.percentile(differences, 97.5)
                                 print(f"      95% CI for difference: [{ci_lower:.3f}, {ci_upper:.3f}]")
-                                
+
                             else:
                                 print(f"      Test type: Effect size only (insufficient variation)")
                                 print(f"      Differences too small for statistical test")
@@ -787,12 +790,12 @@ class RealisticAnalysis:
                         print(f"      Test type: Insufficient models for comparison")
                         w_stat, p_value = np.nan, np.nan
                         significance = "Insufficient data"
-                        
+
                 except Exception as e:
                     print(f"      Test failed: {str(e)[:50]}")
                     w_stat, p_value = np.nan, np.nan
                     significance = "Test failed"
-                
+
                 # Store results
                 comparison_key = f"{approach1}_vs_{approach2}"
                 statistical_results[comparison_key] = {
@@ -807,30 +810,30 @@ class RealisticAnalysis:
                     'p_value': p_value,
                     'significance': significance
                 }
-        
+
         # Summary table
         print(f"\n📋 STATISTICAL SUMMARY TABLE:")
-        print("="*90)
+        print("=" * 90)
         print(f"{'Comparison':<35} {'Diff':<8} {'Cohen d':<8} {'p-value':<10} {'Significance':<20}")
-        print("="*90)
-        
+        print("=" * 90)
+
         for comparison, results in statistical_results.items():
             approach1 = results['approach1']
             approach2 = results['approach2']
             comparison_short = f"{approach1[:12]} vs {approach2[:12]}"
-            
+
             diff = results['difference']
             cohens_d = results['cohens_d']
             p_val = results['p_value']
             significance = results['significance']
-            
+
             p_str = f"{p_val:.4f}" if not np.isnan(p_val) else "N/A"
-            
+
             print(f"{comparison_short:<35} {diff:+<8.3f} {cohens_d:+<8.3f} {p_str:<10} {significance:<20}")
-        
-        print("="*90)
+
+        print("=" * 90)
         print("Significance levels: *** p<0.001, ** p<0.01, * p<0.05")
-        
+
         return statistical_results
 
     def print_basic_comparison_results_with_stats(self, raw_results, kg_results, statistical_results,
