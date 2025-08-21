@@ -404,8 +404,13 @@ class RealisticAnalysis:
         return train_final, test_final, final_features
     
     def optimized_feature_selection(self, train_data, test_data, features):
-        """Feature selection using training data only to prevent leakage.
-        Επιστρέφει επίσης sample-level groups (participant_id) ευθυγραμμισμένα με τα X_train."""
+        """Feature selection χρησιμοποιώντας ΜΟΝΟ training data (no leakage).
+        Επιστρέφει: X_train_sel, X_test_sel, selected_features, train_groups (ευθυγραμμισμένα)."""
+
+        import numpy as np
+        import pandas as pd
+        from sklearn.feature_selection import SelectKBest, f_classif
+
         print(f"\n🧠 OPTIMIZED FEATURE SELECTION (Training Data Only)")
 
         # Χτίζουμε X_train με index από το train_data ώστε να διατηρήσουμε στοίχιση
@@ -415,18 +420,16 @@ class RealisticAnalysis:
         n_samples, n_features = X_train.shape
         print(f"   📊 Input: {n_samples} samples × {n_features} features")
 
-        # Στόχος χαρακτηριστικών
+        # Στόχος χαρακτηριστικών (ασφαλές upper bound)
         max_features = max(15, min(80, n_samples // 10))
         print(f"   🎯 Target features: {max_features} (optimized ratio)")
 
-        # groups ευθυγραμμισμένοι με X_train
+        # sample-level groups ευθυγραμμισμένοι με X_train
         train_groups = train_data.loc[X_train.index, 'participant_id'].values
 
         if n_features <= max_features:
             print(f"   ✅ No selection needed (already {n_features} ≤ {max_features})")
-            # Εδώ ΔΕΝ χάνουμε index → το X_train κρατά ήδη τον index
             X_test = test_data[features]
-            # Επιστρέφουμε και τους groups ευθυγραμμισμένους με X_train
             return X_train, X_test, features, train_groups
 
         print(f"   🔧 Using statistical feature selection on training data only...")
@@ -449,15 +452,12 @@ class RealisticAnalysis:
             print(f"   📊 Reduction: {n_features} → {len(selected_features)}")
             print(f"   📊 Feature-to-sample ratio: {len(selected_features)/n_samples:.3f}:1")
 
-            # Επιστρέφουμε και τους groups ευθυγραμμισμένους με τον index του X_train_selected
             train_groups_aligned = train_data.loc[X_train_selected.index, 'participant_id'].values
-
             return X_train_selected, X_test_selected, selected_features, train_groups_aligned
 
         except Exception as e:
-            print(f"   ⚠️ Feature selection failed: {str(e)[:30]}")
+            print(f"   ⚠️ Feature selection failed: {str(e)[:80]}")
             print(f"   📋 Using all features")
-            # Ακόμα και εδώ, διατηρούμε τον index & επιστρέφουμε groups
             return X_train, test_data[features], features, train_groups
     
     def prepare_data_properly(self, X_train, X_test):
@@ -596,112 +596,89 @@ class RealisticAnalysis:
         return X_train_kg, X_test_kg
     
     def train_optimized_models(self, X_train, X_test, y_train, y_test, train_groups, approach_name):
-        """Train models with optimized parameters for better performance (participant-level CV)."""
+        """Train models (participant-level CV)."""
+
+        import numpy as np
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.ensemble import RandomForestClassifier
+        from sklearn.svm import SVC
+        from xgboost import XGBClassifier
+        from sklearn.metrics import (
+            accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
+        )
+
         print(f"\n🚀 TRAINING OPTIMIZED MODELS: {approach_name}")
         print(f"   📊 Data shape: {X_train.shape}")
 
-        # Less conservative model parameters for better performance
         models = {
             'Logistic Regression': LogisticRegression(
-                random_state=42,
-                max_iter=1000,
-                C=1.0,
-                solver='liblinear'
+                random_state=42, max_iter=1000, C=1.0, solver='liblinear'
             ),
             'Random Forest': RandomForestClassifier(
-                n_estimators=300,
-                max_depth=None,
-                min_samples_split=5,
-                min_samples_leaf=2,
-                max_features='sqrt',
-                random_state=42
+                n_estimators=300, max_depth=None, min_samples_split=5, min_samples_leaf=2,
+                max_features='sqrt', random_state=42
             ),
             'XGBoost': XGBClassifier(
-                n_estimators=400,
-                max_depth=4,
-                learning_rate=0.05,
-                subsample=0.9,
-                colsample_bytree=0.8,
-                reg_lambda=1.0,
-                reg_alpha=0.0,
-                objective='binary:logistic',
-                eval_metric='logloss',
-                random_state=42,
-                n_jobs=4
+                n_estimators=400, max_depth=4, learning_rate=0.05, subsample=0.9,
+                colsample_bytree=0.8, reg_lambda=1.0, reg_alpha=0.0,
+                objective='binary:logistic', eval_metric='logloss',
+                random_state=42, n_jobs=4
             ),
-            'SVM': SVC(
-                C=1.0,
-                kernel='rbf',
-                probability=True,
-                gamma='scale',
-                random_state=42
-            )
+            'SVM': SVC(C=1.0, kernel='rbf', probability=True, gamma='scale', random_state=42)
         }
 
         results = {}
 
         for model_name, model in models.items():
             print(f"   🔧 Training {model_name}...")
-            try:
-                # Participant-level CV με groups ευθυγραμμισμένους στα X_train/y_train
-                cv_scores = self._proper_cross_validation(X_train, y_train, train_groups, model)
+            cv_scores = self._proper_cross_validation(X_train, y_train, train_groups, model)
 
-                # Train final model
-                model.fit(np.asarray(X_train), np.asarray(y_train))
+            model.fit(np.asarray(X_train), np.asarray(y_train))
+            y_pred = model.predict(np.asarray(X_test))
+            y_proba = model.predict_proba(np.asarray(X_test))[:, 1]
 
-                # Predictions
-                y_pred = model.predict(np.asarray(X_test))
-                y_pred_proba = model.predict_proba(np.asarray(X_test))[:, 1]
+            auc = roc_auc_score(y_test, y_proba)
+            f1 = f1_score(y_test, y_pred, zero_division=0)
 
-                # Metrics
-                metrics = {
-                    'cv_scores': cv_scores,
-                    'cv_mean': np.mean(cv_scores) if cv_scores else None,
-                    'cv_std': np.std(cv_scores) if cv_scores else None,
-                    'accuracy': accuracy_score(y_test, y_pred),
-                    'precision': precision_score(y_test, y_pred, zero_division=0),
-                    'recall': recall_score(y_test, y_pred, zero_division=0),
-                    'f1': f1_score(y_test, y_pred, zero_division=0),
-                    'auc': roc_auc_score(y_test, y_pred_proba),
-                    'y_test': np.asarray(y_test),
-                    'pred_test': y_pred,
-                    'proba_test': y_pred_proba
-                }
+            # Label επίδοσης (χωρίς placeholders)
+            if auc > 0.8:
+                status = "🎉 Excellent"
+            elif auc > 0.7:
+                status = "✅ Good"
+            elif auc > 0.6:
+                status = "⚖️ Moderate"
+            else:
+                status = "📋 Limited"
 
-                results[model_name] = metrics
+            print(f"      {status}: AUC={auc:.3f}, F1={f1:.3f}, CV={np.mean(cv_scores):.3f}±{np.std(cv_scores):.3f}")
 
-                # Assessment label
-                if metrics['auc'] > 0.8:
-                    status = "🎉 Excellent"
-                elif metrics['auc'] > 0.7:
-                    status = "✅ Good"
-                elif metrics['auc'] > 0.6:
-                    status = "⚖️ Moderate"
-                else:
-                    status = "📋 Limited"
-
-                if metrics['cv_mean'] is not None and metrics['cv_std'] is not None:
-                    cv_info = f"CV={metrics['cv_mean']:.3f}±{metrics['cv_std']:.3f}"
-                else:
-                    cv_info = "CV=not-run"
-
-                print(f"      {status}: AUC={metrics['auc']:.3f}, F1={metrics['f1']:.3f}, {cv_info}")
-
-            except Exception as e:
-                print(f"      ❌ Failed: {str(e)[:80]}")
-                # Δεν βάζω placeholders τιμών — απλώς παραλείπω αποθήκευση αν θες.
-                # Αν θες να αποθηκευτεί κάτι, πρόσθεσε μόνο ό,τι χρειάζεσαι πραγματικά.
+            results[model_name] = {
+                'cv_scores': cv_scores,
+                'cv_mean': float(np.mean(cv_scores)),
+                'cv_std': float(np.std(cv_scores)),
+                'accuracy': float(accuracy_score(y_test, y_pred)),
+                'precision': float(precision_score(y_test, y_pred, zero_division=0)),
+                'recall': float(recall_score(y_test, y_pred, zero_division=0)),
+                'f1': float(f1),
+                'auc': float(auc),
+                'y_test': np.asarray(y_test),
+                'pred_test': y_pred,
+                'proba_test': y_proba
+            }
 
         return results
    
     def _proper_cross_validation(self, X_train, y_train, train_groups, model, cv_folds=5):
-        """Participant-level CV χωρίς data leakage, με αυστηρή στοίχιση δειγμάτων/groups."""
-        # Μετατρέπω σε arrays
+        """Participant-level CV χωρίς leakage, με αυστηρή στοίχιση δειγμάτων/groups."""
+
+        import numpy as np
+        from sklearn.model_selection import GroupKFold
+        from sklearn.metrics import roc_auc_score
+
         X_arr = np.asarray(X_train)
         y_arr = np.asarray(y_train)
         groups_arr = np.asarray(train_groups)
 
-        # Αυστηρός έλεγχος στοίχισης/μηκών
         if not (len(X_arr) == len(y_arr) == len(groups_arr)):
             raise ValueError(
                 f"CV groups must align with X_train/y_train: "
@@ -713,32 +690,27 @@ class RealisticAnalysis:
             cv_folds = max(2, len(unique_pids))
             print(f"   ⚠️ Reduced CV folds to {cv_folds} due to limited participants")
 
-        group_kfold = GroupKFold(n_splits=cv_folds)
+        gkf = GroupKFold(n_splits=cv_folds)
         cv_scores = []
 
-        fold = 0
-        for tr_idx, va_idx in group_kfold.split(X_arr, y_arr, groups=groups_arr):
-            fold += 1
-
+        for fold_idx, (tr_idx, va_idx) in enumerate(gkf.split(X_arr, y_arr, groups=groups_arr), 1):
             X_tr, X_va = X_arr[tr_idx], X_arr[va_idx]
             y_tr, y_va = y_arr[tr_idx], y_arr[va_idx]
 
-            # Ελάχιστες προϋποθέσεις
             if (len(np.unique(y_tr)) < 2) or (len(np.unique(y_va)) < 2) or (len(y_tr) < 10) or (len(y_va) < 5):
-                raise ValueError(f"Fold {fold}: insufficient class variation or too few samples")
+                raise ValueError(f"Fold {fold_idx}: insufficient class variation or too few samples")
 
-            # Fixed-params clone
-            model_copy = type(model)(**model.get_params())
-            model_copy.fit(X_tr, y_tr)
+            cloned = type(model)(**model.get_params())
+            cloned.fit(X_tr, y_tr)
 
-            if hasattr(model_copy, "predict_proba"):
-                y_proba = model_copy.predict_proba(X_va)[:, 1]
+            if hasattr(cloned, "predict_proba"):
+                y_proba = cloned.predict_proba(X_va)[:, 1]
             else:
-                y_proba = model_copy.decision_function(X_va)
+                y_proba = cloned.decision_function(X_va)
 
             auc = roc_auc_score(y_va, y_proba)
             cv_scores.append(float(auc))
-            print(f"   Fold {fold}: AUC={auc:.3f}")
+            print(f"   Fold {fold_idx}: AUC={auc:.3f}")
 
         return cv_scores
 
@@ -1563,333 +1535,85 @@ class RealisticAnalysis:
         approach_summaries = {}
         best_overall_auc = 0
         best_overall_approach = ""
-    def run_gnn_comparison_analysis(self):
-            """Run comprehensive GNN comparison analysis"""
-            
-            print("🧠 GRAPH NEURAL NETWORK COMPARISON ANALYSIS")
-            print("="*70)
-            print("🎯 Comparing: Raw, Simple KG, Enhanced KG, and True GNN")
-            print("🔒 Using actual Neo4j graph structure for GNN")
-            print("📊 Complete statistical comparison")
-            print()
-            
-            # Enhanced preprocessing with clinical features
-            df, best_features, best_set_name, train_indices, test_indices, train_pids, test_pids = self.load_and_prepare_data()
-            train_data, test_data = self.proper_train_test_split(df, train_indices, test_indices)
-            
-            # Preprocess data without leakage
-            train_clean, test_clean, clean_features = self.preprocess_data(train_data, test_data, best_features)
-            
-            # Feature selection
-            X_train, X_test, selected_features = self.optimized_feature_selection(
-                train_clean, test_clean, clean_features
-            )
-            
-            y_train = train_clean['diagnosis']
-            y_test = test_clean['diagnosis']
-            X_train_scaled, X_test_scaled = self.prepare_data_properly(X_train, X_test)
-            
-            # === TIER 1: RAW CLINICAL FEATURES ===
-            print(f"\n{'='*50}")
-            print("📊 TIER 1: RAW CLINICAL FEATURES")
-            print(f"{'='*50}")
-            
-            raw_results = self.train_optimized_models(
-                X_train_scaled, X_test_scaled, y_train, y_test, train_pids, 
-                f"Raw Clinical Features ({best_set_name})"
-            )
-            
-            # === TIER 2: SIMPLE KG ===
-            print(f"\n{'='*50}")
-            print("🧠 TIER 2: SIMPLE KG EMBEDDINGS")
-            print(f"{'='*50}")
-            
-            X_train_kg_simple, X_test_kg_simple = self.create_conservative_kg_embeddings(
-                X_train_scaled, X_test_scaled
-            )
-            simple_kg_results = self.train_optimized_models(
-                X_train_kg_simple, X_test_kg_simple, y_train, y_test, train_pids, "Simple KG"
-            )
-            
-            # === TIER 3: ENHANCED KG ===
-            print(f"\n{'='*50}")
-            print("🔥 TIER 3: ENHANCED KG EMBEDDINGS")
-            print(f"{'='*50}")
-            
-            X_train_kg_enhanced, X_test_kg_enhanced = self.create_enhanced_kg_embeddings(
-                X_train_scaled, X_test_scaled
-            )
-            enhanced_kg_results = self.train_optimized_models(
-                X_train_kg_enhanced, X_test_kg_enhanced, y_train, y_test, train_pids, "Enhanced KG"
-            )
-            
-            # === TIER 4: TRUE GNN ===
-            print(f"\n{'='*50}")
-            print("🤖 TIER 4: GRAPH NEURAL NETWORKS (Neo4j)")
-            print(f"{'='*50}")
-            
-            gnn_results = {}
-            
-            if GNN_ANALYSIS_AVAILABLE:
-                try:
-                    print("   🔗 Initializing GNN analyzer...")
-                    gnn_analyzer = TrueGraphAnalysis(samples_per_participant=self.samples_per_participant)
-                    
-                    # Convert participant IDs to integers
-                    train_pids_int = [int(pid) for pid in train_pids]
-                    test_pids_int = [int(pid) for pid in test_pids]
-                    
-                    print("   🧠 Running GNN analysis...")
-                    gnn_model_results = gnn_analyzer.run_gnn_analysis(train_pids_int, test_pids_int)
-                    
-                    if gnn_model_results and len(gnn_model_results) > 0:
-                        gnn_results = gnn_model_results
-                        print(f"   ✅ GNN analysis completed with {len(gnn_results)} models")
-                    else:
-                        print("   ❌ GNN analysis returned no valid results")
-                        gnn_results = self._create_placeholder_gnn_results()
-                        
-                except Exception as e:
-                    print(f"   ❌ GNN analysis failed: {str(e)}")
-                    print("   📋 Using placeholder results for comparison")
-                    gnn_results = self._create_placeholder_gnn_results()
-            else:
-                print("   ⚠️ GNN analysis not available")
-                print("   📋 Install PyTorch Geometric and create true_gnn_analysis.py")
-                print("   🔄 Using placeholder results for demonstration")
-                gnn_results = self._create_placeholder_gnn_results()
-            
-            # === COMPREHENSIVE COMPARISON ===
-            print(f"\n{'='*70}")
-            print("📊 COMPREHENSIVE GNN COMPARISON RESULTS")
-            print(f"{'='*70}")
-            
-            # Collect all results
-            all_results = {
-                'Raw Clinical Features': raw_results,
-                'Simple KG': simple_kg_results,
-                'Enhanced KG': enhanced_kg_results,
-                'True GNN': gnn_results
-            }
+   def run_gnn_comparison_analysis(self):
+        """Raw vs KG vs Enhanced KG vs True GNN με σωστή στοίχιση CV groups (no leakage, no placeholders)."""
 
-            # Statistical comparison
-            statistical_results = self.statistical_comparison_analysis(all_results)
-            
-            # Print results
-            self.print_gnn_comparison_results(all_results, best_set_name, {
-                'train_participants': len(set(train_pids)),
-                'test_participants': len(set(test_pids)),
-                'original_features': len(best_features),
-                'selected_features': len(selected_features)
-            }, statistical_results)
-            
-            return {
-                'all_results': all_results,
-                'statistical_results': statistical_results,
-                'data_summary': {
-                    'train_participants': len(set(train_pids)),
-                    'test_participants': len(set(test_pids)),
-                    'train_samples': len(X_train),
-                    'test_samples': len(X_test)
-                },
-                'feature_info': {
-                    'clinical_set': best_set_name,
-                    'original_count': len(best_features),
-                    'selected_count': len(selected_features)
-                }
-            }
-            
-            for approach_name, results in all_results.items():
-                print(f"\n{approach_name}:")
-                
-                approach_aucs = []
-                approach_best = {"model": "", "auc": 0}
-                
-                for model_name, metrics in results.items():
-                    auc = metrics['auc']
-                    f1 = metrics['f1']
-                    cv_mean = metrics['cv_mean']
-                    cv_std = metrics['cv_std']
-                    
-                    approach_aucs.append(auc)
-                    
-                    # Performance assessment
-                    if auc > 0.8:
-                        status = "🎉 Excellent"
-                    elif auc > 0.7:
-                        status = "✅ Good"
-                    elif auc > 0.6:
-                        status = "⚖️ Moderate"
-                    else:
-                        status = "📋 Limited"
-                    
-                    cv_info = f"CV={cv_mean:.3f}±{cv_std:.3f}" if metrics['cv_scores'] else "CV=N/A"
-                    print(f"   {model_name:<20}: {status} AUC={auc:.3f}, F1={f1:.3f}, {cv_info}")
-                    
-                    if auc > approach_best["auc"]:
-                        approach_best["model"] = model_name
-                        approach_best["auc"] = auc
-                    
-                    if auc > best_overall_auc:
-                        best_overall_auc = auc
-                        best_overall_approach = approach_name
-                        best_overall_model = model_name
-                
-                # Approach summary
-                approach_summaries[approach_name] = {
-                    "mean_auc": np.mean(approach_aucs),
-                    "std_auc": np.std(approach_aucs),
-                    "best_model": approach_best["model"],
-                    "best_auc": approach_best["auc"]
-                }
-            
-            # APPROACH COMPARISON
-            print("\n📈 APPROACH COMPARISON (Best Model per Approach):")
-            print("-" * 70)
-            
-            sorted_approaches = sorted(approach_summaries.items(), 
-                                    key=lambda x: x[1]["best_auc"], 
-                                    reverse=True)
-            
-            for rank, (approach, summary) in enumerate(sorted_approaches, 1):
-                emoji = "🏆" if rank == 1 else "🥈" if rank == 2 else "🥉" if rank == 3 else "  "
-                print(f"{emoji} #{rank}: {approach:<25} AUC={summary['best_auc']:.3f} ({summary['best_model']})")
-            
-            # STATISTICAL COMPARISON
-            print("\n📊 STATISTICAL COMPARISON:")
-            print("="*70)
-            
-            if statistical_results:
-                print("Statistical comparison results:")
-                for comp, res in statistical_results.items():
-                    ci = res['auc_ci']
-                    corrected_p = res.get('corrected_p_value', 'N/A')
-                    sig = "✅" if res.get('significant_after_correction', False) else "📋"
-                    print(f"{comp:<35}: ΔAUC={res['auc_diff']:+.3f} [{ci[0]:.3f},{ci[1]:.3f}], p={res['p_value']:.4f}, corrected_p={corrected_p:.4f} {sig}")
-            else:
-                print("No statistical results available")
-                
-            print("="*70)
+        import numpy as np
 
-            # WINNER DECLARATION
-            print(f"\n🏆 OVERALL WINNER:")
-            print(f"   Approach: {best_overall_approach}")
-            print(f"   Model: {best_overall_model}")
-            print(f"   AUC: {best_overall_auc:.3f}")
-            
-            # GNN vs Traditional Comparison
-            print(f"\n🧠 GNN vs TRADITIONAL METHODS:")
+        print("\n🧠 GRAPH NEURAL NETWORK COMPARISON ANALYSIS")
+        print("=" * 70)
+        print("🎯 Comparing: Raw, Simple KG, Enhanced KG, and True GNN")
+        print("🔒 Using actual Neo4j graph structure for GNN")
+        print("📊 Complete statistical comparison")
 
-            # Best traditional (non-GNN) method
-            traditional_approaches = {k: v for k, v in approach_summaries.items() if k != "True GNN"}
-            if traditional_approaches:
-                best_traditional = max(traditional_approaches.items(), key=lambda x: x[1]["best_auc"])
-                best_traditional_name = best_traditional[0]
-                best_traditional_auc = best_traditional[1]["best_auc"]
-                
-                # Best GNN
-                if "True GNN" in approach_summaries:
-                    best_gnn_auc = approach_summaries["True GNN"]["best_auc"]
-                    improvement = ((best_gnn_auc - best_traditional_auc) / best_traditional_auc) * 100
-                    
-                    print(f"   Best Traditional: {best_traditional_name} (AUC={best_traditional_auc:.3f})")
-                    print(f"   Best GNN: AUC={best_gnn_auc:.3f}")
-                    print(f"   GNN Improvement: {improvement:+.1f}%")
-                    
-                    # Check statistical significance
-                    if statistical_results:
-                        gnn_vs_traditional_key = None
-                        for key, result in statistical_results.items():
-                            if (best_traditional_name in result['approach1'] and "True GNN" in result['approach2']) or \
-                            (best_traditional_name in result['approach2'] and "True GNN" in result['approach1']):
-                                gnn_vs_traditional_key = key
-                                break
-                        
-                        if gnn_vs_traditional_key and not np.isnan(statistical_results[gnn_vs_traditional_key]['p_value']):
-                            p_val = statistical_results[gnn_vs_traditional_key]['p_value']
-                            corrected_p = statistical_results[gnn_vs_traditional_key].get('corrected_p_value', p_val)
-                            significant = statistical_results[gnn_vs_traditional_key].get('significant_after_correction', p_val < 0.05)
-                            
-                            if significant:
-                                print(f"   ✅ Statistically significant improvement (p={corrected_p:.4f})")
-                            else:
-                                print(f"   📋 Not statistically significant (p={corrected_p:.4f})")
-                    
-                    if improvement > 5:
-                        print("   💡 GNN shows meaningful improvement over traditional methods")
-                        print("   📊 Graph structure provides additional discriminative power")
-                    elif improvement > -5:
-                        print("   💡 GNN performs comparably to traditional methods")
-                        print("   📊 Both approaches have similar effectiveness")
-                    else:
-                        print("   💡 Traditional methods outperform GNN")
-                        print("   📊 Simpler approaches may be preferred for this dataset")
-            else:
-                print("   No traditional methods available for comparison")
+        # 1) Load/prepare your split (υποθέτω ότι έχεις ήδη train_data/test_data dataframes)
+        train_data, test_data = self.train_df, self.test_df  # πρέπει να υπάρχουν
+        features = self.selected_clinical_features  # πρέπει να οριστούν upstream
 
-            # CLINICAL INTERPRETATION
-            print(f"\n🏥 CLINICAL INTERPRETATION:")
-            if best_overall_auc > 0.8:
-                clinical_utility = "🎉 EXCELLENT - High clinical utility for ASD screening"
-                recommendation = "Suitable for clinical decision support with validation"
-            elif best_overall_auc > 0.7:
-                clinical_utility = "✅ GOOD - Meaningful clinical utility"
-                recommendation = "Promising for clinical applications"
-            elif best_overall_auc > 0.6:
-                clinical_utility = "⚖️ MODERATE - Limited clinical utility"
-                recommendation = "May be useful as supplementary tool"
-            else:
-                clinical_utility = "📋 LIMITED - Insufficient for clinical use"
-                recommendation = "Requires significant improvement"
-            
-            print(f"   Assessment: {clinical_utility}")
-            print(f"   Recommendation: {recommendation}")
-            
-            # METHOD INSIGHTS
-            print(f"\n💡 METHOD INSIGHTS:")
-            
-            # Check if graph-based methods help
-            graph_methods = ["Simple KG", "Enhanced KG", "True GNN"]
-            graph_aucs = [approach_summaries[k]["best_auc"] for k in graph_methods if k in approach_summaries]
-            raw_auc = approach_summaries.get("Raw Clinical Features", {}).get("best_auc", 0)
-            
-            if graph_aucs and raw_auc:
-                avg_graph_auc = np.mean(graph_aucs)
-                if avg_graph_auc > raw_auc + 0.05:
-                    print("   ✅ Graph-based methods consistently outperform raw features")
-                    print("   → Graph structure captures important relationships")
-                elif avg_graph_auc > raw_auc - 0.05:
-                    print("   ⚖️ Graph-based methods perform similarly to raw features")
-                    print("   → Graph structure provides modest benefits")
-                else:
-                    print("   📋 Raw features outperform graph-based methods")
-                    print("   → Simple features may be sufficient")
-            
-            # GNN architecture comparison
-            if "True GNN" in all_results:
-                gnn_models = all_results["True GNN"]
-                if len(gnn_models) > 1:
-                    print(f"\n   GNN Architecture Comparison:")
-                    sorted_gnns = sorted(gnn_models.items(), key=lambda x: x[1]['auc'], reverse=True)
-                    for model, metrics in sorted_gnns:
-                        arch_name = model.replace('GNN_', '') if model.startswith('GNN_') else model
-                        print(f"      {arch_name:<12}: AUC={metrics['auc']:.3f}")
-            
-            # LIMITATIONS
-            print(f"\n⚠️ STUDY LIMITATIONS:")
-            print("   • Small sample size may limit GNN training effectiveness")
-            print("   • Single dataset requires external validation")
-            print("   • Graph construction parameters not optimized")
-            print("   • Limited hyperparameter tuning for GNN models")
-            print("   • Class imbalance may affect model performance")
-            
-            print(f"\n🚀 RECOMMENDATIONS:")
-            print("   • Test on larger clinical datasets for GNN stability")
-            print("   • Optimize graph construction (edge thresholds, features)")
-            print("   • Apply graph-specific data augmentation")
-            print("   • Try advanced GNN architectures (GraphTransformer, etc.)")
-            print("   • Ensemble graph and non-graph methods")
-            print("   • Validate with temporal gait sequences")
+        # 2) Feature selection (Training Only) — ΕΠΙΣΤΡΕΦΕΙ 4 τιμές!
+        X_train, X_test, selected_features, train_groups = self.optimized_feature_selection(
+            train_data, test_data, features
+        )
+
+        # 3) Scaling (fit ONLY on train)
+        X_train_scaled, X_test_scaled = self.scale_no_leakage(X_train, X_test)
+
+        # 4) Targets (ευθυγραμμισμένα με X_train/X_test index)
+        y_train = train_data.loc[X_train.index, 'diagnosis'].values
+        y_test = test_data.loc[X_test.index, 'diagnosis'].values
+
+        # === TIER 1: RAW CLINICAL FEATURES ===
+        raw_results = self.train_optimized_models(
+            X_train_scaled, X_test_scaled, y_train, y_test, train_groups, "Raw Clinical Features"
+        )
+
+        # === TIER 2: SIMPLE KG ===
+        X_train_kg, X_test_kg = self.build_simple_kg_embeddings(X_train_scaled, X_test_scaled, selected_features)
+        simplekg_results = self.train_optimized_models(
+            X_train_kg, X_test_kg, y_train, y_test, train_groups, "Simple KG"
+        )
+
+        # === TIER 3: ENHANCED KG ===
+        X_train_enh, X_test_enh = self.build_enhanced_kg_embeddings(X_train_scaled, X_test_scaled, selected_features)
+        enhancedkg_results = self.train_optimized_models(
+            X_train_enh, X_test_enh, y_train, y_test, train_groups, "Enhanced KG"
+        )
+
+        # === TIER 4: TRUE GNN ===
+        gnn_results = self.run_true_gnn_analysis(  # αυτή η μέθοδος πρέπει να παράγει test predictions και AUC/F1
+            train_data, test_data, selected_features
+        )
+
+        # === Συγκέντρωση για εκτύπωση/στατιστικά ===
+        tier1_results = {
+            "Raw Clinical Features": raw_results,
+            "Simple KG": simplekg_results,
+            "Enhanced KG": enhancedkg_results,
+            "True GNN": gnn_results
+        }
+
+        # Υπολογισμός στατιστικών συγκρίσεων (η δική σου υλοποίηση)
+        statistical_results = self.statistical_comparison_analysis(tier1_results)
+
+        # Εκτύπωση συνολικών αποτελεσμάτων (η δική σου print συνάρτηση, χωρίς placeholders)
+        self.print_tuned_comprehensive_results_with_statistics(
+            tier1_results=tier1_results,
+            tuning_results={},             # αν έχεις tuning, βάλε τα πραγματικά
+            best_config={},                # αν έχεις best_config, βάλε το πραγματικό
+            clinical_set_name=self.best_clinical_set_name,  # upstream
+            data_summary={
+                'train_participants': len(set(train_groups)),
+                'test_participants': len(set(test_data['participant_id'].values)),
+                'original_features': len(features),
+                'selected_features': len(selected_features),
+            },
+            statistical_results=statistical_results
+        )
+
+        return {
+            'all_results': tier1_results,
+            'statistical_results': statistical_results
+        }
 
     def run_realistic_analysis(self):
         """Run basic realistic analysis with clinical features and statistical testing"""
