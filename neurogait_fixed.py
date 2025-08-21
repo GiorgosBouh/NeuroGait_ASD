@@ -1240,63 +1240,97 @@ class RealisticAnalysis:
             }
         }
 
-    def print_tuned_comprehensive_results_with_statistics(self, tier1_results, tuning_results, best_config, clinical_set_name, data_summary, statistical_results):
-        """Print comprehensive results with tuning analysis and statistics"""
-        
+    def print_tuned_comprehensive_results_with_statistics(
+        self,
+        tier1_results,
+        tuning_results,
+        best_config,
+        clinical_set_name,
+        data_summary,
+        statistical_results
+    ):
+        """Print comprehensive results with tuning analysis and statistics — no placeholders"""
+
         print("🎯 COMPREHENSIVE TUNED ANALYSIS RESULTS με STATISTICS")
-        print("="*80)
-        
+        print("=" * 80)
+
         # CLINICAL CONTEXT
-        print("🏥 CLINICAL CONTEXT:")
-        print(f"   Feature Set: {clinical_set_name.replace('_', ' ').title()}")
-        print(f"   Train/Test: {data_summary['train_participants']} / {data_summary['test_participants']} participants")
-        print(f"   Features: {data_summary['original_features']} → {data_summary['selected_features']} selected")
-        
+        has_any_context = False
+        if clinical_set_name:
+            print("🏥 CLINICAL CONTEXT:")
+            print(f"   Feature Set: {clinical_set_name.replace('_', ' ').title()}")
+            has_any_context = True
+        if isinstance(data_summary, dict):
+            ctx_lines = []
+            if 'train_participants' in data_summary and 'test_participants' in data_summary:
+                ctx_lines.append(f"   Train/Test: {data_summary['train_participants']} / {data_summary['test_participants']} participants")
+            if 'original_features' in data_summary and 'selected_features' in data_summary:
+                ctx_lines.append(f"   Features: {data_summary['original_features']} → {data_summary['selected_features']} selected")
+            if ctx_lines:
+                if not has_any_context:
+                    print("🏥 CLINICAL CONTEXT:")
+                    has_any_context = True
+                for ln in ctx_lines:
+                    print(ln)
+
         # TUNING SUMMARY
-        print(f"\n🎛️ HYPERPARAMETER TUNING SUMMARY:")
+        if best_config or (isinstance(tuning_results, dict) and tuning_results):
+            print("\n🎛️ HYPERPARAMETER TUNING SUMMARY:")
         if best_config:
-            print(f"   Best Configuration: {best_config['name']}")
-            print(f"   Optimal Parameters:")
-            print(f"      Interaction Strength: {best_config['interaction']}")
-            print(f"      Smoothing Factor: {best_config['smoothing']}")
-            print(f"      Nonlinearity: {best_config['nonlinearity']}")
-        
-        # Show top 3 from tuning
-        sorted_tuning = sorted(tuning_results.items(), key=lambda x: x[1]['auc'], reverse=True)[:3]
-        for rank, (name, result) in enumerate(sorted_tuning, 1):
-            if rank == 1:
-                print(f"   🏆 #{rank}: {name} (AUC: {result['auc']:.3f})")
-            else:
-                print(f"   🥈 #{rank}: {name} (AUC: {result['auc']:.3f})")
-        
+            if 'name' in best_config:
+                print(f"   Best Configuration: {best_config['name']}")
+            print("   Optimal Parameters:")
+            if 'interaction' in best_config:
+                print(f"      Interaction Strength: {best_config['interaction']}")
+            if 'smoothing' in best_config:
+                print(f"      Smoothing Factor: {best_config['smoothing']}")
+            if 'nonlinearity' in best_config:
+                print(f"      Nonlinearity: {best_config['nonlinearity']}")
+
+        if isinstance(tuning_results, dict) and tuning_results:
+            top = sorted(
+                tuning_results.items(),
+                key=lambda x: x[1].get('auc', float('-inf')),
+                reverse=True
+            )[:3]
+            for idx, (name, res) in enumerate(top, 1):
+                if 'auc' in res:
+                    medal = "🏆" if idx == 1 else "🥈" if idx == 2 else "🥉"
+                    print(f"   {medal} #{idx}: {name} (AUC: {res['auc']:.3f})")
+
         # PERFORMANCE SUMMARY
-        print("\n📊 PERFORMANCE SUMMARY:")
-        print("-" * 70)
-        
-        best_overall_auc = 0
-        best_overall_approach = ""
-        best_overall_model = ""
-        
-        for approach_name, results in tier1_results.items():
+        if isinstance(tier1_results, dict) and tier1_results:
+            print("\n📊 PERFORMANCE SUMMARY:")
+            print("-" * 70)
+
+        best_overall_auc = float("-inf")
+        best_overall_approach = None
+        best_overall_model = None
+
+        for approach_name, results in (tier1_results or {}).items():
             print(f"\n{approach_name}:")
-            
-            for model_name, metrics in results.items():
+            for model_name, metrics in (results or {}).items():
+                if not isinstance(metrics, dict):
+                    continue
+                if 'auc' not in metrics or 'f1' not in metrics:
+                    continue
+
                 auc = metrics['auc']
                 f1 = metrics['f1']
-                cv_mean = metrics['cv_mean']
-                cv_std = metrics['cv_std']
-                
-                # Confidence interval
-                n_cv = len(metrics['cv_scores'])
-                if n_cv > 0:
-                    ci_margin = 1.96 * (cv_std / np.sqrt(n_cv))
+                cv_scores = metrics.get('cv_scores', [])
+                cv_mean = metrics.get('cv_mean')
+                cv_std  = metrics.get('cv_std')
+
+                # CV CI αν υπάρχουν πλήρη στοιχεία
+                if cv_scores and cv_mean is not None and cv_std is not None:
+                    ci_margin = 1.96 * (cv_std / np.sqrt(len(cv_scores)))
                     ci_lower = cv_mean - ci_margin
                     ci_upper = cv_mean + ci_margin
-                    ci_info = f"[{ci_lower:.3f}, {ci_upper:.3f}]"
+                    cv_info = f"CV={cv_mean:.3f} [{ci_lower:.3f}, {ci_upper:.3f}]"
                 else:
-                    ci_info = "[N/A]"
-                
-                # Performance assessment
+                    cv_info = ""
+
+                # Label επίδοσης
                 if auc > 0.8:
                     status = "🎉 Excellent"
                 elif auc > 0.7:
@@ -1305,190 +1339,140 @@ class RealisticAnalysis:
                     status = "⚖️ Moderate"
                 else:
                     status = "📋 Limited"
-                
-                cv_info = f"CV={cv_mean:.3f} {ci_info}" if n_cv > 0 else "CV=N/A"
-                print(f"   {model_name:15}: {status} AUC={auc:.3f}, F1={f1:.3f}, {cv_info}")
-                
+
+                line = f"   {model_name:15}: {status} AUC={auc:.3f}, F1={f1:.3f}"
+                if cv_info:
+                    line += f", {cv_info}"
+                print(line)
+
                 if auc > best_overall_auc:
                     best_overall_auc = auc
                     best_overall_approach = approach_name
                     best_overall_model = model_name
 
-        # === COMPREHENSIVE STATISTICAL ANALYSIS ===
-        print("\n" + "="*70)
-        if statistical_results:
+        # Στατιστικά συγκρίσεων (τυπώνω μόνο όσα πεδία υπάρχουν)
+        if isinstance(statistical_results, dict) and statistical_results:
+            print("\n" + "=" * 70)
             print("📊 STATISTICAL COMPARISON RESULTS:")
             print("-" * 70)
-            
             for comp, res in statistical_results.items():
-                ci = res['auc_ci']
-                corrected_p = res.get('corrected_p_value', 'N/A')
-                sig = "✅" if res.get('significant_after_correction', False) else "📋"
-                print(f"{comp:<35}: ΔAUC={res['auc_diff']:+.3f} [{ci[0]:.3f},{ci[1]:.3f}], p={res['p_value']:.4f}, corrected_p={corrected_p:.4f} {sig}")
-        else:
-            print("⚠️ No statistical results available")
-            
-        print("="*70)
+                if not isinstance(res, dict):
+                    continue
 
-        # BEST PERFORMER
-        print(f"\n🏆 BEST OVERALL PERFORMER:")
-        print(f"   Approach: {best_overall_approach}")
-        print(f"   Model: {best_overall_model}")
-        print(f"   AUC: {best_overall_auc:.3f}")
-        
-        # TUNING EFFECTIVENESS ANALYSIS
-        print(f"\n🎛️ TUNING EFFECTIVENESS:")
-        simple_kg_best = max([m['auc'] for m in tier1_results['Simple KG'].values()])
-        tuned_kg_best = max([m['auc'] for m in tier1_results['Tuned KG'].values()])
-        
-        tuning_improvement = ((tuned_kg_best - simple_kg_best) / simple_kg_best) * 100
-        
-        print(f"   Simple KG Best: {simple_kg_best:.3f}")
-        print(f"   Tuned KG Best: {tuned_kg_best:.3f}")
-        print(f"   Tuning Improvement: {tuning_improvement:+.1f}%")
-        
-        if tuning_improvement > 5:
-            print("   🎯 TUNING SUCCESSFUL - Meaningful improvement achieved!")
-        elif tuning_improvement > 0:
-            print("   ⚖️ TUNING HELPFUL - Small improvement achieved")
-        else:
-            print("   📋 TUNING INEFFECTIVE - Simple KG remains better")
-        
-        # CLINICAL INTERPRETATION
-        print(f"\n🏥 CLINICAL INTERPRETATION:")
-        if best_overall_auc > 0.8:
-            clinical_utility = "🎉 EXCELLENT - High clinical utility for ASD screening"
-            recommendation = "Suitable for clinical decision support with appropriate validation"
-        elif best_overall_auc > 0.7:
-            clinical_utility = "✅ GOOD - Meaningful clinical utility"
-            recommendation = "Promising for clinical applications with further validation"
-        elif best_overall_auc > 0.6:
-            clinical_utility = "⚖️ MODERATE - Limited but useful clinical utility"
-            recommendation = "May be useful as part of comprehensive assessment"
-        else:
-            clinical_utility = "📋 LIMITED - Insufficient for standalone clinical use"
-            recommendation = "Requires significant improvement before clinical application"
-        
-        print(f"   Assessment: {clinical_utility}")
-        print(f"   Recommendation: {recommendation}")
-        
-        # KNOWLEDGE GRAPH INSIGHTS με STATISTICS
-        if len(tier1_results) >= 2:
-            raw_best = max([m['auc'] for m in tier1_results['Raw Clinical Features'].values()])
-            
-            kg_approaches = [k for k in tier1_results.keys() if 'KG' in k]
-            if kg_approaches:
-                kg_best_approach = max(kg_approaches, key=lambda k: max([m['auc'] for m in tier1_results[k].values()]))
-                kg_best_auc = max([m['auc'] for m in tier1_results[kg_best_approach].values()])
-                
-                kg_improvement = ((kg_best_auc - raw_best) / raw_best) * 100
-                
-                print(f"\n🧠 KNOWLEDGE GRAPH INSIGHTS με STATISTICAL VALIDATION:")
-                print(f"   Raw Clinical Features: AUC = {raw_best:.3f}")
-                print(f"   Best KG Approach ({kg_best_approach}): AUC = {kg_best_auc:.3f}")
-                print(f"   KG Improvement: {kg_improvement:+.1f}%")
-                
-                # Find statistical significance for this comparison
-                if statistical_results:
-                    raw_vs_kg_key = None
-                    for key, result in statistical_results.items():
-                        if ('Raw Clinical Features' in result['approach1'] and kg_best_approach in result['approach2']) or \
-                           ('Raw Clinical Features' in result['approach2'] and kg_best_approach in result['approach1']):
-                            raw_vs_kg_key = key
-                            break
-                    
-                    if raw_vs_kg_key and not np.isnan(statistical_results[raw_vs_kg_key]['p_value']):
-                        p_val = statistical_results[raw_vs_kg_key]['p_value']
-                        corrected_p = statistical_results[raw_vs_kg_key].get('corrected_p_value', p_val)
-                        effect_size = statistical_results[raw_vs_kg_key]['effect_size']
-                        significant = statistical_results[raw_vs_kg_key].get('significant_after_correction', p_val < 0.05)
-                        
-                        print(f"   Statistical significance: p={p_val:.4f}, corrected p={corrected_p:.4f} (rank-biserial: {effect_size})")
-                        
-                        if significant:
-                            print("   ✅ STATISTICALLY SIGNIFICANT improvement!")
-                        else:
-                            print("   📋 Not statistically significant (but may be practically meaningful)")
-                    else:
-                        print("   📊 Statistical significance could not be determined")
-                
-                if kg_improvement > 5:
-                    print("   💡 Knowledge Graph embeddings show meaningful benefit")
-                    print("   📋 Graph structure enhances clinical feature representation")
-                elif kg_improvement > -5:
-                    print("   💡 Knowledge Graph embeddings perform comparably to raw features")
-                    print("   📋 Both approaches have similar clinical utility")
+                # Ετικέτα σύγκρισης
+                if 'approach1' in res and 'approach2' in res:
+                    comp_label = f"{res['approach1']} vs {res['approach2']}"
                 else:
-                    print("   💡 Raw clinical features outperform graph processing")
-                    print("   📋 Simple clinical features preferred for this application")
+                    comp_label = comp
 
-        # PARAMETER INSIGHTS
-        if best_config:
-            print(f"\n🔬 OPTIMAL PARAMETER INSIGHTS:")
-            print(f"   Interaction Strength: {best_config['interaction']:.3f}")
-            if best_config['interaction'] < 0.02:
-                print("      → Very conservative interactions work best")
-            elif best_config['interaction'] < 0.04:
-                print("      → Moderate interactions are optimal")
+                parts = [f"{comp_label:<35}:"]
+
+                # Δείκτες που μπορεί να υπάρχουν
+                if 'auc_diff' in res:
+                    parts.append(f"ΔAUC={res['auc_diff']:+.3f}")
+                elif 'difference' in res:
+                    parts.append(f"ΔAUC={res['difference']:+.3f}")
+
+                if 'auc_ci' in res and isinstance(res['auc_ci'], (list, tuple)) and len(res['auc_ci']) == 2:
+                    parts.append(f"[{res['auc_ci'][0]:.3f},{res['auc_ci'][1]:.3f}]")
+
+                if 'p_value' in res and res['p_value'] is not None and not (isinstance(res['p_value'], float) and np.isnan(res['p_value'])):
+                    parts.append(f"p={res['p_value']:.4f}")
+
+                if 'corrected_p_value' in res and res['corrected_p_value'] is not None and not (isinstance(res['corrected_p_value'], float) and np.isnan(res['corrected_p_value'])):
+                    parts.append(f"corrected_p={res['corrected_p_value']:.4f}")
+
+                if 'significance' in res and res['significance']:
+                    parts.append(str(res['significance']))
+
+                if 'significant_after_correction' in res:
+                    parts.append("✅" if res['significant_after_correction'] else "📋")
+
+                print(", ".join(parts))
+
+        # Καλύτερος συνδυασμός (τυπώνω μόνο αν βρέθηκε)
+        if best_overall_approach and best_overall_model and best_overall_auc != float("-inf"):
+            print("\n🏆 BEST OVERALL PERFORMER:")
+            print(f"   Approach: {best_overall_approach}")
+            print(f"   Model: {best_overall_model}")
+            print(f"   AUC: {best_overall_auc:.3f}")
+
+        # Tuning effectiveness (τυπώνω μόνο αν υπάρχουν και τα δύο sections)
+        if isinstance(tier1_results, dict) and 'Simple KG' in tier1_results and 'Tuned KG' in tier1_results:
+            simple_vals = [m.get('auc') for m in tier1_results['Simple KG'].values() if isinstance(m, dict) and 'auc' in m]
+            tuned_vals  = [m.get('auc') for m in tier1_results['Tuned KG'].values()  if isinstance(m, dict) and 'auc' in m]
+            if simple_vals and tuned_vals:
+                simple_kg_best = max(simple_vals)
+                tuned_kg_best  = max(tuned_vals)
+                if simple_kg_best not in (0, None):
+                    tuning_improvement = ((tuned_kg_best - simple_kg_best) / simple_kg_best) * 100
+                    print(f"\n🎛️ TUNING EFFECTIVENESS:")
+                    print(f"   Simple KG Best: {simple_kg_best:.3f}")
+                    print(f"   Tuned KG Best: {tuned_kg_best:.3f}")
+                    print(f"   Tuning Improvement: {tuning_improvement:+.1f}%")
+                    if tuning_improvement > 5:
+                        print("   🎯 TUNING SUCCESSFUL - Meaningful improvement achieved!")
+                    elif tuning_improvement > 0:
+                        print("   ⚖️ TUNING HELPFUL - Small improvement achieved")
+                    else:
+                        print("   📋 TUNING INEFFECTIVE - Simple KG remains better")
+
+        # Κλινική ερμηνεία (τυπώνω μόνο αν έχει βρεθεί best AUC)
+        if best_overall_auc != float("-inf"):
+            print("\n🏥 CLINICAL INTERPRETATION:")
+            if best_overall_auc > 0.8:
+                print("   Assessment: 🎉 EXCELLENT - High clinical utility for ASD screening")
+                print("   Recommendation: Suitable for clinical decision support with appropriate validation")
+            elif best_overall_auc > 0.7:
+                print("   Assessment: ✅ GOOD - Meaningful clinical utility")
+                print("   Recommendation: Promising for clinical applications with further validation")
+            elif best_overall_auc > 0.6:
+                print("   Assessment: ⚖️ MODERATE - Limited but useful clinical utility")
+                print("   Recommendation: May be useful as part of comprehensive assessment")
             else:
-                print("      → Strong interactions are needed")
-            
-            print(f"   Smoothing Factor: {best_config['smoothing']:.3f}")
-            if best_config['smoothing'] < 0.03:
-                print("      → Minimal smoothing preserves information")
-            else:
-                print("      → Moderate smoothing helps generalization")
+                print("   Assessment: 📋 LIMITED - Insufficient for standalone clinical use")
+                print("   Recommendation: Requires significant improvement before clinical application")
 
-        # LIMITATIONS AND RECOMMENDATIONS
-        print(f"\n⚠️ STUDY LIMITATIONS:")
-        print("   • Small sample size limits hyperparameter search effectiveness")
-        print("   • Limited parameter grid due to computational constraints")
-        print("   • Single dataset requires external validation of optimal parameters")
-        print("   • Clinical features may not capture all relevant gait patterns")
-        print("   • Multiple comparisons increase Type I error risk")
-        
-        print(f"\n🚀 RECOMMENDATIONS:")
-        print("   • Validate optimal parameters on independent clinical datasets")
-        print("   • Expand hyperparameter search with larger sample sizes")
-        print("   • Apply multiple testing corrections (Bonferroni/FDR)")
-        print("   • Include temporal gait dynamics in parameter optimization")
-        print("   • Clinical expert validation of feature relevance")
-        print("   • Integration with other diagnostic modalities")
+        # KG insights (μόνο αν υπάρχουν Raw & κάποια KG)
+        if isinstance(tier1_results, dict) and 'Raw Clinical Features' in tier1_results:
+            raw_vals = [m.get('auc') for m in tier1_results['Raw Clinical Features'].values() if isinstance(m, dict) and 'auc' in m]
+            if raw_vals:
+                raw_best = max(raw_vals)
+                kg_approaches = [k for k in tier1_results.keys() if 'KG' in k]
+                if kg_approaches:
+                    kg_best_approach = max(
+                        kg_approaches,
+                        key=lambda k: max([m.get('auc', float('-inf')) for m in tier1_results.get(k, {}).values()] or [float('-inf')])
+                    )
+                    kg_best_vals = [m.get('auc') for m in tier1_results.get(kg_best_approach, {}).values() if isinstance(m, dict) and 'auc' in m]
+                    if kg_best_vals:
+                        kg_best_auc = max(kg_best_vals)
+                        if raw_best not in (0, None):
+                            kg_improvement = ((kg_best_auc - raw_best) / raw_best) * 100
+                            print(f"\n🧠 KNOWLEDGE GRAPH INSIGHTS με STATISTICAL VALIDATION:")
+                            print(f"   Raw Clinical Features: AUC = {raw_best:.3f}")
+                            print(f"   Best KG Approach ({kg_best_approach}): AUC = {kg_best_auc:.3f}")
+                            print(f"   KG Improvement: {kg_improvement:+.1f}%")
 
-    (train_pids),
-                'test_participants': len(set(test_pids)),
-                'train_samples': len(X_train),
-                'test_samples': len(X_test)
-            },
-            'feature_info': {
-                'clinical_set': best_set_name,
-                'original_count': len(best_features),
-                'selected_count': len(selected_features)
-            }
-        }
-    
-    def _create_placeholder_gnn_results(self):
-        """Create realistic placeholder GNN results"""
-        base_auc = 0.62
-        models = ['GCN', 'GraphSAGE', 'GAT']
-        
-        placeholder_results = {}
-        for i, model in enumerate(models):
-            auc_variation = 0.03 * (i - 1)  # -0.03, 0, +0.03
-            auc = np.clip(base_auc + auc_variation, 0.5, 0.8)
-            
-            placeholder_results[f'GNN_{model}'] = {
-                'auc': auc,
-                'f1': auc * 0.85,
-                'accuracy': auc * 0.9,
-                'precision': auc * 0.8,
-                'recall': auc * 0.9,
-                'cv_scores': [auc + np.random.normal(0, 0.02) for _ in range(3)],
-                'cv_mean': auc,
-                'cv_std': 0.02
-            }
-        
-        return placeholder_results
+                            # Αν υπάρχουν αντίστοιχα στατιστικά για Raw vs KG, τύπωσέ τα
+                            if isinstance(statistical_results, dict) and statistical_results:
+                                for key, res in statistical_results.items():
+                                    a1 = res.get('approach1', '')
+                                    a2 = res.get('approach2', '')
+                                    if ('Raw Clinical Features' in a1 and kg_best_approach in a2) or \
+                                    ('Raw Clinical Features' in a2 and kg_best_approach in a1):
+                                        parts = []
+                                        if 'p_value' in res and res['p_value'] is not None and not (isinstance(res['p_value'], float) and np.isnan(res['p_value'])):
+                                            parts.append(f"p={res['p_value']:.4f}")
+                                        if 'corrected_p_value' in res and res['corrected_p_value'] is not None and not (isinstance(res['corrected_p_value'], float) and np.isnan(res['corrected_p_value'])):
+                                            parts.append(f"corrected_p={res['corrected_p_value']:.4f}")
+                                        if 'effect_size' in res:
+                                            parts.append(f"effect: {res['effect_size']}")
+                                        elif 'cohens_d' in res:
+                                            parts.append(f"effect: {res['cohens_d']:+.3f}")
+                                        if parts:
+                                            print("   Statistical significance: " + ", ".join(parts))
+                                        break
     
     def print_gnn_comparison_results(self, all_results, clinical_set_name, data_summary, statistical_results):
         """Print comprehensive GNN comparison results with statistical analysis"""
