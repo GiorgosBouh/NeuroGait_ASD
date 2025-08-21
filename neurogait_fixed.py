@@ -49,7 +49,7 @@ def paired_bootstrap_metric_diff(y, p1, p2, metric_func, n_boot=10000, seed=123,
         s = rng.choice(idx, size=len(idx), replace=True)
         if metric_func.__name__ in ("accuracy_score", "f1_score"):
             m1 = metric_func(y[s], (p1[s] >= threshold).astype(int))
-            m2 = metric_func(y[s], (p2[s] >= threshold).ast(int))
+            m2 = metric_func(y[s], (p2[s] >= threshold).astype(int))
         else:
             m1 = metric_func(y[s], p1[s])
             m2 = metric_func(y[s], p2[s])
