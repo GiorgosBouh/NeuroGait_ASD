@@ -1617,7 +1617,17 @@ def run_gnn_comparison_analysis(self):
             'all_results': all_results,
             'statistical_results': statistical_results,
             'data_summary': {
-                'train_participants': len(set        best_overall_model = ""
+                'train_participants': len(set(train_pids)),
+                'test_participants': len(set(test_pids)),
+                'train_samples': len(X_train),
+                'test_samples': len(X_test)
+            },
+            'feature_info': {
+                'clinical_set': best_set_name,
+                'original_count': len(best_features),
+                'selected_count': len(selected_features)
+            }
+        }
         
         for approach_name, results in all_results.items():
             print(f"\n{approach_name}:")
