@@ -1535,7 +1535,7 @@ class RealisticAnalysis:
         approach_summaries = {}
         best_overall_auc = 0
         best_overall_approach = ""
-   def run_gnn_comparison_analysis(self):
+    def run_gnn_comparison_analysis(self):
         """Raw vs KG vs Enhanced KG vs True GNN με σωστή στοίχιση CV groups (no leakage, no placeholders)."""
 
         import numpy as np
