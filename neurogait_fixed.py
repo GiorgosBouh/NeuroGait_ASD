@@ -570,63 +570,63 @@ class RealisticAnalysis:
         return X_train_kg, X_test_kg
     
     def _proper_cross_validation(self, X_train, y_train, train_pids, model, cv_folds=5):
-       """Proper participant-level cross-validation without data leakage"""
-       try:
+        """Proper participant-level cross-validation without data leakage"""
+        try:
             sample_groups = train_pids
-            unique_pids = np.unique(sample_groups)
-            
-            if len(unique_pids) < cv_folds:
-                cv_folds = max(2, len(unique_pids))
-                print(f"   ⚠️ Reduced CV folds to {cv_folds} due to limited participants")
-            
-            group_kfold = GroupKFold(n_splits=cv_folds)
-            cv_scores = []
-            
-            X_train_arr = np.asarray(X_train) if not isinstance(X_train, np.ndarray) else X_train
-            y_train_arr = np.asarray(y_train) if not isinstance(y_train, np.ndarray) else y_train
-            
-            fold = 0
-            for train_idx, val_idx in group_kfold.split(X_train_arr, y_train_arr, groups=sample_groups):
-                fold += 1
-                X_fold_train, X_fold_val = X_train_arr[train_idx], X_train_arr[val_idx]
-                y_fold_train, y_fold_val = y_train_arr[train_idx], y_train_arr[val_idx]
+                unique_pids = np.unique(sample_groups)
                 
-                # Skip folds with insufficient data or no class variation
-                if (len(np.unique(y_fold_train)) < 2 or len(np.unique(y_fold_val)) < 2 or
-                    len(y_fold_train) < 10 or len(y_fold_val) < 5):
-                    print(f"   ⚠️ Fold {fold}: Insufficient data - skipping")
-                    continue
+                if len(unique_pids) < cv_folds:
+                    cv_folds = max(2, len(unique_pids))
+                    print(f"   ⚠️ Reduced CV folds to {cv_folds} due to limited participants")
                 
-                # Train model
-                model_copy = type(model)(**model.get_params())
-                model_copy.fit(X_fold_train, y_fold_train)
+                group_kfold = GroupKFold(n_splits=cv_folds)
+                cv_scores = []
                 
-                # Get predictions
-                if hasattr(model_copy, "predict_proba"):
-                    y_val_proba = model_copy.predict_proba(X_fold_val)[:, 1]
-                else:
-                    y_val_proba = model_copy.decision_function(X_fold_val)
-                    # Convert decision function to probabilities
-                    y_val_proba = 1 / (1 + np.exp(-y_val_proba))
+                X_train_arr = np.asarray(X_train) if not isinstance(X_train, np.ndarray) else X_train
+                y_train_arr = np.asarray(y_train) if not isinstance(y_train, np.ndarray) else y_train
                 
-                # Calculate AUC
-                fold_auc = roc_auc_score(y_fold_val, y_val_proba)
+                fold = 0
+                for train_idx, val_idx in group_kfold.split(X_train_arr, y_train_arr, groups=sample_groups):
+                    fold += 1
+                    X_fold_train, X_fold_val = X_train_arr[train_idx], X_train_arr[val_idx]
+                    y_fold_train, y_fold_val = y_train_arr[train_idx], y_train_arr[val_idx]
+                    
+                    # Skip folds with insufficient data or no class variation
+                    if (len(np.unique(y_fold_train)) < 2 or len(np.unique(y_fold_val)) < 2 or
+                        len(y_fold_train) < 10 or len(y_fold_val) < 5):
+                        print(f"   ⚠️ Fold {fold}: Insufficient data - skipping")
+                        continue
+                    
+                    # Train model
+                    model_copy = type(model)(**model.get_params())
+                    model_copy.fit(X_fold_train, y_fold_train)
+                    
+                    # Get predictions
+                    if hasattr(model_copy, "predict_proba"):
+                        y_val_proba = model_copy.predict_proba(X_fold_val)[:, 1]
+                    else:
+                        y_val_proba = model_copy.decision_function(X_fold_val)
+                        # Convert decision function to probabilities
+                        y_val_proba = 1 / (1 + np.exp(-y_val_proba))
+                    
+                    # Calculate AUC
+                    fold_auc = roc_auc_score(y_fold_val, y_val_proba)
+                    
+                    # Only accept reasonable AUC scores (detect overfitting)
+                    if not np.isnan(fold_auc) and 0.4 <= fold_auc <= 0.9:
+                        cv_scores.append(fold_auc)
+                        print(f"   Fold {fold}: AUC={fold_auc:.3f}")
+                    else:
+                        print(f"   ⚠️ Fold {fold}: Unrealistic AUC ({fold_auc:.3f}) - likely overfitting, skipping")
                 
-                # Only accept reasonable AUC scores (detect overfitting)
-                if not np.isnan(fold_auc) and 0.4 <= fold_auc <= 0.9:
-                    cv_scores.append(fold_auc)
-                    print(f"   Fold {fold}: AUC={fold_auc:.3f}")
-                else:
-                    print(f"   ⚠️ Fold {fold}: Unrealistic AUC ({fold_auc:.3f}) - likely overfitting, skipping")
-            
-            if len(cv_scores) == 0:
-                raise ValueError("Cross-validation failed - no valid folds completed")
-                
-            return cv_scores
-                        
-        except Exception as e:
-            print(f"   ❌ CV failed: {str(e)}")
-            raise ValueError(f"Cross-validation failed: {str(e)}") 
+                if len(cv_scores) == 0:
+                    raise ValueError("Cross-validation failed - no valid folds completed")
+                    
+                return cv_scores
+                            
+            except Exception as e:
+                print(f"   ❌ CV failed: {str(e)}")
+                raise ValueError(f"Cross-validation failed: {str(e)}")           
     
     def train_optimized_models(self, X_train, X_test, y_train, y_test, train_pids, approach_name):
         """Train models with proper regularization - CLEAN VERSION"""
