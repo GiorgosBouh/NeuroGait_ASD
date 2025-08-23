@@ -571,7 +571,7 @@ class RealisticAnalysis:
     
     def _proper_cross_validation(self, X_train, y_train, train_pids, model, cv_folds=5):
        """Proper participant-level cross-validation without data leakage"""
-        try:
+       try:
             sample_groups = train_pids
             unique_pids = np.unique(sample_groups)
             
@@ -626,7 +626,7 @@ class RealisticAnalysis:
                         
         except Exception as e:
             print(f"   ❌ CV failed: {str(e)}")
-            raise ValueError(f"Cross-validation failed: {str(e)}")
+            raise ValueError(f"Cross-validation failed: {str(e)}") 
     
     def train_optimized_models(self, X_train, X_test, y_train, y_test, train_pids, approach_name):
         """Train models with proper regularization - CLEAN VERSION"""
