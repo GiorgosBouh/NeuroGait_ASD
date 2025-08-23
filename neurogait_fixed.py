@@ -58,14 +58,14 @@ def paired_bootstrap_metric_diff(y, p1, p2, metric_func, n_boot=10000, seed=123,
     return float(diffs.mean()), (float(ci_low), float(ci_high)), diffs
 
 def wilcoxon_rank_biserial_from_trueprob(y, p1, p2):
-    """
+     """
     Wilcoxon signed-rank test on per-sample true-class probabilities,
     plus rank-biserial effect size.
     Returns: (W, p_value, rank_biserial)
     """
     pt1 = np.where(y == 1, p1, 1.0 - p1)
     pt2 = np.where(y == 1, p2, 1.0 - p2)
-    stat, p = wilcoxon(pt1, pt2, zero_method="wilcox", alternative="two-sided", mode="auto")
+    stat, p = wilcoxon(pt1, pt2, zero_method="wilcox", alternative="two-sided", mode="exact")
     n = len(y)
     max_W = n * (n + 1) / 2.0
     rbc = 1.0 - (2.0 * stat / max_W)
@@ -191,61 +191,50 @@ class RealisticAnalysis:
         train_df = df.iloc[train_indices]
         
         for set_name, feature_set in clinical_sets.items():
-            try:
-                available_features = [f for f in feature_set if f in df.columns]
-                
-                if len(available_features) < 5:
-                    print(f"   {set_name.replace('_', ' '):<18}: Too few features ({len(available_features)})")
-                    continue
-                
-                # Quick test with a subset of training data only
-                test_df = train_df[available_features + ['participant_id', 'diagnosis']].dropna().head(200)
-                
-                if len(test_df) < 50:
-                    print(f"   {set_name.replace('_', ' '):<18}: Insufficient data after cleaning")
-                    continue
-                
-                # Quick model test
-                X = test_df[available_features]
-                y = test_df['diagnosis']
-                
-                if len(np.unique(y)) < 2:
-                    print(f"   {set_name.replace('_', ' '):<18}: No class variation")
-                    continue
-                
-                # Quick train-test split
-                X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
-                
-                # Quick standardization and model
-                scaler = StandardScaler()
-                X_train_scaled = scaler.fit_transform(X_train)
-                X_test_scaled = scaler.transform(X_test)
-                
-                lr = LogisticRegression(random_state=42, max_iter=1000, C=1.0)
-                lr.fit(X_train_scaled, y_train)
-                y_pred = lr.predict_proba(X_test_scaled)[:, 1]
-                auc = roc_auc_score(y_test, y_pred)
-                
-                print(f"   {set_name.replace('_', ' '):<18}: {len(available_features):2d} features, Quick AUC={auc:.3f}")
-                
-                if auc > best_auc:
-                    best_auc = auc
-                    best_set_name = set_name
-                    best_features = available_features
-                    
-            except Exception as e:
-                print(f"   {set_name.replace('_', ' '):<18}: Error - {str(e)[:30]}")
+            available_features = [f for f in feature_set if f in df.columns]
+            
+            if len(available_features) < 5:
+                print(f"   {set_name.replace('_', ' '):<18}: Too few features ({len(available_features)})")
                 continue
+            
+            # Quick test with a subset of training data only
+            test_df = train_df[available_features + ['participant_id', 'diagnosis']].dropna().head(200)
+            
+            if len(test_df) < 50:
+                print(f"   {set_name.replace('_', ' '):<18}: Insufficient data after cleaning")
+                continue
+            
+            # Quick model test
+            X = test_df[available_features]
+            y = test_df['diagnosis']
+            
+            if len(np.unique(y)) < 2:
+                print(f"   {set_name.replace('_', ' '):<18}: No class variation")
+                continue
+            
+            # Quick train-test split
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
+            
+            # Quick standardization and model
+            scaler = StandardScaler()
+            X_train_scaled = scaler.fit_transform(X_train)
+            X_test_scaled = scaler.transform(X_test)
+            
+            lr = LogisticRegression(random_state=42, max_iter=1000, C=1.0)
+            lr.fit(X_train_scaled, y_train)
+            y_pred = lr.predict_proba(X_test_scaled)[:, 1]
+            auc = roc_auc_score(y_test, y_pred)
+            
+            print(f"   {set_name.replace('_', ' '):<18}: {len(available_features):2d} features, Quick AUC={auc:.3f}")
+            
+            if auc > best_auc:
+                best_auc = auc
+                best_set_name = set_name
+                best_features = available_features
         
         if best_features is None:
-            # Fallback to first available set
-            for set_name, feature_set in clinical_sets.items():
-                available_features = [f for f in feature_set if f in df.columns]
-                if len(available_features) >= 10:
-                    best_features = available_features[:25]
-                    best_set_name = set_name
-                    best_auc = 0.6
-                    break
+            # NO FALLBACKS - Stop the code
+            raise ValueError("No valid clinical feature set found. Check your data and feature definitions.")
         
         print(f"\n✅ SELECTED CLINICAL FEATURE SET:")
         print(f"   Set: {best_set_name.replace('_', ' ').title()}")
@@ -391,6 +380,9 @@ class RealisticAnalysis:
         
         final_features = [f for f in good_features if f not in constant_features]
         
+        if len(final_features) == 0:
+            raise ValueError("No valid features remaining after preprocessing. Check your data quality.")
+        
         # Remove duplicates
         train_final = train_imputed.drop_duplicates(subset=final_features)
         test_final = test_imputed.drop_duplicates(subset=final_features)
@@ -404,7 +396,7 @@ class RealisticAnalysis:
         return train_final, test_final, final_features
     
     def optimized_feature_selection(self, train_data, test_data, features):
-        """More conservative feature selection to prevent overfitting - CLEAN VERSION"""
+        """More conservative feature selection to prevent overfitting"""
         print(f"\n🧠 CONSERVATIVE FEATURE SELECTION (Training Data Only)")
         
         X_train = train_data[features]
@@ -427,6 +419,9 @@ class RealisticAnalysis:
         X_train_selected = selector.fit_transform(X_train, y_train)
         selected_features = [features[i] for i in range(len(features)) 
                         if selector.get_support()[i]]
+        
+        if len(selected_features) == 0:
+            raise ValueError("Feature selection failed - no features selected. Check data quality.")
         
         # Apply the same selection to test data
         X_test_selected = test_data[selected_features]
@@ -575,7 +570,7 @@ class RealisticAnalysis:
         return X_train_kg, X_test_kg
     
     def _proper_cross_validation(self, X_train, y_train, train_pids, model, cv_folds=5):
-        """Proper participant-level cross-validation without data leakage - CLEAN VERSION"""
+       """Proper participant-level cross-validation without data leakage"""
         try:
             sample_groups = train_pids
             unique_pids = np.unique(sample_groups)
@@ -624,11 +619,14 @@ class RealisticAnalysis:
                 else:
                     print(f"   ⚠️ Fold {fold}: Unrealistic AUC ({fold_auc:.3f}) - likely overfitting, skipping")
             
+            if len(cv_scores) == 0:
+                raise ValueError("Cross-validation failed - no valid folds completed")
+                
             return cv_scores
                         
         except Exception as e:
             print(f"   ❌ CV failed: {str(e)}")
-            return []
+            raise ValueError(f"Cross-validation failed: {str(e)}")
     
     def train_optimized_models(self, X_train, X_test, y_train, y_test, train_pids, approach_name):
         """Train models with proper regularization - CLEAN VERSION"""
