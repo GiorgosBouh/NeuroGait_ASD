@@ -58,7 +58,7 @@ def paired_bootstrap_metric_diff(y, p1, p2, metric_func, n_boot=10000, seed=123,
     return float(diffs.mean()), (float(ci_low), float(ci_high)), diffs
 
 def wilcoxon_rank_biserial_from_trueprob(y, p1, p2):
-     """
+    """
     Wilcoxon signed-rank test on per-sample true-class probabilities,
     plus rank-biserial effect size.
     Returns: (W, p_value, rank_biserial)
