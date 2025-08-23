@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Graph Neural Network Analysis for NeuroGait
 """
@@ -10,6 +9,9 @@ from torch_geometric.data import Data
 import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_auc_score, f1_score, accuracy_score
+from sklearn.model_selection import train_test_split  # MISSING IMPORT
+from sklearn.preprocessing import StandardScaler      # MISSING IMPORT
+from sklearn.ensemble import RandomForestClassifier   # MISSING IMPORT
 import logging
 
 # Setup logging
@@ -123,7 +125,6 @@ class TrueGraphAnalysis:
                 probas[i] -= adjustment  # Decrease probability for negative class
         
         return np.clip(probas, 0.01, 0.99)  # Keep within valid probability range
-
     def close(self):
         """Clean up resources"""
         pass
@@ -143,18 +144,18 @@ class GraphEnhancedNeuroGaitAnalysis:
         except UnicodeDecodeError:
             df = pd.read_csv(filepath, sep=';', decimal=',', encoding='latin-1')
         
-        # Convert numeric columns
+        # Convert numeric columns properly
         numeric_cols = [col for col in df.columns if col != 'class']
         for col in numeric_cols:
             if df[col].dtype == 'object':
-                df[col] = df[col].str.replace(',', '.').astype(float)
+                df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', '.'), errors='coerce')
         
         # Add participant info
         df['participant_id'] = df.index // self.samples_per_participant
         df['diagnosis'] = df['class'].map({'A': 'ASD', 'T': 'Typical'})
         
         return df
-    
+        
     def compare_approaches(self, df):
         """Compare three approaches: Original, Enhanced (no graph), and Graph-based"""
         # Define base features
@@ -180,11 +181,14 @@ class GraphEnhancedNeuroGaitAnalysis:
             stratify=participant_info['diagnosis'].values,
             random_state=42
         )
-        
+
         train_mask = df['participant_id'].isin(train_pids)
         test_mask = df['participant_id'].isin(test_pids)
-        
+
         results = {}
+
+        # Get labels - FIX: Convert string diagnosis to binary
+        y = (df['diagnosis'] == 'ASD').astype(int)
         
         # 1. Original Features Only
         logger.info("\n🔷 Approach 1: Original Features Only")
