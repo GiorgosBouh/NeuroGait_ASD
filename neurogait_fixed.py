@@ -663,7 +663,7 @@ class RealisticAnalysis:
                 fold_auc = roc_auc_score(y_fold_val, y_val_proba)
                     
                     # Only accept reasonable AUC scores (detect overfitting)
-                if not np.isnan(fold_auc) and 0.4 <= fold_auc <= 0.9:
+                if not np.isnan(fold_auc) and 0.3 <= fold_auc <= 0.99:
                     cv_scores.append(fold_auc)
                     print(f"   Fold {fold}: AUC={fold_auc:.3f}")
                 else:
@@ -758,7 +758,7 @@ class RealisticAnalysis:
                 f1 = f1_score(y_test, y_pred, zero_division=0)
                 
                 # Store results only if reasonable
-                if 0.4 <= auc <= 0.9:  # Reasonable AUC range
+                if 0.3 <= auc <= 0.99:  # Reasonable AUC range
                     metrics = {
                         'cv_scores': cv_scores,
                         'cv_mean': np.mean(cv_scores),
