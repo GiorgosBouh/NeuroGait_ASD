@@ -624,9 +624,9 @@ class RealisticAnalysis:
                     
                 return cv_scores
                             
-            except Exception as e:
+        except Exception as e:
                 print(f"   ❌ CV failed: {str(e)}")
-                raise ValueError(f"Cross-validation failed: {str(e)}")           
+                raise ValueError(f"Cross-validation failed: {str(e)}")               
     
     def train_optimized_models(self, X_train, X_test, y_train, y_test, train_pids, approach_name):
         """Train models with proper regularization - CLEAN VERSION"""
