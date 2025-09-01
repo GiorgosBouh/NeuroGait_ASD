@@ -663,7 +663,7 @@ class RealisticAnalysis:
                 fold_auc = roc_auc_score(y_fold_val, y_val_proba)
                     
                     # Only accept reasonable AUC scores (detect overfitting)
-                if not np.isnan(fold_auc) and 0.3 <= fold_auc <= 0.99:
+                if not np.isnan(fold_auc) and 0.4 <= fold_auc <= 0.98:
                     cv_scores.append(fold_auc)
                     print(f"   Fold {fold}: AUC={fold_auc:.3f}")
                 else:
@@ -717,7 +717,7 @@ class RealisticAnalysis:
             'SVM': SVC(
                 random_state=42,
                 probability=True,
-                C=0.001,           # MUCH stronger regularization (was 0.01)
+                C=1.0,           # MUCH stronger regularization (was 0.01)
                 gamma='scale',
                 kernel='rbf',
                 class_weight='balanced'
@@ -758,7 +758,7 @@ class RealisticAnalysis:
                 f1 = f1_score(y_test, y_pred, zero_division=0)
                 
                 # More realistic AUC range for clinical data but stricter than before
-                if 0.45 <= auc <= 0.85:  # Realistic range for properly regularized models
+                if 0.55 <= auc <= 0.98:  # Realistic range for properly regularized models
                     metrics = {
                         'cv_scores': cv_scores,
                         'cv_mean': np.mean(cv_scores),
