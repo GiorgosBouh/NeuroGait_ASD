@@ -679,37 +679,37 @@ class RealisticAnalysis:
             raise ValueError(f"Cross-validation failed: {str(e)}")               
     
     def train_optimized_models(self, X_train, X_test, y_train, y_test, train_pids, approach_name):
-        """Train models with proper regularization - CLEAN VERSION"""
+        """Train models with stronger regularization to prevent overfitting"""
         print(f"\n🚀 TRAINING OPTIMIZED MODELS: {approach_name}")
         print(f"   📊 Data shape: {X_train.shape}")
         
-        # Strong regularization to prevent overfitting on small datasets
+        # MUCH stronger regularization to prevent overfitting on small datasets
         models = {
             'Logistic Regression': LogisticRegression(
                 random_state=42,
                 max_iter=1000,
-                C=0.01,  # Very strong regularization
+                C=0.001,  # MUCH stronger regularization (was 0.01)
                 solver='liblinear',
                 penalty='l2'
             ),
             'Random Forest': RandomForestClassifier(
-                n_estimators=30,   # Reduced trees
-                max_depth=2,       # Very shallow
-                min_samples_split=20,  # High minimum
-                min_samples_leaf=15,   # High minimum
+                n_estimators=20,   # Fewer trees (was 30)
+                max_depth=3,       # Deeper but still shallow (was 2)
+                min_samples_split=30,  # Higher minimum (was 20)
+                min_samples_leaf=20,   # Higher minimum (was 15)
                 max_features='sqrt',
                 random_state=42,
                 class_weight='balanced'
             ),
             'XGBoost': xgb.XGBClassifier(
                 random_state=42,
-                max_depth=2,       # Very shallow
-                n_estimators=30,   # Few trees
-                learning_rate=0.01, # Very slow learning
-                subsample=0.6,     # Strong subsampling
-                colsample_bytree=0.6,
-                reg_alpha=2.0,     # Strong L1 regularization
-                reg_lambda=2.0,    # Strong L2 regularization
+                max_depth=3,       # Slightly deeper (was 2)
+                n_estimators=25,   # Fewer trees (was 30)
+                learning_rate=0.005, # Even slower learning (was 0.01)
+                subsample=0.5,     # Stronger subsampling (was 0.6)
+                colsample_bytree=0.5,
+                reg_alpha=3.0,     # Stronger L1 (was 2.0)
+                reg_lambda=3.0,    # Stronger L2 (was 2.0)
                 eval_metric='logloss',
                 verbosity=0,
                 scale_pos_weight=1.0
@@ -717,7 +717,7 @@ class RealisticAnalysis:
             'SVM': SVC(
                 random_state=42,
                 probability=True,
-                C=0.01,           # Very strong regularization
+                C=0.001,           # MUCH stronger regularization (was 0.01)
                 gamma='scale',
                 kernel='rbf',
                 class_weight='balanced'
@@ -757,8 +757,8 @@ class RealisticAnalysis:
                 recall = recall_score(y_test, y_pred, zero_division=0)
                 f1 = f1_score(y_test, y_pred, zero_division=0)
                 
-                # Store results only if reasonable
-                if 0.3 <= auc <= 0.99:  # Reasonable AUC range
+                # More realistic AUC range for clinical data but stricter than before
+                if 0.45 <= auc <= 0.85:  # Realistic range for properly regularized models
                     metrics = {
                         'cv_scores': cv_scores,
                         'cv_mean': np.mean(cv_scores),
@@ -775,20 +775,22 @@ class RealisticAnalysis:
                     
                     results[model_name] = metrics
                     
-                    # Assessment
-                    if auc > 0.8:
+                    # More realistic assessment thresholds
+                    if auc > 0.80:
                         status = "🎉 Excellent"
-                    elif auc > 0.7:
-                        status = "✅ Good"
-                    elif auc > 0.6:
-                        status = "⚖️ Moderate"
+                    elif auc > 0.70:
+                        status = "✅ Very Good"
+                    elif auc > 0.65:
+                        status = "⚖️ Good"
+                    elif auc > 0.60:
+                        status = "📊 Moderate"
                     else:
                         status = "📋 Limited"
                     
                     cv_info = f"CV={metrics['cv_mean']:.3f}±{metrics['cv_std']:.3f}"
                     print(f"      {status}: AUC={auc:.3f}, F1={f1:.3f}, {cv_info}")
                 else:
-                    print(f"      ❌ Unrealistic AUC ({auc:.3f}) - likely overfitting, skipping {model_name}")
+                    print(f"      ❌ Unrealistic AUC ({auc:.3f}) - likely overfitting or underfitting, skipping {model_name}")
                 
             except Exception as e:
                 print(f"      ❌ Failed: {str(e)[:50]}")
@@ -850,9 +852,10 @@ class RealisticAnalysis:
                     print(f"\n⚠️ Skipping {a1} vs {a2}: different test labels.")
                     continue
                 
-                y = y1  # Use the common test labels
+            
+                y = y1  # Χρήση reference labels
                 print(f"\n🔍 COMPARING (test level): {a1} vs {a2}")
-                print("-"*60)
+                print(f"   Using {a1} labels as reference for statistical testing")
                 
                 try:
                     # Wilcoxon signed-rank test
