@@ -106,6 +106,8 @@ except Exception as e:
     print(f"⚠️ GNN analysis not available - {str(e)}")
     print("   Ensure true_gnn_analysis.py exists in the same directory")
     GNN_ANALYSIS_AVAILABLE = False
+    print("⚠️ GNN analysis disabled - no fallback results allowed")
+
 
 class RealisticAnalysis:
     def __init__(self):
@@ -1616,6 +1618,8 @@ class RealisticAnalysis:
         print(f"\n{'='*50}")
         print("🤖 TIER 4: GRAPH NEURAL NETWORKS (Neo4j)")
         print(f"{'='*50}")
+        print("   ⚠️ GNN analysis disabled to prevent fallback results")
+        print("   📋 Enable real GNN implementation for authentic results")
         
         gnn_results = {}
         

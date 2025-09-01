@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """
-True GNN Analysis Module for NeuroGait
+True GNN Analysis Module for NeuroGait - REAL IMPLEMENTATION
 """
 
 import numpy as np
+import pandas as pd
 from sklearn.metrics import roc_auc_score, f1_score, accuracy_score, precision_score, recall_score
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
 import logging
 
 logger = logging.getLogger(__name__)
@@ -12,138 +15,192 @@ logger = logging.getLogger(__name__)
 class TrueGraphAnalysis:
     def __init__(self, samples_per_participant=8):
         self.samples_per_participant = samples_per_participant
+        self.neo4j_available = False
         
     def connect_to_graph(self):
-        """Connect to the knowledge graph database"""
-        return True
-        
-    def run_gnn_analysis(self, train_pids, test_pids):
-        """Run GNN analysis with IDENTICAL test labels as other methods"""
+        """Connect to the actual Neo4j graph database"""
         try:
-            # ΚΡΙΣΙΜΟ: Χρήση του ΙΔΙΟΥ random seed και logic με τα άλλα μοντέλα
-            np.random.seed(42)
+            from neo4j import GraphDatabase
+            import os
             
-            n_test_samples = len(test_pids) * self.samples_per_participant  # 25 * 8 = 200
+            # Try to connect to your actual Neo4j instance
+            uri = os.getenv('NEO4J_URI', 'bolt://localhost:7687')
+            user = os.getenv('NEO4J_USER', 'neo4j')
+            password = os.getenv('NEO4J_PASSWORD', 'password')
             
-            # ΔΙΟΡΘΩΣΗ: Χρήση της ΙΔΙΑΣ ΛΟΓΙΚΗΣ με τα traditional methods
-            # Βάσει της κατανομής: Test distribution: {0: 104, 1: 96}
-            test_labels = []
-            test_pids_sorted = sorted(test_pids)
+            driver = GraphDatabase.driver(uri, auth=(user, password))
+            with driver.session() as session:
+                # Test query to verify graph exists
+                result = session.run("MATCH (n) RETURN count(n) as node_count")
+                count = result.single()["node_count"]
+                
+            if count > 0:
+                self.driver = driver
+                self.neo4j_available = True
+                logger.info(f"Connected to Neo4j with {count} nodes")
+                return True
+            else:
+                raise Exception("Neo4j graph is empty")
+                
+        except Exception as e:
+            logger.error(f"Failed to connect to Neo4j: {str(e)}")
+            raise RuntimeError(f"Neo4j connection failed: {str(e)}. Cannot proceed without real graph data.")
+        
+    def extract_graph_features(self, participant_ids):
+        """Extract real features from Neo4j graph"""
+        if not self.neo4j_available:
+            raise RuntimeError("Neo4j not available - cannot extract real graph features")
             
-            for i, pid in enumerate(test_pids_sorted):
-                # Δημιουργία παρόμοιας κατανομής με traditional methods
-                participant_label = 1 if i < len(test_pids_sorted) * 0.48 else 0
-                test_labels.extend([participant_label] * self.samples_per_participant)
+        try:
+            with self.driver.session() as session:
+                # Query to extract real graph-based features
+                query = """
+                MATCH (p:Participant {id: $pid})-[:HAS_SAMPLE]->(s:Sample)-[:HAS_EMBEDDING]->(e:Embedding)
+                RETURN e.vector as embedding, s.diagnosis as diagnosis
+                """
+                
+                features = []
+                labels = []
+                
+                for pid in participant_ids:
+                    result = session.run(query, pid=f"P_{pid}")
+                    for record in result:
+                        features.append(record["embedding"])
+                        labels.append(1 if record["diagnosis"] == "ASD" else 0)
+                
+                if len(features) == 0:
+                    raise RuntimeError("No graph features found in Neo4j")
+                    
+                return np.array(features), np.array(labels)
+                
+        except Exception as e:
+            raise RuntimeError(f"Failed to extract graph features: {str(e)}")
+        
+    def train_real_gnn(self, X_train, y_train, X_test, y_test, model_type="GCN"):
+        """Train actual GNN models using PyTorch Geometric"""
+        try:
+            import torch
+            import torch.nn.functional as F
+            from torch_geometric.nn import GCNConv, GATConv, SAGEConv
+            from torch_geometric.data import Data
+            from sklearn.neighbors import kneighbors_graph
             
-            test_labels = np.array(test_labels[:n_test_samples])
+            # Create graph structure from features using k-NN
+            A_train = kneighbors_graph(X_train, n_neighbors=5, mode='connectivity', include_self=True)
+            edge_index_train = torch.tensor(np.array(A_train.nonzero()), dtype=torch.long)
             
-            # Ensure we have similar distribution to traditional methods
-            n_positive = np.sum(test_labels)
-            n_negative = len(test_labels) - n_positive
+            # Convert to PyTorch tensors
+            x_train = torch.tensor(X_train, dtype=torch.float)
+            y_train_torch = torch.tensor(y_train, dtype=torch.long)
+            x_test = torch.tensor(X_test, dtype=torch.float)
+            y_test_torch = torch.tensor(y_test, dtype=torch.long)
             
-            print(f"   📊 GNN test set: {len(test_pids)} participants → {len(test_labels)} samples")
-            print(f"   📊 GNN test labels: {n_negative} negative, {n_positive} positive")
+            # Define GNN model
+            class GNNModel(torch.nn.Module):
+                def __init__(self, input_dim, hidden_dim, output_dim, model_type):
+                    super().__init__()
+                    if model_type == "GCN":
+                        self.conv1 = GCNConv(input_dim, hidden_dim)
+                        self.conv2 = GCNConv(hidden_dim, output_dim)
+                    elif model_type == "GAT":
+                        self.conv1 = GATConv(input_dim, hidden_dim)
+                        self.conv2 = GATConv(hidden_dim, output_dim)
+                    elif model_type == "GraphSAGE":
+                        self.conv1 = SAGEConv(input_dim, hidden_dim)
+                        self.conv2 = SAGEConv(hidden_dim, output_dim)
+                        
+                def forward(self, x, edge_index):
+                    x = F.relu(self.conv1(x, edge_index))
+                    x = F.dropout(x, training=self.training)
+                    x = self.conv2(x, edge_index)
+                    return F.log_softmax(x, dim=1)
             
-            results = {
-                'GNN_GCN': self._create_model_results(test_labels, 0.75, 0.72),
-                'GNN_GAT': self._create_model_results(test_labels, 0.77, 0.74),
-                'GNN_GraphSAGE': self._create_model_results(test_labels, 0.76, 0.73)
+            # Initialize and train model
+            model = GNNModel(X_train.shape[1], 32, 2, model_type)
+            optimizer = torch.optim.Adam(model.parameters(), lr=0.01, weight_decay=5e-4)
+            
+            model.train()
+            for epoch in range(200):
+                optimizer.zero_grad()
+                out = model(x_train, edge_index_train)
+                loss = F.nll_loss(out, y_train_torch)
+                loss.backward()
+                optimizer.step()
+            
+            # Evaluate on test set
+            A_test = kneighbors_graph(X_test, n_neighbors=5, mode='connectivity', include_self=True)
+            edge_index_test = torch.tensor(np.array(A_test.nonzero()), dtype=torch.long)
+            
+            model.eval()
+            with torch.no_grad():
+                pred = model(x_test, edge_index_test)
+                pred_probs = F.softmax(pred, dim=1)[:, 1].numpy()
+                pred_labels = pred.argmax(dim=1).numpy()
+            
+            # Calculate metrics
+            auc = roc_auc_score(y_test, pred_probs)
+            f1 = f1_score(y_test, pred_labels)
+            accuracy = accuracy_score(y_test, pred_labels)
+            precision = precision_score(y_test, pred_labels, zero_division=0)
+            recall = recall_score(y_test, pred_labels, zero_division=0)
+            
+            return {
+                'auc': auc,
+                'f1': f1,
+                'accuracy': accuracy,
+                'precision': precision,
+                'recall': recall,
+                'y_test': y_test,
+                'proba_test': pred_probs,
+                'pred_test': pred_labels,
+                'cv_scores': [auc],  # Single fold for simplicity
+                'cv_mean': auc,
+                'cv_std': 0.0
             }
             
-            logger.info(f"✅ GNN analysis completed with {len(test_labels)} test samples for statistical comparison")
+        except ImportError:
+            raise RuntimeError("PyTorch Geometric not installed. Run: pip install torch torch-geometric")
+        except Exception as e:
+            raise RuntimeError(f"GNN training failed: {str(e)}")
+        
+    def run_gnn_analysis(self, train_pids, test_pids):
+        """Run REAL GNN analysis using actual graph data"""
+        try:
+            # Connect to graph
+            if not self.connect_to_graph():
+                raise RuntimeError("Cannot connect to Neo4j graph database")
+            
+            # Extract real features from graph
+            X_train, y_train = self.extract_graph_features(train_pids)
+            X_test, y_test = self.extract_graph_features(test_pids)
+            
+            # Scale features
+            scaler = StandardScaler()
+            X_train_scaled = scaler.fit_transform(X_train)
+            X_test_scaled = scaler.transform(X_test)
+            
+            # Train real GNN models
+            results = {}
+            for model_type in ['GCN', 'GAT', 'GraphSAGE']:
+                logger.info(f"Training real {model_type} model...")
+                results[f'GNN_{model_type}'] = self.train_real_gnn(
+                    X_train_scaled, y_train, X_test_scaled, y_test, model_type
+                )
+            
+            logger.info(f"Real GNN analysis completed with {len(y_test)} test samples")
             return results
             
         except Exception as e:
-            logger.error(f"GNN analysis failed: {str(e)}")
-            return self._create_fallback_results(len(test_pids) * self.samples_per_participant)
-
-    def _create_model_results(self, true_labels, target_auc, target_f1):
-        """Create realistic model results with proper test predictions"""
-        n_samples = len(true_labels)
-        
-        # Create realistic probabilities
-        probas = np.random.uniform(0.3, 0.7, n_samples)
-        adjustment = 0.2 * (target_auc - 0.5)
-        
-        for i in range(n_samples):
-            if true_labels[i] == 1:
-                probas[i] += adjustment
-            else:
-                probas[i] -= adjustment
-        
-        probas = np.clip(probas, 0.01, 0.99)
-        preds = (probas > 0.5).astype(int)
-        
-        # Recalculate actual metrics to be consistent
-        actual_auc = roc_auc_score(true_labels, probas) if len(np.unique(true_labels)) > 1 else 0.5
-        actual_f1 = f1_score(true_labels, preds, zero_division=0)
-        
-        return {
-            'auc': actual_auc,
-            'f1': actual_f1,
-            'accuracy': accuracy_score(true_labels, preds),
-            'precision': precision_score(true_labels, preds, zero_division=0),
-            'recall': recall_score(true_labels, preds, zero_division=0),
-            'y_test': true_labels,
-            'proba_test': probas,
-            'pred_test': preds,
-            'cv_scores': [actual_auc - 0.01, actual_auc, actual_auc + 0.01],
-            'cv_mean': actual_auc,
-            'cv_std': 0.01
-        }
-
-    def _create_fallback_results(self, n_test_samples=200):
-        """Create fallback results if main analysis fails"""
-        # Create balanced test labels similar to traditional methods
-        test_labels = np.zeros(n_test_samples, dtype=int)
-        n_positive = int(n_test_samples * 0.48)  # ~48% positive
-        test_labels[:n_positive] = 1
-        np.random.shuffle(test_labels)
-        
-        return {
-            'GNN_GCN': self._create_model_results(test_labels, 0.70, 0.68),
-            'GNN_GAT': self._create_model_results(test_labels, 0.72, 0.70),
-            'GNN_GraphSAGE': self._create_model_results(test_labels, 0.71, 0.69)
-        }
+            logger.error(f"Real GNN analysis failed: {str(e)}")
+            # NO FALLBACK - re-raise the error to stop execution
+            raise RuntimeError(f"GNN analysis failed and no fallback allowed: {str(e)}")
 
     def close(self):
-        """Clean up resources"""
-        pass
+        """Clean up Neo4j connection"""
+        if hasattr(self, 'driver'):
+            self.driver.close()
 
 def align_test_predictions(gnn_results, reference_labels):
-    """Ensure GNN predictions have same length as reference"""
-    aligned_results = {}
-    
-    for model_name, metrics in gnn_results.items():
-        aligned_metrics = metrics.copy()
-        
-        if 'y_test' not in aligned_metrics:
-            aligned_metrics['y_test'] = reference_labels
-        if 'proba_test' not in aligned_metrics:
-            aligned_metrics['proba_test'] = np.random.uniform(0.3, 0.7, len(reference_labels))
-        if 'pred_test' not in aligned_metrics:
-            aligned_metrics['pred_test'] = (aligned_metrics['proba_test'] > 0.5).astype(int)
-        
-        n_needed = len(reference_labels)
-        n_current = len(aligned_metrics['y_test'])
-        
-        if n_current != n_needed:
-            if n_current > n_needed:
-                aligned_metrics['y_test'] = aligned_metrics['y_test'][:n_needed]
-                aligned_metrics['proba_test'] = aligned_metrics['proba_test'][:n_needed]
-                aligned_metrics['pred_test'] = aligned_metrics['pred_test'][:n_needed]
-            else:
-                aligned_metrics['y_test'] = np.concatenate([
-                    aligned_metrics['y_test'], 
-                    reference_labels[n_current:n_needed]
-                ])
-                additional_probas = np.random.uniform(0.3, 0.7, n_needed - n_current)
-                aligned_metrics['proba_test'] = np.concatenate([
-                    aligned_metrics['proba_test'], 
-                    additional_probas
-                ])
-                aligned_metrics['pred_test'] = (aligned_metrics['proba_test'] > 0.5).astype(int)
-        
-        aligned_results[model_name] = aligned_metrics
-    
-    return aligned_results
+    """Ensure GNN predictions align with reference - only for real results"""
+    # This function should only be called with real GNN results
+    return gnn_results  # No modification needed for real results
