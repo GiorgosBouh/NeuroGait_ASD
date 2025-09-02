@@ -615,107 +615,77 @@ class RealisticAnalysis:
         return X_train_kg, X_test_kg
     
     def _proper_cross_validation(self, X_train, y_train, train_pids, model, cv_folds=5):
-        """Proper participant-level cross-validation without data leakage"""
-        try:
-            sample_groups = train_pids
-            unique_pids = np.unique(sample_groups)
-                
-            if len(unique_pids) < cv_folds:
-                cv_folds = max(2, len(unique_pids))
-                print(f"   ⚠️ Reduced CV folds to {cv_folds} due to limited participants")
-                
-            group_kfold = GroupKFold(n_splits=cv_folds)
-            cv_scores = []
-                
-            X_train_arr = np.asarray(X_train) if not isinstance(X_train, np.ndarray) else X_train
-            y_train_arr = np.asarray(y_train) if not isinstance(y_train, np.ndarray) else y_train
-                
-            fold = 0
-            for train_idx, val_idx in group_kfold.split(X_train_arr, y_train_arr, groups=sample_groups):
-                fold += 1
-                X_fold_train, X_fold_val = X_train_arr[train_idx], X_train_arr[val_idx]
-                y_fold_train, y_fold_val = y_train_arr[train_idx], y_train_arr[val_idx]
-                    
-                    # Skip folds with insufficient data or no class variation
-                if (len(np.unique(y_fold_train)) < 2 or len(np.unique(y_fold_val)) < 2 or
-                    len(y_fold_train) < 10 or len(y_fold_val) < 5):
-                    print(f"   ⚠️ Fold {fold}: Insufficient data - skipping")
-                    continue
-                    
-                    # Train model
-                model_copy = type(model)(**model.get_params())
-                model_copy.fit(X_fold_train, y_fold_train)
-                    
-                    # Get predictions
-                if hasattr(model_copy, "predict_proba"):
-                    y_val_proba = model_copy.predict_proba(X_fold_val)[:, 1]
-                else:
-                    y_val_proba = model_copy.decision_function(X_fold_val)
-                    # Convert decision function to probabilities
-                    y_val_proba = 1 / (1 + np.exp(-y_val_proba))
-                    
-                    # Calculate AUC
-                fold_auc = roc_auc_score(y_fold_val, y_val_proba)
-                    
-                    # Only accept reasonable AUC scores (detect overfitting)
-                if not np.isnan(fold_auc) and 0.4 <= fold_auc <= 0.98:
-                    cv_scores.append(fold_auc)
-                    print(f"   Fold {fold}: AUC={fold_auc:.3f}")
-                else:
-                    print(f"   ⚠️ Fold {fold}: Unrealistic AUC ({fold_auc:.3f}) - likely overfitting, skipping")
-                
-            if len(cv_scores) == 0:
-                raise ValueError("Cross-validation failed - no valid folds completed")
-                    
-            return cv_scores
-                            
-        except Exception as e:
-            print(f"   ❌ CV failed: {str(e)}")
-            raise ValueError(f"Cross-validation failed: {str(e)}")               
+        """Proper participant-level cross-validation - NO FALLBACKS"""
+        sample_groups = train_pids
+        unique_pids = np.unique(sample_groups)
+        
+        if len(unique_pids) < cv_folds:
+            raise ValueError(f"Insufficient participants for {cv_folds}-fold CV. Have {len(unique_pids)} participants, need at least {cv_folds}.")
+        
+        group_kfold = GroupKFold(n_splits=cv_folds)
+        cv_scores = []
+        
+        X_train_arr = np.asarray(X_train) if not isinstance(X_train, np.ndarray) else X_train
+        y_train_arr = np.asarray(y_train) if not isinstance(y_train, np.ndarray) else y_train
+        
+        fold = 0
+        for train_idx, val_idx in group_kfold.split(X_train_arr, y_train_arr, groups=sample_groups):
+            fold += 1
+            X_fold_train, X_fold_val = X_train_arr[train_idx], X_train_arr[val_idx]
+            y_fold_train, y_fold_val = y_train_arr[train_idx], y_train_arr[val_idx]
+            
+            # Verify fold has sufficient data and class variation
+            if (len(np.unique(y_fold_train)) < 2 or len(np.unique(y_fold_val)) < 2 or
+                len(y_fold_train) < 10 or len(y_fold_val) < 5):
+                raise ValueError(f"Fold {fold} has insufficient data or no class variation. Train: {len(y_fold_train)}, Val: {len(y_fold_val)}, Train classes: {len(np.unique(y_fold_train))}, Val classes: {len(np.unique(y_fold_val))}")
+            
+            # Train model
+            model_copy = type(model)(**model.get_params())
+            model_copy.fit(X_fold_train, y_fold_train)
+            
+            # Get predictions
+            if hasattr(model_copy, "predict_proba"):
+                y_val_proba = model_copy.predict_proba(X_fold_val)[:, 1]
+            else:
+                y_val_proba = model_copy.decision_function(X_fold_val)
+                y_val_proba = 1 / (1 + np.exp(-y_val_proba))
+            
+            # Calculate AUC
+            fold_auc = roc_auc_score(y_fold_val, y_val_proba)
+            
+            # Verify AUC is reasonable
+            if np.isnan(fold_auc) or fold_auc < 0.4 or fold_auc > 0.98:
+                raise ValueError(f"Fold {fold} produced unrealistic AUC: {fold_auc}. This indicates overfitting or data issues.")
+            
+            cv_scores.append(fold_auc)
+            print(f"   Fold {fold}: AUC={fold_auc:.3f}")
+        
+        if len(cv_scores) == 0:
+            raise ValueError("Cross-validation failed - no valid folds completed")
+        
+        return cv_scores       
     
     def train_optimized_models(self, X_train, X_test, y_train, y_test, train_pids, approach_name):
-        """Train models with stronger regularization to prevent overfitting"""
+        """Train models - NO FALLBACKS for unrealistic AUC"""
         print(f"\n🚀 TRAINING OPTIMIZED MODELS: {approach_name}")
         print(f"   📊 Data shape: {X_train.shape}")
         
-        # MUCH stronger regularization to prevent overfitting on small datasets
         models = {
             'Logistic Regression': LogisticRegression(
-                random_state=42,
-                max_iter=1000,
-                C=0.001,  # MUCH stronger regularization (was 0.01)
-                solver='liblinear',
-                penalty='l2'
+                random_state=42, max_iter=1000, C=0.001, solver='liblinear', penalty='l2'
             ),
             'Random Forest': RandomForestClassifier(
-                n_estimators=20,   # Fewer trees (was 30)
-                max_depth=3,       # Deeper but still shallow (was 2)
-                min_samples_split=30,  # Higher minimum (was 20)
-                min_samples_leaf=20,   # Higher minimum (was 15)
-                max_features='sqrt',
-                random_state=42,
-                class_weight='balanced'
+                n_estimators=20, max_depth=3, min_samples_split=30, min_samples_leaf=20,
+                max_features='sqrt', random_state=42, class_weight='balanced'
             ),
             'XGBoost': xgb.XGBClassifier(
-                random_state=42,
-                max_depth=3,       # Slightly deeper (was 2)
-                n_estimators=25,   # Fewer trees (was 30)
-                learning_rate=0.005, # Even slower learning (was 0.01)
-                subsample=0.5,     # Stronger subsampling (was 0.6)
-                colsample_bytree=0.5,
-                reg_alpha=3.0,     # Stronger L1 (was 2.0)
-                reg_lambda=3.0,    # Stronger L2 (was 2.0)
-                eval_metric='logloss',
-                verbosity=0,
-                scale_pos_weight=1.0
+                random_state=42, max_depth=3, n_estimators=25, learning_rate=0.005,
+                subsample=0.5, colsample_bytree=0.5, reg_alpha=3.0, reg_lambda=3.0,
+                eval_metric='logloss', verbosity=0, scale_pos_weight=1.0
             ),
             'SVM': SVC(
-                random_state=42,
-                probability=True,
-                C=1.0,           # MUCH stronger regularization (was 0.01)
-                gamma='scale',
-                kernel='rbf',
-                class_weight='balanced'
+                random_state=42, probability=True, C=1.0, gamma='scale',
+                kernel='rbf', class_weight='balanced'
             )
         }
         
@@ -724,106 +694,87 @@ class RealisticAnalysis:
         for model_name, model in models.items():
             print(f"   🔧 Training {model_name}...")
             
-            try:
-                # Cross-validation
-                cv_scores = self._proper_cross_validation(X_train, y_train, train_pids, model)
-                
-                # Skip model if CV completely failed
-                if not cv_scores:
-                    print(f"      ❌ CV failed - skipping {model_name}")
-                    continue
-                
-                # Train final model
-                model.fit(X_train, y_train)
-                
-                # Get predictions
-                y_pred = model.predict(X_test)
-                
-                if hasattr(model, "predict_proba"):
-                    y_pred_proba = model.predict_proba(X_test)[:, 1]
-                else:
-                    y_pred_proba = model.decision_function(X_test)
-                    y_pred_proba = 1 / (1 + np.exp(-y_pred_proba))
-                
-                # Calculate metrics
-                auc = roc_auc_score(y_test, y_pred_proba)
-                accuracy = accuracy_score(y_test, y_pred)
-                precision = precision_score(y_test, y_pred, zero_division=0)
-                recall = recall_score(y_test, y_pred, zero_division=0)
-                f1 = f1_score(y_test, y_pred, zero_division=0)
-                
-                # More realistic AUC range for clinical data but stricter than before
-                if 0.55 <= auc <= 0.98:  # Realistic range for properly regularized models
-                    metrics = {
-                        'cv_scores': cv_scores,
-                        'cv_mean': np.mean(cv_scores),
-                        'cv_std': np.std(cv_scores),
-                        'accuracy': accuracy,
-                        'precision': precision,
-                        'recall': recall,
-                        'f1': f1,
-                        'auc': auc,
-                        'y_test': np.asarray(y_test),
-                        'pred_test': y_pred,
-                        'proba_test': y_pred_proba
-                    }
-                    
-                    results[model_name] = metrics
-                    
-                    # More realistic assessment thresholds
-                    if auc > 0.80:
-                        status = "🎉 Excellent"
-                    elif auc > 0.70:
-                        status = "✅ Very Good"
-                    elif auc > 0.65:
-                        status = "⚖️ Good"
-                    elif auc > 0.60:
-                        status = "📊 Moderate"
-                    else:
-                        status = "📋 Limited"
-                    
-                    cv_info = f"CV={metrics['cv_mean']:.3f}±{metrics['cv_std']:.3f}"
-                    print(f"      {status}: AUC={auc:.3f}, F1={f1:.3f}, {cv_info}")
-                else:
-                    print(f"      ❌ Unrealistic AUC ({auc:.3f}) - likely overfitting or underfitting, skipping {model_name}")
-                
-            except Exception as e:
-                print(f"      ❌ Failed: {str(e)[:50]}")
+            # Cross-validation - MUST succeed
+            cv_scores = self._proper_cross_validation(X_train, y_train, train_pids, model)
+            
+            # Train final model
+            model.fit(X_train, y_train)
+            
+            # Get predictions
+            y_pred = model.predict(X_test)
+            
+            if hasattr(model, "predict_proba"):
+                y_pred_proba = model.predict_proba(X_test)[:, 1]
+            else:
+                y_pred_proba = model.decision_function(X_test)
+                y_pred_proba = 1 / (1 + np.exp(-y_pred_proba))
+            
+            # Calculate metrics
+            auc = roc_auc_score(y_test, y_pred_proba)
+            accuracy = accuracy_score(y_test, y_pred)
+            precision = precision_score(y_test, y_pred, zero_division=0)
+            recall = recall_score(y_test, y_pred, zero_division=0)
+            f1 = f1_score(y_test, y_pred, zero_division=0)
+            
+            # Store results (no AUC filtering)
+            metrics = {
+                'cv_scores': cv_scores,
+                'cv_mean': np.mean(cv_scores),
+                'cv_std': np.std(cv_scores),
+                'accuracy': accuracy,
+                'precision': precision,
+                'recall': recall,
+                'f1': f1,
+                'auc': auc,
+                'y_test': np.asarray(y_test),
+                'pred_test': y_pred,
+                'proba_test': y_pred_proba
+            }
+            
+            results[model_name] = metrics
+            
+            # Assessment without filtering
+            if auc > 0.80:
+                status = "🎉 Excellent"
+            elif auc > 0.70:
+                status = "✅ Very Good"
+            elif auc > 0.65:
+                status = "⚖️ Good"
+            elif auc > 0.60:
+                status = "📊 Moderate"
+            else:
+                status = "📋 Limited"
+            
+            cv_info = f"CV={metrics['cv_mean']:.3f}±{metrics['cv_std']:.3f}"
+            print(f"      {status}: AUC={auc:.3f}, F1={f1:.3f}, {cv_info}")
         
         return results
-    
     def create_neurogait_kg_embeddings(self, train_data, test_data, features):
-        """Create KG embeddings using NeuroGait KG Builder with size matching"""
+        """Create KG embeddings using NeuroGait KG Builder - NO FALLBACKS"""
         print(f"\n🧠 NEUROGAIT KG EMBEDDINGS:")
         
         if not NEUROGAIT_KG_AVAILABLE:
-            print("   ❌ NeuroGait KG Builder not available - falling back to simple KG")
-            return self.create_conservative_kg_embeddings(
-                train_data[features].values, test_data[features].values
-            )
+            raise ImportError("NeuroGait KG Builder not available. Ensure neurogait_kg_builder.py exists and is importable.")
+        
+        # Initialize KG builder
+        kg_builder = SynchronizedLeakageFreeKGBuilder(samples_per_participant=self.samples_per_participant)
+        
+        # Connect to Neo4j - MUST succeed
+        if not kg_builder.connect():
+            raise ConnectionError("Could not connect to Neo4j database. Ensure Neo4j is running and credentials are correct.")
+        
+        print("   🔗 Connected to NeuroGait Knowledge Graph")
+        
+        # Get participant IDs from cleaned data
+        train_pids = train_data['participant_id'].unique()
+        test_pids = test_data['participant_id'].unique()
+        
+        print(f"   📊 Extracting embeddings for {len(train_pids)} train and {len(test_pids)} test participants")
         
         try:
-            # Initialize KG builder
-            kg_builder = SynchronizedLeakageFreeKGBuilder(samples_per_participant=self.samples_per_participant)
-            
-            # Connect to Neo4j
-            if not kg_builder.connect():
-                print("   ⚠️ Could not connect to Neo4j - falling back to simple KG")
-                return self.create_conservative_kg_embeddings(
-                    train_data[features].values, test_data[features].values
-                )
-            
-            print("   🔗 Connected to NeuroGait Knowledge Graph")
-            
-            # Get participant IDs from cleaned data
-            train_pids = train_data['participant_id'].unique()
-            test_pids = test_data['participant_id'].unique()
-            
-            print(f"   📊 Extracting embeddings for {len(train_pids)} train and {len(test_pids)} test participants")
-            
             # Get embeddings from the graph
             with kg_builder.driver.session() as session:
-                # Extract train embeddings for specific sample indices
+                # Extract train embeddings
                 train_query = """
                 MATCH (p:Participant)-[:HAS_SAMPLE]->(s:Sample)-[:HAS_EMBEDDING]->(e:Embedding)
                 WHERE p.original_id IN $participant_ids AND s.data_split = 'train'
@@ -850,96 +801,83 @@ class RealisticAnalysis:
                 
                 for record in test_result:
                     all_test_embeddings[record['sample_index']] = record['embedding']
-            
+        
+        finally:
             kg_builder.close()
-            
-            # Match embeddings to cleaned data indices
-            train_embeddings = []
-            train_matched = 0
-            
-            for idx in train_data.index:
-                if idx in all_train_embeddings:
-                    train_embeddings.append(all_train_embeddings[idx])
-                    train_matched += 1
-                else:
-                    # If no embedding found, use zero vector (fallback)
-                    if train_embeddings:  # If we have at least one embedding to get dimension
-                        train_embeddings.append([0.0] * len(train_embeddings[0]))
-                    else:
-                        train_embeddings.append([0.0] * 18)  # Default dimension
-            
-            test_embeddings = []
-            test_matched = 0
-            
-            for idx in test_data.index:
-                if idx in all_test_embeddings:
-                    test_embeddings.append(all_test_embeddings[idx])
-                    test_matched += 1
-                else:
-                    # If no embedding found, use zero vector (fallback)
-                    if test_embeddings:
-                        test_embeddings.append([0.0] * len(test_embeddings[0]))
-                    else:
-                        test_embeddings.append([0.0] * 18)
-            
-            print(f"   📊 Matched embeddings: {train_matched}/{len(train_data)} train, {test_matched}/{len(test_data)} test")
-            
-            if train_matched < len(train_data) * 0.8 or test_matched < len(test_data) * 0.8:
-                print("   ⚠️ Low embedding match rate - falling back to simple KG")
-                return self.create_conservative_kg_embeddings(
-                    train_data[features].values, test_data[features].values
-                )
-            
-            X_train_kg = np.array(train_embeddings)
-            X_test_kg = np.array(test_embeddings)
-            
-            print(f"   ✅ NeuroGait KG embeddings extracted with size matching")
-            print(f"      Train: {X_train_kg.shape}, Test: {X_test_kg.shape}")
-            
-            return X_train_kg, X_test_kg
-            
-        except Exception as e:
-            print(f"   ❌ NeuroGait KG extraction failed: {str(e)}")
-            print("   🔄 Falling back to simple KG embeddings")
-            return self.create_conservative_kg_embeddings(
-                train_data[features].values, test_data[features].values
-            )
+        
+        # Match embeddings to cleaned data indices - MUST have high match rate
+        train_embeddings = []
+        train_matched = 0
+        
+        for idx in train_data.index:
+            if idx in all_train_embeddings:
+                train_embeddings.append(all_train_embeddings[idx])
+                train_matched += 1
+            else:
+                raise ValueError(f"Missing embedding for train sample index {idx}. KG data may be incomplete or misaligned.")
+        
+        test_embeddings = []
+        test_matched = 0
+        
+        for idx in test_data.index:
+            if idx in all_test_embeddings:
+                test_embeddings.append(all_test_embeddings[idx])
+                test_matched += 1
+            else:
+                raise ValueError(f"Missing embedding for test sample index {idx}. KG data may be incomplete or misaligned.")
+        
+        print(f"   📊 Perfect match: {train_matched}/{len(train_data)} train, {test_matched}/{len(test_data)} test")
+        
+        # Verify we have all embeddings
+        if train_matched != len(train_data):
+            raise ValueError(f"Incomplete train embeddings: got {train_matched}, expected {len(train_data)}")
+        
+        if test_matched != len(test_data):
+            raise ValueError(f"Incomplete test embeddings: got {test_matched}, expected {len(test_data)}")
+        
+        X_train_kg = np.array(train_embeddings)
+        X_test_kg = np.array(test_embeddings)
+        
+        print(f"   ✅ NeuroGait KG embeddings extracted successfully")
+        print(f"      Train: {X_train_kg.shape}, Test: {X_test_kg.shape}")
+        
+        return X_train_kg, X_test_kg
 
     def create_enhanced_features_embeddings(self, train_data, test_data, features):
-        """Create enhanced features using EnhancedKGFeatureBuilder"""
+        """Create enhanced features using EnhancedKGFeatureBuilder - NO FALLBACKS"""
         print(f"\n🔥 ENHANCED KG FEATURES:")
         
         if not ENHANCED_FEATURES_AVAILABLE:
-            print("   ❌ Enhanced features not available - falling back to enhanced embeddings")
-            return self.create_enhanced_kg_embeddings(
-                train_data[features].values, test_data[features].values
-            )
+            raise ImportError("Enhanced features not available. Ensure enhanced_kg_features.py exists and contains EnhancedKGFeatureBuilder class.")
         
-        try:
-            enhancer = EnhancedKGFeatureBuilder()
-            
-            # Create enhanced features for training data
-            X_train_enhanced, feature_names = enhancer.create_enhanced_kg_features(
-                train_data, features
-            )
-            
-            # Create enhanced features for test data
-            X_test_enhanced, _ = enhancer.create_enhanced_kg_features(
-                test_data, features
-            )
-            
-            print(f"   ✅ Enhanced KG features created")
-            print(f"      Train: {X_train_enhanced.shape}, Test: {X_test_enhanced.shape}")
-            print(f"      Features: {len(features)} → {X_train_enhanced.shape[1]} (+{X_train_enhanced.shape[1] - len(features)})")
-            
-            return X_train_enhanced, X_test_enhanced
-            
-        except Exception as e:
-            print(f"   ❌ Enhanced features creation failed: {str(e)}")
-            print("   🔄 Falling back to enhanced embeddings")
-            return self.create_enhanced_kg_embeddings(
-                train_data[features].values, test_data[features].values
-            )
+        enhancer = EnhancedKGFeatureBuilder()
+        
+        # Create enhanced features for training data - MUST succeed
+        X_train_enhanced, feature_names = enhancer.create_enhanced_kg_features(
+            train_data, features
+        )
+        
+        # Create enhanced features for test data - MUST succeed
+        X_test_enhanced, _ = enhancer.create_enhanced_kg_features(
+            test_data, features
+        )
+        
+        # Verify shapes are correct
+        if X_train_enhanced.shape[0] != len(train_data):
+            raise ValueError(f"Train enhanced features shape mismatch: got {X_train_enhanced.shape[0]}, expected {len(train_data)}")
+        
+        if X_test_enhanced.shape[0] != len(test_data):
+            raise ValueError(f"Test enhanced features shape mismatch: got {X_test_enhanced.shape[0]}, expected {len(test_data)}")
+        
+        if X_train_enhanced.shape[1] != X_test_enhanced.shape[1]:
+            raise ValueError(f"Feature dimension mismatch: train {X_train_enhanced.shape[1]} != test {X_test_enhanced.shape[1]}")
+        
+        print(f"   ✅ Enhanced KG features created successfully")
+        print(f"      Train: {X_train_enhanced.shape}, Test: {X_test_enhanced.shape}")
+        print(f"      Features: {len(features)} → {X_train_enhanced.shape[1]} (+{X_train_enhanced.shape[1] - len(features)})")
+        
+        return X_train_enhanced, X_test_enhanced
+                )
     def statistical_comparison_analysis(self, tier1_results):
         """Statistical comparison with proper validation - CLEAN VERSION"""
         print("\n📊 DETAILED STATISTICAL ANALYSIS (sample-level, paired):")
