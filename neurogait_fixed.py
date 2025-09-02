@@ -614,7 +614,7 @@ class RealisticAnalysis:
         
         return X_train_kg, X_test_kg
     
-   def _proper_cross_validation(self, X_train, y_train, train_pids, model, cv_folds=5):
+    def _proper_cross_validation(self, X_train, y_train, train_pids, model, cv_folds=5):
         """Proper participant-level cross-validation - NO FALLBACKS"""
         sample_groups = train_pids
         unique_pids = np.unique(sample_groups)
