@@ -877,7 +877,7 @@ class RealisticAnalysis:
         print(f"      Features: {len(features)} → {X_train_enhanced.shape[1]} (+{X_train_enhanced.shape[1] - len(features)})")
         
         return X_train_enhanced, X_test_enhanced
-        )
+            
     def statistical_comparison_analysis(self, tier1_results):
         """Statistical comparison with proper validation - CLEAN VERSION"""
         print("\n📊 DETAILED STATISTICAL ANALYSIS (sample-level, paired):")
