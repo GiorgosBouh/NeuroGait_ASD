@@ -1664,8 +1664,6 @@ class RealisticAnalysis:
         print("   • Include temporal gait dynamics in parameter optimization")
         print("   • Clinical expert validation of feature relevance")
         print("   • Integration with other diagnostic modalities")
-
-        """Run comprehensive GNN comparison analysis"""
         
         print("🧠 GRAPH NEURAL NETWORK COMPARISON ANALYSIS")
         print("="*70)
@@ -2357,97 +2355,97 @@ class RealisticAnalysis:
             'clinical_set': best_set_name
         }
 
-    def main():
-        """Main execution with KG comparison analysis"""
-        print("🏥 ENHANCED NEUROGAIT ANALYSIS με Clinical Features, Statistics, και KG")
-        print("🎯 Raw vs NeuroGait KG vs Enhanced Features comparison με καλύτερα clinical features")
-        print("🔒 No data leakage ensured")
-        print("📊 Complete statistical analysis με Wilcoxon tests and multiple testing correction")
-        print("🎛️ Hyperparameter tuning για optimal performance")
-        print("🧠 Knowledge Graph και Enhanced Features για advanced analysis")
-        print()
-        
-        # Show available analysis options
-        available_options = [
-            "1. Basic Analysis (Raw vs KG με clinical features και statistics)",
-            "2. Enhanced Analysis (All tiers με comprehensive statistics)",
-            "3. Tuned Analysis (Enhanced + Hyperparameter tuning)",
-            "4. KG Analysis (Raw vs NeuroGait KG vs Enhanced Features)"
-        ]
-        
-        # Check availability
-        if ENHANCED_FEATURES_AVAILABLE:
-            enhanced_status = "✅"
+def main():
+    """Main execution with KG comparison analysis"""
+    print("🏥 ENHANCED NEUROGAIT ANALYSIS με Clinical Features, Statistics, και KG")
+    print("🎯 Raw vs NeuroGait KG vs Enhanced Features comparison με καλύτερα clinical features")
+    print("🔒 No data leakage ensured")
+    print("📊 Complete statistical analysis με Wilcoxon tests and multiple testing correction")
+    print("🎛️ Hyperparameter tuning για optimal performance")
+    print("🧠 Knowledge Graph και Enhanced Features για advanced analysis")
+    print()
+    
+    # Show available analysis options
+    available_options = [
+        "1. Basic Analysis (Raw vs KG με clinical features και statistics)",
+        "2. Enhanced Analysis (All tiers με comprehensive statistics)",
+        "3. Tuned Analysis (Enhanced + Hyperparameter tuning)",
+        "4. KG Analysis (Raw vs NeuroGait KG vs Enhanced Features)"
+    ]
+    
+    # Check availability
+    if ENHANCED_FEATURES_AVAILABLE:
+        enhanced_status = "✅"
+    else:
+        enhanced_status = "⚠️"
+    
+    if NEUROGAIT_KG_AVAILABLE:
+        kg_status = "✅"
+    else:
+        kg_status = "⚠️"
+    
+    print("Available analysis types:")
+    for i, option in enumerate(available_options, 1):
+        if i == 2 or i == 3:
+            print(f"   {enhanced_status} {option}")
+        elif i == 4:
+            print(f"   {kg_status} {option}")
         else:
-            enhanced_status = "⚠️"
+            print(f"   ✅ {option}")
+    
+    if not NEUROGAIT_KG_AVAILABLE:
+        print("\n📋 For NeuroGait KG analysis:")
+        print("   Ensure neurogait_kg_builder.py is available")
+        print("   Run the KG builder first to populate Neo4j")
+    
+    if not ENHANCED_FEATURES_AVAILABLE:
+        print("\n📋 For enhanced features, ensure enhanced_kg_features.py exists")
+    
+    print("\n" + "="*70)
+    
+    # Initialize analyzer
+    analyzer = RealisticAnalysis()
+    
+    try:
+        # Get user choice
+        print("\nChoose analysis type (1-4): ", end="")
+        choice = input().strip()
         
-        if NEUROGAIT_KG_AVAILABLE:
-            kg_status = "✅"
+        if choice == "1":
+            print("\n🚀 Running Basic Analysis...")
+            results = analyzer.run_realistic_analysis()
+            
+        elif choice == "2":
+            print("\n🚀 Running Enhanced Analysis...")
+            results = analyzer.run_enhanced_analysis_with_tuning()
+            
+        elif choice == "3":
+            print("\n🚀 Running Tuned Analysis...")
+            results = analyzer.run_enhanced_analysis_with_tuning()
+            
+        elif choice == "4":
+            print("\n🚀 Running KG Analysis...")
+            results = analyzer.run_kg_comparison_analysis()
+            
         else:
-            kg_status = "⚠️"
+            print("❌ Invalid choice. Running default basic analysis...")
+            results = analyzer.run_realistic_analysis()
         
-        print("Available analysis types:")
-        for i, option in enumerate(available_options, 1):
-            if i == 2 or i == 3:
-                print(f"   {enhanced_status} {option}")
-            elif i == 4:
-                print(f"   {kg_status} {option}")
-            else:
-                print(f"   ✅ {option}")
+        print("\n" + "="*80)
+        print("🎉 ANALYSIS COMPLETED SUCCESSFULLY!")
+        print("="*80)
         
-        if not NEUROGAIT_KG_AVAILABLE:
-            print("\n📋 For NeuroGait KG analysis:")
-            print("   Ensure neurogait_kg_builder.py is available")
-            print("   Run the KG builder first to populate Neo4j")
+        return results
         
-        if not ENHANCED_FEATURES_AVAILABLE:
-            print("\n📋 For enhanced features, ensure enhanced_kg_features.py exists")
+    except KeyboardInterrupt:
+        print("\n\n⚠️ Analysis interrupted by user")
+        return None
         
-        print("\n" + "="*70)
-        
-        # Initialize analyzer
-        analyzer = RealisticAnalysis()
-        
-        try:
-            # Get user choice
-            print("\nChoose analysis type (1-4): ", end="")
-            choice = input().strip()
-            
-            if choice == "1":
-                print("\n🚀 Running Basic Analysis...")
-                results = analyzer.run_realistic_analysis()
-                
-            elif choice == "2":
-                print("\n🚀 Running Enhanced Analysis...")
-                results = analyzer.run_enhanced_analysis_with_tuning()
-                
-            elif choice == "3":
-                print("\n🚀 Running Tuned Analysis...")
-                results = analyzer.run_enhanced_analysis_with_tuning()
-                
-            elif choice == "4":
-                print("\n🚀 Running KG Analysis...")
-                results = analyzer.run_kg_comparison_analysis()
-                
-            else:
-                print("❌ Invalid choice. Running default basic analysis...")
-                results = analyzer.run_realistic_analysis()
-            
-            print("\n" + "="*80)
-            print("🎉 ANALYSIS COMPLETED SUCCESSFULLY!")
-            print("="*80)
-            
-            return results
-            
-        except KeyboardInterrupt:
-            print("\n\n⚠️ Analysis interrupted by user")
-            return None
-            
-        except Exception as e:
-            print(f"\n\n❌ Analysis failed with error: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            return None
+    except Exception as e:
+        print(f"\n\n❌ Analysis failed with error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return None
 
 def run_demo_analysis():
     """Run a demonstration analysis with synthetic data if no dataset is available"""
