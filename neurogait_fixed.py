@@ -793,7 +793,7 @@ class RealisticAnalysis:
         return results
     
     def create_neurogait_kg_embeddings(self, train_data, test_data, features):
-        """Create KG embeddings using NeuroGait KG Builder"""
+        """Create KG embeddings using NeuroGait KG Builder with size matching"""
         print(f"\n🧠 NEUROGAIT KG EMBEDDINGS:")
         
         if not NEUROGAIT_KG_AVAILABLE:
@@ -815,7 +815,7 @@ class RealisticAnalysis:
             
             print("   🔗 Connected to NeuroGait Knowledge Graph")
             
-            # Extract embeddings for train and test data
+            # Get participant IDs from cleaned data
             train_pids = train_data['participant_id'].unique()
             test_pids = test_data['participant_id'].unique()
             
@@ -823,7 +823,7 @@ class RealisticAnalysis:
             
             # Get embeddings from the graph
             with kg_builder.driver.session() as session:
-                # Extract train embeddings
+                # Extract train embeddings for specific sample indices
                 train_query = """
                 MATCH (p:Participant)-[:HAS_SAMPLE]->(s:Sample)-[:HAS_EMBEDDING]->(e:Embedding)
                 WHERE p.original_id IN $participant_ids AND s.data_split = 'train'
@@ -832,12 +832,10 @@ class RealisticAnalysis:
                 """
                 
                 train_result = session.run(train_query, participant_ids=train_pids.tolist())
-                train_embeddings = []
-                train_indices = []
+                all_train_embeddings = {}
                 
                 for record in train_result:
-                    train_embeddings.append(record['embedding'])
-                    train_indices.append(record['sample_index'])
+                    all_train_embeddings[record['sample_index']] = record['embedding']
                 
                 # Extract test embeddings
                 test_query = """
@@ -848,17 +846,46 @@ class RealisticAnalysis:
                 """
                 
                 test_result = session.run(test_query, participant_ids=test_pids.tolist())
-                test_embeddings = []
-                test_indices = []
+                all_test_embeddings = {}
                 
                 for record in test_result:
-                    test_embeddings.append(record['embedding'])
-                    test_indices.append(record['sample_index'])
+                    all_test_embeddings[record['sample_index']] = record['embedding']
             
             kg_builder.close()
             
-            if len(train_embeddings) == 0 or len(test_embeddings) == 0:
-                print("   ⚠️ No embeddings found in graph - falling back to simple KG")
+            # Match embeddings to cleaned data indices
+            train_embeddings = []
+            train_matched = 0
+            
+            for idx in train_data.index:
+                if idx in all_train_embeddings:
+                    train_embeddings.append(all_train_embeddings[idx])
+                    train_matched += 1
+                else:
+                    # If no embedding found, use zero vector (fallback)
+                    if train_embeddings:  # If we have at least one embedding to get dimension
+                        train_embeddings.append([0.0] * len(train_embeddings[0]))
+                    else:
+                        train_embeddings.append([0.0] * 18)  # Default dimension
+            
+            test_embeddings = []
+            test_matched = 0
+            
+            for idx in test_data.index:
+                if idx in all_test_embeddings:
+                    test_embeddings.append(all_test_embeddings[idx])
+                    test_matched += 1
+                else:
+                    # If no embedding found, use zero vector (fallback)
+                    if test_embeddings:
+                        test_embeddings.append([0.0] * len(test_embeddings[0]))
+                    else:
+                        test_embeddings.append([0.0] * 18)
+            
+            print(f"   📊 Matched embeddings: {train_matched}/{len(train_data)} train, {test_matched}/{len(test_data)} test")
+            
+            if train_matched < len(train_data) * 0.8 or test_matched < len(test_data) * 0.8:
+                print("   ⚠️ Low embedding match rate - falling back to simple KG")
                 return self.create_conservative_kg_embeddings(
                     train_data[features].values, test_data[features].values
                 )
@@ -866,7 +893,7 @@ class RealisticAnalysis:
             X_train_kg = np.array(train_embeddings)
             X_test_kg = np.array(test_embeddings)
             
-            print(f"   ✅ NeuroGait KG embeddings extracted")
+            print(f"   ✅ NeuroGait KG embeddings extracted with size matching")
             print(f"      Train: {X_train_kg.shape}, Test: {X_test_kg.shape}")
             
             return X_train_kg, X_test_kg
