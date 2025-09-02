@@ -772,61 +772,107 @@ class RealisticAnalysis:
         print(f"   📊 Extracting embeddings for {len(train_pids)} train and {len(test_pids)} test participants")
         
         try:
-            # Get embeddings from the graph
+            # Get ALL embeddings from the graph for these participants
             with kg_builder.driver.session() as session:
-                # Extract train embeddings
+                # Extract ALL train embeddings for participants (not filtering by sample index)
                 train_query = """
                 MATCH (p:Participant)-[:HAS_SAMPLE]->(s:Sample)-[:HAS_EMBEDDING]->(e:Embedding)
                 WHERE p.original_id IN $participant_ids AND s.data_split = 'train'
-                RETURN s.sample_index as sample_index, e.vector as embedding
-                ORDER BY s.sample_index
+                RETURN p.original_id as participant_id, s.sample_index as sample_index, e.vector as embedding
+                ORDER BY p.original_id, s.sample_index
                 """
                 
                 train_result = session.run(train_query, participant_ids=train_pids.tolist())
-                all_train_embeddings = {}
+                train_kg_data = []
                 
                 for record in train_result:
-                    all_train_embeddings[record['sample_index']] = record['embedding']
+                    train_kg_data.append({
+                        'participant_id': record['participant_id'],
+                        'sample_index': record['sample_index'],
+                        'embedding': record['embedding']
+                    })
                 
-                # Extract test embeddings
+                # Extract ALL test embeddings for participants
                 test_query = """
                 MATCH (p:Participant)-[:HAS_SAMPLE]->(s:Sample)-[:HAS_EMBEDDING]->(e:Embedding)
                 WHERE p.original_id IN $participant_ids AND s.data_split = 'test'
-                RETURN s.sample_index as sample_index, e.vector as embedding
-                ORDER BY s.sample_index
+                RETURN p.original_id as participant_id, s.sample_index as sample_index, e.vector as embedding
+                ORDER BY p.original_id, s.sample_index
                 """
                 
                 test_result = session.run(test_query, participant_ids=test_pids.tolist())
-                all_test_embeddings = {}
+                test_kg_data = []
                 
                 for record in test_result:
-                    all_test_embeddings[record['sample_index']] = record['embedding']
+                    test_kg_data.append({
+                        'participant_id': record['participant_id'],
+                        'sample_index': record['sample_index'],
+                        'embedding': record['embedding']
+                    })
         
         finally:
             kg_builder.close()
         
-        # Match embeddings to cleaned data indices - MUST have high match rate
+        # Convert KG data to DataFrame for easier matching
+        train_kg_df = pd.DataFrame(train_kg_data)
+        test_kg_df = pd.DataFrame(test_kg_data)
+        
+        print(f"   📊 KG embeddings found: {len(train_kg_df)} train, {len(test_kg_df)} test")
+        
+        # Match by participant_id and sample order within each participant
         train_embeddings = []
         train_matched = 0
         
-        for idx in train_data.index:
-            if idx in all_train_embeddings:
-                train_embeddings.append(all_train_embeddings[idx])
-                train_matched += 1
-            else:
-                raise ValueError(f"Missing embedding for train sample index {idx}. KG data may be incomplete or misaligned.")
+        # Group cleaned data by participant
+        train_grouped = train_data.groupby('participant_id')
         
+        for participant_id, group in train_grouped:
+            # Get KG embeddings for this participant
+            participant_kg = train_kg_df[train_kg_df['participant_id'] == participant_id]
+            
+            if len(participant_kg) == 0:
+                raise ValueError(f"No KG embeddings found for train participant {participant_id}")
+            
+            # Sort both by sample order (using first N embeddings for N cleaned samples)
+            participant_kg_sorted = participant_kg.sort_values('sample_index')
+            
+            # Take first N embeddings where N = number of cleaned samples for this participant
+            needed_embeddings = len(group)
+            available_embeddings = len(participant_kg_sorted)
+            
+            if needed_embeddings > available_embeddings:
+                raise ValueError(f"Participant {participant_id} needs {needed_embeddings} embeddings but only {available_embeddings} available in KG")
+            
+            # Use the first N embeddings
+            selected_embeddings = participant_kg_sorted.head(needed_embeddings)['embedding'].tolist()
+            train_embeddings.extend(selected_embeddings)
+            train_matched += len(selected_embeddings)
+        
+        # Same process for test data
         test_embeddings = []
         test_matched = 0
         
-        for idx in test_data.index:
-            if idx in all_test_embeddings:
-                test_embeddings.append(all_test_embeddings[idx])
-                test_matched += 1
-            else:
-                raise ValueError(f"Missing embedding for test sample index {idx}. KG data may be incomplete or misaligned.")
+        test_grouped = test_data.groupby('participant_id')
         
-        print(f"   📊 Perfect match: {train_matched}/{len(train_data)} train, {test_matched}/{len(test_data)} test")
+        for participant_id, group in test_grouped:
+            participant_kg = test_kg_df[test_kg_df['participant_id'] == participant_id]
+            
+            if len(participant_kg) == 0:
+                raise ValueError(f"No KG embeddings found for test participant {participant_id}")
+            
+            participant_kg_sorted = participant_kg.sort_values('sample_index')
+            
+            needed_embeddings = len(group)
+            available_embeddings = len(participant_kg_sorted)
+            
+            if needed_embeddings > available_embeddings:
+                raise ValueError(f"Test participant {participant_id} needs {needed_embeddings} embeddings but only {available_embeddings} available in KG")
+            
+            selected_embeddings = participant_kg_sorted.head(needed_embeddings)['embedding'].tolist()
+            test_embeddings.extend(selected_embeddings)
+            test_matched += len(selected_embeddings)
+        
+        print(f"   📊 Perfect participant-based match: {train_matched}/{len(train_data)} train, {test_matched}/{len(test_data)} test")
         
         # Verify we have all embeddings
         if train_matched != len(train_data):
