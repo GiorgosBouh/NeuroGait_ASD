@@ -749,6 +749,7 @@ class RealisticAnalysis:
             print(f"      {status}: AUC={auc:.3f}, F1={f1:.3f}, {cv_info}")
         
         return results
+   
     def create_neurogait_kg_embeddings(self, train_data, test_data, features):
         """Create KG embeddings using NeuroGait KG Builder - NO FALLBACKS"""
         print(f"\n🧠 NEUROGAIT KG EMBEDDINGS:")
@@ -766,15 +767,64 @@ class RealisticAnalysis:
         print("   🔗 Connected to NeuroGait Knowledge Graph")
         
         # Get participant IDs from cleaned data
-        train_pids = train_data['participant_id'].unique()
-        test_pids = test_data['participant_id'].unique()
+        train_pids = sorted(train_data['participant_id'].unique())
+        test_pids = sorted(test_data['participant_id'].unique())
         
-        print(f"   📊 Extracting embeddings for {len(train_pids)} train and {len(test_pids)} test participants")
+        print(f"   📊 Analysis script - Train participants: {train_pids[:10]}... ({len(train_pids)} total)")
+        print(f"   📊 Analysis script - Test participants: {test_pids[:10]}... ({len(test_pids)} total)")
         
         try:
-            # Get ALL embeddings from the graph for these participants
+            # First, check what participants are actually in the KG
             with kg_builder.driver.session() as session:
-                # Extract ALL train embeddings for participants (not filtering by sample index)
+                # Get all participants from KG
+                kg_participants_query = """
+                MATCH (p:Participant)
+                RETURN p.original_id as participant_id, p.data_split as split
+                ORDER BY p.original_id
+                """
+                
+                kg_result = session.run(kg_participants_query)
+                kg_train_pids = []
+                kg_test_pids = []
+                
+                for record in kg_result:
+                    pid = record['participant_id']
+                    split = record['split']
+                    if split == 'train':
+                        kg_train_pids.append(pid)
+                    elif split == 'test':
+                        kg_test_pids.append(pid)
+                
+                kg_train_pids = sorted(kg_train_pids)
+                kg_test_pids = sorted(kg_test_pids)
+                
+                print(f"   📊 KG - Train participants: {kg_train_pids[:10]}... ({len(kg_train_pids)} total)")
+                print(f"   📊 KG - Test participants: {kg_test_pids[:10]}... ({len(kg_test_pids)} total)")
+                
+                # Check for mismatches
+                train_missing_in_kg = set(train_pids) - set(kg_train_pids)
+                test_missing_in_kg = set(test_pids) - set(kg_test_pids)
+                train_extra_in_kg = set(kg_train_pids) - set(train_pids)
+                test_extra_in_kg = set(kg_test_pids) - set(test_pids)
+                
+                if train_missing_in_kg or test_missing_in_kg or train_extra_in_kg or test_extra_in_kg:
+                    print(f"   ❌ PARTICIPANT SPLIT MISMATCH DETECTED:")
+                    if train_missing_in_kg:
+                        print(f"      Train participants missing in KG: {sorted(train_missing_in_kg)}")
+                    if test_missing_in_kg:
+                        print(f"      Test participants missing in KG: {sorted(test_missing_in_kg)}")
+                    if train_extra_in_kg:
+                        print(f"      Extra train participants in KG: {sorted(train_extra_in_kg)}")
+                    if test_extra_in_kg:
+                        print(f"      Extra test participants in KG: {sorted(test_extra_in_kg)}")
+                    
+                    raise ValueError(f"Participant split mismatch between analysis script and KG. "
+                                f"This indicates the KG was built with different random_state or dataset. "
+                                f"Please rebuild the KG with: python neurogait_kg_builder.py")
+                
+                print(f"   ✅ Participant splits match between analysis script and KG")
+                
+                # Now extract embeddings - we know participants match
                 train_query = """
                 MATCH (p:Participant)-[:HAS_SAMPLE]->(s:Sample)-[:HAS_EMBEDDING]->(e:Embedding)
                 WHERE p.original_id IN $participant_ids AND s.data_split = 'train'
@@ -782,7 +832,7 @@ class RealisticAnalysis:
                 ORDER BY p.original_id, s.sample_index
                 """
                 
-                train_result = session.run(train_query, participant_ids=train_pids.tolist())
+                train_result = session.run(train_query, participant_ids=train_pids)
                 train_kg_data = []
                 
                 for record in train_result:
@@ -792,7 +842,6 @@ class RealisticAnalysis:
                         'embedding': record['embedding']
                     })
                 
-                # Extract ALL test embeddings for participants
                 test_query = """
                 MATCH (p:Participant)-[:HAS_SAMPLE]->(s:Sample)-[:HAS_EMBEDDING]->(e:Embedding)
                 WHERE p.original_id IN $participant_ids AND s.data_split = 'test'
@@ -800,7 +849,7 @@ class RealisticAnalysis:
                 ORDER BY p.original_id, s.sample_index
                 """
                 
-                test_result = session.run(test_query, participant_ids=test_pids.tolist())
+                test_result = session.run(test_query, participant_ids=test_pids)
                 test_kg_data = []
                 
                 for record in test_result:
@@ -813,73 +862,46 @@ class RealisticAnalysis:
         finally:
             kg_builder.close()
         
-        # Convert KG data to DataFrame for easier matching
+        # Convert to DataFrames
         train_kg_df = pd.DataFrame(train_kg_data)
         test_kg_df = pd.DataFrame(test_kg_data)
         
-        print(f"   📊 KG embeddings found: {len(train_kg_df)} train, {len(test_kg_df)} test")
+        print(f"   📊 KG embeddings retrieved: {len(train_kg_df)} train, {len(test_kg_df)} test")
         
-        # Match by participant_id and sample order within each participant
+        # Match by participant and use first N samples per participant
         train_embeddings = []
-        train_matched = 0
-        
-        # Group cleaned data by participant
         train_grouped = train_data.groupby('participant_id')
         
         for participant_id, group in train_grouped:
-            # Get KG embeddings for this participant
             participant_kg = train_kg_df[train_kg_df['participant_id'] == participant_id]
-            
-            if len(participant_kg) == 0:
-                raise ValueError(f"No KG embeddings found for train participant {participant_id}")
-            
-            # Sort both by sample order (using first N embeddings for N cleaned samples)
             participant_kg_sorted = participant_kg.sort_values('sample_index')
             
-            # Take first N embeddings where N = number of cleaned samples for this participant
-            needed_embeddings = len(group)
-            available_embeddings = len(participant_kg_sorted)
+            needed = len(group)
+            available = len(participant_kg_sorted)
             
-            if needed_embeddings > available_embeddings:
-                raise ValueError(f"Participant {participant_id} needs {needed_embeddings} embeddings but only {available_embeddings} available in KG")
+            if available < needed:
+                raise ValueError(f"Participant {participant_id} needs {needed} embeddings but only {available} available")
             
-            # Use the first N embeddings
-            selected_embeddings = participant_kg_sorted.head(needed_embeddings)['embedding'].tolist()
-            train_embeddings.extend(selected_embeddings)
-            train_matched += len(selected_embeddings)
+            # Take first N embeddings for this participant
+            selected = participant_kg_sorted.head(needed)['embedding'].tolist()
+            train_embeddings.extend(selected)
         
-        # Same process for test data
+        # Same for test
         test_embeddings = []
-        test_matched = 0
-        
         test_grouped = test_data.groupby('participant_id')
         
         for participant_id, group in test_grouped:
             participant_kg = test_kg_df[test_kg_df['participant_id'] == participant_id]
-            
-            if len(participant_kg) == 0:
-                raise ValueError(f"No KG embeddings found for test participant {participant_id}")
-            
             participant_kg_sorted = participant_kg.sort_values('sample_index')
             
-            needed_embeddings = len(group)
-            available_embeddings = len(participant_kg_sorted)
+            needed = len(group)
+            available = len(participant_kg_sorted)
             
-            if needed_embeddings > available_embeddings:
-                raise ValueError(f"Test participant {participant_id} needs {needed_embeddings} embeddings but only {available_embeddings} available in KG")
+            if available < needed:
+                raise ValueError(f"Test participant {participant_id} needs {needed} embeddings but only {available} available")
             
-            selected_embeddings = participant_kg_sorted.head(needed_embeddings)['embedding'].tolist()
-            test_embeddings.extend(selected_embeddings)
-            test_matched += len(selected_embeddings)
-        
-        print(f"   📊 Perfect participant-based match: {train_matched}/{len(train_data)} train, {test_matched}/{len(test_data)} test")
-        
-        # Verify we have all embeddings
-        if train_matched != len(train_data):
-            raise ValueError(f"Incomplete train embeddings: got {train_matched}, expected {len(train_data)}")
-        
-        if test_matched != len(test_data):
-            raise ValueError(f"Incomplete test embeddings: got {test_matched}, expected {len(test_data)}")
+            selected = participant_kg_sorted.head(needed)['embedding'].tolist()
+            test_embeddings.extend(selected)
         
         X_train_kg = np.array(train_embeddings)
         X_test_kg = np.array(test_embeddings)
