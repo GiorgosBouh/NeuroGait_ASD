@@ -240,7 +240,7 @@ class RealisticAnalysis:
             # Quick train-test split
             try:
                 X_train, X_test, y_train, y_test = train_test_split(
-                    X, y, test_size=0.3, random_state=42, stratify=y
+                    X, y, test_size=0.25, random_state=42, stratify=y
                 )
             except ValueError as e:
                 print(f"   {set_name.replace('_', ' '):<18}: Split failed - {str(e)[:30]}")
