@@ -1665,7 +1665,6 @@ class RealisticAnalysis:
         print("   • Clinical expert validation of feature relevance")
         print("   • Integration with other diagnostic modalities")
 
-    def run_gnn_comparison_analysis(self):
         """Run comprehensive GNN comparison analysis"""
         
         print("🧠 GRAPH NEURAL NETWORK COMPARISON ANALYSIS")
@@ -1807,119 +1806,119 @@ class RealisticAnalysis:
             }
         }
     def run_kg_comparison_analysis(self):
-    """Run comprehensive KG comparison analysis (Raw vs NeuroGait KG vs Enhanced Features)"""
-    
-    print("🧠 KNOWLEDGE GRAPH COMPARISON ANALYSIS")
-    print("="*70)
-    print("🎯 Comparing: Raw Features, NeuroGait KG, and Enhanced Features")
-    print("🔒 Using actual Neo4j graph structure and enhanced feature engineering")
-    print("📊 Complete statistical comparison")
-    print()
-    
-    # Enhanced preprocessing with clinical features
-    df, best_features, best_set_name, train_indices, test_indices, train_sample_pids, test_pids = self.load_and_prepare_data()
-    train_data, test_data = self.proper_train_test_split(df, train_indices, test_indices)
-    
-    # Preprocess data without leakage
-    train_clean, test_clean, clean_features = self.preprocess_data(train_data, test_data, best_features)
-    
-    # Feature selection
-    X_train, X_test, selected_features = self.optimized_feature_selection(
-        train_clean, test_clean, clean_features
-    )
-    
-    y_train = train_clean['diagnosis']
-    y_test = test_clean['diagnosis']
-    X_train_scaled, X_test_scaled = self.prepare_data_properly(X_train, X_test)
-    
-    # Get sample-level participant IDs for the cleaned training data
-    train_sample_pids_clean = train_clean['participant_id'].values
-    
-    # === TIER 1: RAW CLINICAL FEATURES ===
-    print(f"\n{'='*50}")
-    print("📊 TIER 1: RAW CLINICAL FEATURES")
-    print(f"{'='*50}")
-    
-    raw_results = self.train_optimized_models(
-        X_train_scaled, X_test_scaled, y_train, y_test, train_sample_pids_clean, 
-        f"Raw Clinical Features ({best_set_name})"
-    )
-    
-    # === TIER 2: NEUROGAIT KG EMBEDDINGS ===
-    print(f"\n{'='*50}")
-    print("🧠 TIER 2: NEUROGAIT KG EMBEDDINGS")
-    print(f"{'='*50}")
-    
-    X_train_kg, X_test_kg = self.create_neurogait_kg_embeddings(
-        train_clean, test_clean, selected_features
-    )
-    
-    # Scale if needed (KG embeddings might already be scaled)
-    if X_train_kg.std() > 2:  # If not already standardized
-        scaler_kg = StandardScaler()
-        X_train_kg = scaler_kg.fit_transform(X_train_kg)
-        X_test_kg = scaler_kg.transform(X_test_kg)
-    
-    kg_results = self.train_optimized_models(
-        X_train_kg, X_test_kg, y_train, y_test, train_sample_pids_clean, "NeuroGait KG"
-    )
-    
-    # === TIER 3: ENHANCED FEATURES ===
-    print(f"\n{'='*50}")
-    print("🔥 TIER 3: ENHANCED FEATURES")
-    print(f"{'='*50}")
-    
-    X_train_enhanced, X_test_enhanced = self.create_enhanced_features_embeddings(
-        train_clean, test_clean, selected_features
-    )
-    
-    # Scale enhanced features
-    scaler_enhanced = StandardScaler()
-    X_train_enhanced_scaled = scaler_enhanced.fit_transform(X_train_enhanced)
-    X_test_enhanced_scaled = scaler_enhanced.transform(X_test_enhanced)
-    
-    enhanced_results = self.train_optimized_models(
-        X_train_enhanced_scaled, X_test_enhanced_scaled, y_train, y_test, train_sample_pids_clean, "Enhanced Features"
-    )
-    
-    # === COMPREHENSIVE COMPARISON ===
-    print(f"\n{'='*70}")
-    print("📊 COMPREHENSIVE KG COMPARISON RESULTS")
-    print(f"{'='*70}")
-    
-    # Collect all results
-    all_results = {
-        'Raw Clinical Features': raw_results,
-        'NeuroGait KG': kg_results,
-        'Enhanced Features': enhanced_results
-    }
+        """Run comprehensive KG comparison analysis (Raw vs NeuroGait KG vs Enhanced Features)"""
+        
+        print("🧠 KNOWLEDGE GRAPH COMPARISON ANALYSIS")
+        print("="*70)
+        print("🎯 Comparing: Raw Features, NeuroGait KG, and Enhanced Features")
+        print("🔒 Using actual Neo4j graph structure and enhanced feature engineering")
+        print("📊 Complete statistical comparison")
+        print()
+        
+        # Enhanced preprocessing with clinical features
+        df, best_features, best_set_name, train_indices, test_indices, train_sample_pids, test_pids = self.load_and_prepare_data()
+        train_data, test_data = self.proper_train_test_split(df, train_indices, test_indices)
+        
+        # Preprocess data without leakage
+        train_clean, test_clean, clean_features = self.preprocess_data(train_data, test_data, best_features)
+        
+        # Feature selection
+        X_train, X_test, selected_features = self.optimized_feature_selection(
+            train_clean, test_clean, clean_features
+        )
+        
+        y_train = train_clean['diagnosis']
+        y_test = test_clean['diagnosis']
+        X_train_scaled, X_test_scaled = self.prepare_data_properly(X_train, X_test)
+        
+        # Get sample-level participant IDs for the cleaned training data
+        train_sample_pids_clean = train_clean['participant_id'].values
+        
+        # === TIER 1: RAW CLINICAL FEATURES ===
+        print(f"\n{'='*50}")
+        print("📊 TIER 1: RAW CLINICAL FEATURES")
+        print(f"{'='*50}")
+        
+        raw_results = self.train_optimized_models(
+            X_train_scaled, X_test_scaled, y_train, y_test, train_sample_pids_clean, 
+            f"Raw Clinical Features ({best_set_name})"
+        )
+        
+        # === TIER 2: NEUROGAIT KG EMBEDDINGS ===
+        print(f"\n{'='*50}")
+        print("🧠 TIER 2: NEUROGAIT KG EMBEDDINGS")
+        print(f"{'='*50}")
+        
+        X_train_kg, X_test_kg = self.create_neurogait_kg_embeddings(
+            train_clean, test_clean, selected_features
+        )
+        
+        # Scale if needed (KG embeddings might already be scaled)
+        if X_train_kg.std() > 2:  # If not already standardized
+            scaler_kg = StandardScaler()
+            X_train_kg = scaler_kg.fit_transform(X_train_kg)
+            X_test_kg = scaler_kg.transform(X_test_kg)
+        
+        kg_results = self.train_optimized_models(
+            X_train_kg, X_test_kg, y_train, y_test, train_sample_pids_clean, "NeuroGait KG"
+        )
+        
+        # === TIER 3: ENHANCED FEATURES ===
+        print(f"\n{'='*50}")
+        print("🔥 TIER 3: ENHANCED FEATURES")
+        print(f"{'='*50}")
+        
+        X_train_enhanced, X_test_enhanced = self.create_enhanced_features_embeddings(
+            train_clean, test_clean, selected_features
+        )
+        
+        # Scale enhanced features
+        scaler_enhanced = StandardScaler()
+        X_train_enhanced_scaled = scaler_enhanced.fit_transform(X_train_enhanced)
+        X_test_enhanced_scaled = scaler_enhanced.transform(X_test_enhanced)
+        
+        enhanced_results = self.train_optimized_models(
+            X_train_enhanced_scaled, X_test_enhanced_scaled, y_train, y_test, train_sample_pids_clean, "Enhanced Features"
+        )
+        
+        # === COMPREHENSIVE COMPARISON ===
+        print(f"\n{'='*70}")
+        print("📊 COMPREHENSIVE KG COMPARISON RESULTS")
+        print(f"{'='*70}")
+        
+        # Collect all results
+        all_results = {
+            'Raw Clinical Features': raw_results,
+            'NeuroGait KG': kg_results,
+            'Enhanced Features': enhanced_results
+        }
 
-    # Statistical comparison
-    statistical_results = self.statistical_comparison_analysis(all_results)
-    
-    # Print results
-    self.print_kg_comparison_results(all_results, best_set_name, {
-        'train_participants': len(np.unique(train_sample_pids_clean)),
-        'test_participants': len(test_pids),
-        'original_features': len(best_features),
-        'selected_features': len(selected_features)
-    }, statistical_results)
-    
-    return {
-        'all_results': all_results,
-        'statistical_results': statistical_results,
-        'data_summary': {
+        # Statistical comparison
+        statistical_results = self.statistical_comparison_analysis(all_results)
+        
+        # Print results
+        self.print_kg_comparison_results(all_results, best_set_name, {
             'train_participants': len(np.unique(train_sample_pids_clean)),
             'test_participants': len(test_pids),
-            'train_samples': len(X_train),
-            'test_samples': len(X_test)
-        },
-        'feature_info': {
-            'clinical_set': best_set_name,
-            'original_count': len(best_features),
-            'selected_count': len(selected_features)
+            'original_features': len(best_features),
+            'selected_features': len(selected_features)
+        }, statistical_results)
+        
+        return {
+            'all_results': all_results,
+            'statistical_results': statistical_results,
+            'data_summary': {
+                'train_participants': len(np.unique(train_sample_pids_clean)),
+                'test_participants': len(test_pids),
+                'train_samples': len(X_train),
+                'test_samples': len(X_test)
+            },
+            'feature_info': {
+                'clinical_set': best_set_name,
+                'original_count': len(best_features),
+                'selected_count': len(selected_features)
+            }
         }
-    }
 
     def print_kg_comparison_results(self, all_results, clinical_set_name, data_summary, statistical_results):
         """Print comprehensive KG comparison results"""
@@ -2055,6 +2054,7 @@ class RealisticAnalysis:
         else:
             print("   📋 Raw clinical features remain competitive")
             print("   → Simple approaches may be sufficient")
+
     def _create_placeholder_gnn_results(self):
         """Create realistic placeholder GNN results"""
         base_auc = 0.62
@@ -2078,7 +2078,6 @@ class RealisticAnalysis:
         
         return placeholder_results
     
-    def print_gnn_comparison_results(self, all_results, clinical_set_name, data_summary, statistical_results):
         """Print comprehensive GNN comparison results with statistical analysis"""
         
         print("🎯 COMPREHENSIVE GNN COMPARISON RESULTS")
@@ -2358,7 +2357,6 @@ class RealisticAnalysis:
             'clinical_set': best_set_name
         }
 
-# MAIN FUNCTION με GNN Support
     def main():
         """Main execution with KG comparison analysis"""
         print("🏥 ENHANCED NEUROGAIT ANALYSIS με Clinical Features, Statistics, και KG")
@@ -2430,96 +2428,6 @@ class RealisticAnalysis:
             elif choice == "4":
                 print("\n🚀 Running KG Analysis...")
                 results = analyzer.run_kg_comparison_analysis()
-                
-            else:
-                print("❌ Invalid choice. Running default basic analysis...")
-                results = analyzer.run_realistic_analysis()
-            
-            print("\n" + "="*80)
-            print("🎉 ANALYSIS COMPLETED SUCCESSFULLY!")
-            print("="*80)
-            
-            return results
-            
-        except KeyboardInterrupt:
-            print("\n\n⚠️ Analysis interrupted by user")
-            return None
-            
-        except Exception as e:
-            print(f"\n\n❌ Analysis failed with error: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            return None
-        """Main execution with clinical features, comprehensive statistical analysis, hyperparameter tuning, and GNN support"""
-        print("🏥 ENHANCED NEUROGAIT ANALYSIS με Clinical Features, Statistics, και GNN")
-        print("🎯 Raw vs KG vs GNN comparison με καλύτερα clinical features")
-        print("🔒 No data leakage ensured")
-        print("📊 Complete statistical analysis με Wilcoxon tests and multiple testing correction")
-        print("🎛️ Hyperparameter tuning για optimal performance")
-        print("🤖 Graph Neural Networks για advanced analysis")
-        print()
-        
-        # Show available analysis options
-        available_options = [
-            "1. Basic Analysis (Raw vs KG με clinical features και statistics)",
-            "2. Enhanced Analysis (All tiers με comprehensive statistics)",
-            "3. Tuned Analysis (Enhanced + Hyperparameter tuning)",
-            "4. GNN Analysis (Raw vs KG vs Enhanced KG vs True GNN)"
-        ]
-        
-        # Check availability
-        if ENHANCED_FEATURES_AVAILABLE:
-            enhanced_status = "✅"
-        else:
-            enhanced_status = "⚠️"
-        
-        if GNN_ANALYSIS_AVAILABLE:
-            gnn_status = "✅"
-        else:
-            gnn_status = "⚠️"
-        
-        print("Available analysis types:")
-        for i, option in enumerate(available_options, 1):
-            if i == 2 or i == 3:
-                print(f"   {enhanced_status} {option}")
-            elif i == 4:
-                print(f"   {gnn_status} {option}")
-            else:
-                print(f"   ✅ {option}")
-        
-        if not GNN_ANALYSIS_AVAILABLE:
-            print("\n📋 For GNN analysis, install requirements:")
-            print("   pip install torch torch-geometric")
-            print("   Create true_gnn_analysis.py module")
-        
-        if not ENHANCED_FEATURES_AVAILABLE:
-            print("\n📋 For enhanced KG features, create enhanced_kg_features.py module")
-        
-        print("\n" + "="*70)
-        
-        # Initialize analyzer
-        analyzer = RealisticAnalysis()
-        
-        try:
-            # Get user choice
-            print("\nChoose analysis type (1-4): ", end="")
-            choice = input().strip()
-            
-            if choice == "1":
-                print("\n🚀 Running Basic Analysis...")
-                results = analyzer.run_realistic_analysis()
-                
-            elif choice == "2":
-                print("\n🚀 Running Enhanced Analysis...")
-                results = analyzer.run_enhanced_analysis_with_tuning()
-                
-            elif choice == "3":
-                print("\n🚀 Running Tuned Analysis...")
-                results = analyzer.run_enhanced_analysis_with_tuning()
-                
-            elif choice == "4":
-                print("\n🚀 Running GNN Analysis...")
-                results = analyzer.run_gnn_comparison_analysis()
                 
             else:
                 print("❌ Invalid choice. Running default basic analysis...")
