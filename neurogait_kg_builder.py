@@ -63,7 +63,7 @@ class SynchronizedLeakageFreeKGBuilder:
         self.config = {
             'embedding_dim': len(self.essential_movement_features),
             'min_feature_variance': 0.01,
-            'test_size': 0.2,
+            'test_size': 0.25,
             'random_state': 42,  # CRITICAL: Same as analysis script
             'use_pca': False,
             'strict_leakage_prevention': True
