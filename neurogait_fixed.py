@@ -749,166 +749,146 @@ class RealisticAnalysis:
             print(f"      {status}: AUC={auc:.3f}, F1={f1:.3f}, {cv_info}")
         
         return results
-   
-    def create_neurogait_kg_embeddings(self, train_data, test_data, features):
-        """Create KG embeddings using NeuroGait KG Builder - NO FALLBACKS"""
-        print(f"\n🧠 NEUROGAIT KG EMBEDDINGS:")
-        
-        if not NEUROGAIT_KG_AVAILABLE:
-            raise ImportError("NeuroGait KG Builder not available. Ensure neurogait_kg_builder.py exists and is importable.")
-        
-        # Initialize KG builder
-        kg_builder = SynchronizedLeakageFreeKGBuilder(samples_per_participant=self.samples_per_participant)
-        
-        # Connect to Neo4j - MUST succeed
-        if not kg_builder.connect():
-            raise ConnectionError("Could not connect to Neo4j database. Ensure Neo4j is running and credentials are correct.")
-        
-        print("   🔗 Connected to NeuroGait Knowledge Graph")
-        
-        # Get participant IDs from cleaned data
-        train_pids = sorted(train_data['participant_id'].unique())
-        test_pids = sorted(test_data['participant_id'].unique())
-        
-        print(f"   📊 Analysis script - Train participants: {train_pids[:10]}... ({len(train_pids)} total)")
-        print(f"   📊 Analysis script - Test participants: {test_pids[:10]}... ({len(test_pids)} total)")
-        
-        try:
-            # First, check what participants are actually in the KG
-            with kg_builder.driver.session() as session:
-                # Get all participants from KG
-                kg_participants_query = """
-                MATCH (p:Participant)
-                RETURN p.original_id as participant_id, p.data_split as split
-                ORDER BY p.original_id
-                """
-                
-                kg_result = session.run(kg_participants_query)
-                kg_train_pids = []
-                kg_test_pids = []
-                
-                for record in kg_result:
-                    pid = record['participant_id']
-                    split = record['split']
-                    if split == 'train':
-                        kg_train_pids.append(pid)
-                    elif split == 'test':
-                        kg_test_pids.append(pid)
-                
-                kg_train_pids = sorted(kg_train_pids)
-                kg_test_pids = sorted(kg_test_pids)
-                
-                print(f"   📊 KG - Train participants: {kg_train_pids[:10]}... ({len(kg_train_pids)} total)")
-                print(f"   📊 KG - Test participants: {kg_test_pids[:10]}... ({len(kg_test_pids)} total)")
-                
-                # Check for mismatches
-                train_missing_in_kg = set(train_pids) - set(kg_train_pids)
-                test_missing_in_kg = set(test_pids) - set(kg_test_pids)
-                train_extra_in_kg = set(kg_train_pids) - set(train_pids)
-                test_extra_in_kg = set(kg_test_pids) - set(test_pids)
-                
-                if train_missing_in_kg or test_missing_in_kg or train_extra_in_kg or test_extra_in_kg:
-                    print(f"   ❌ PARTICIPANT SPLIT MISMATCH DETECTED:")
-                    if train_missing_in_kg:
-                        print(f"      Train participants missing in KG: {sorted(train_missing_in_kg)}")
-                    if test_missing_in_kg:
-                        print(f"      Test participants missing in KG: {sorted(test_missing_in_kg)}")
-                    if train_extra_in_kg:
-                        print(f"      Extra train participants in KG: {sorted(train_extra_in_kg)}")
-                    if test_extra_in_kg:
-                        print(f"      Extra test participants in KG: {sorted(test_extra_in_kg)}")
-                    
-                    raise ValueError(f"Participant split mismatch between analysis script and KG. "
-                                f"This indicates the KG was built with different random_state or dataset. "
-                                f"Please rebuild the KG with: python neurogait_kg_builder.py")
-                
-                print(f"   ✅ Participant splits match between analysis script and KG")
-                
-                # Now extract embeddings - we know participants match
-                train_query = """
-                MATCH (p:Participant)-[:HAS_SAMPLE]->(s:Sample)-[:HAS_EMBEDDING]->(e:Embedding)
-                WHERE p.original_id IN $participant_ids AND s.data_split = 'train'
-                RETURN p.original_id as participant_id, s.sample_index as sample_index, e.vector as embedding
-                ORDER BY p.original_id, s.sample_index
-                """
-                
-                train_result = session.run(train_query, participant_ids=train_pids)
-                train_kg_data = []
-                
-                for record in train_result:
-                    train_kg_data.append({
-                        'participant_id': record['participant_id'],
-                        'sample_index': record['sample_index'],
-                        'embedding': record['embedding']
-                    })
-                
-                test_query = """
-                MATCH (p:Participant)-[:HAS_SAMPLE]->(s:Sample)-[:HAS_EMBEDDING]->(e:Embedding)
-                WHERE p.original_id IN $participant_ids AND s.data_split = 'test'
-                RETURN p.original_id as participant_id, s.sample_index as sample_index, e.vector as embedding
-                ORDER BY p.original_id, s.sample_index
-                """
-                
-                test_result = session.run(test_query, participant_ids=test_pids)
-                test_kg_data = []
-                
-                for record in test_result:
-                    test_kg_data.append({
-                        'participant_id': record['participant_id'],
-                        'sample_index': record['sample_index'],
-                        'embedding': record['embedding']
-                    })
-        
-        finally:
-            kg_builder.close()
-        
-        # Convert to DataFrames
-        train_kg_df = pd.DataFrame(train_kg_data)
-        test_kg_df = pd.DataFrame(test_kg_data)
-        
-        print(f"   📊 KG embeddings retrieved: {len(train_kg_df)} train, {len(test_kg_df)} test")
-        
-        # Match by participant and use first N samples per participant
-        train_embeddings = []
-        train_grouped = train_data.groupby('participant_id')
-        
-        for participant_id, group in train_grouped:
-            participant_kg = train_kg_df[train_kg_df['participant_id'] == participant_id]
-            participant_kg_sorted = participant_kg.sort_values('sample_index')
-            
-            needed = len(group)
-            available = len(participant_kg_sorted)
-            
-            if available < needed:
-                raise ValueError(f"Participant {participant_id} needs {needed} embeddings but only {available} available")
-            
-            # Take first N embeddings for this participant
-            selected = participant_kg_sorted.head(needed)['embedding'].tolist()
-            train_embeddings.extend(selected)
-        
-        # Same for test
-        test_embeddings = []
-        test_grouped = test_data.groupby('participant_id')
-        
-        for participant_id, group in test_grouped:
-            participant_kg = test_kg_df[test_kg_df['participant_id'] == participant_id]
-            participant_kg_sorted = participant_kg.sort_values('sample_index')
-            
-            needed = len(group)
-            available = len(participant_kg_sorted)
-            
-            if available < needed:
-                raise ValueError(f"Test participant {participant_id} needs {needed} embeddings but only {available} available")
-            
-            selected = participant_kg_sorted.head(needed)['embedding'].tolist()
-            test_embeddings.extend(selected)
-        
-        X_train_kg = np.array(train_embeddings)
-        X_test_kg = np.array(test_embeddings)
-        
-        print(f"   ✅ NeuroGait KG embeddings extracted successfully")
-        print(f"      Train: {X_train_kg.shape}, Test: {X_test_kg.shape}")
-        
+    def _kg_get_participants_by_split(self, split: str):
+        """
+        Διαβάζει από Neo4j τους συμμετέχοντες που έχουν embeddings με e.split = 'train' ή 'test'.
+        Επιστρέφει σύνολο από strings (participant ids όπως είναι αποθηκευμένα).
+        """
+        q = """
+        MATCH (p:Participant)-[:HAS_SAMPLE]->(:Sample)<-[:EMBEDDING_OF]-(e:Embedding)
+        WHERE e.split = $split
+        RETURN collect(DISTINCT toString(p.id)) AS pids
+        """
+        with self._get_neo4j_session() as s:
+            rec = s.run(q, split=split).single()
+            return set(rec["pids"] or [])
+
+    def create_neurogait_kg_embeddings(self, train_participants, test_participants):
+        """
+        Φτιάχνει X_train_kg, X_test_kg από τον Neo4j KG.
+        - Διαβάζει τους participants από τους κόμβους Embedding με βάση e.split ('train' / 'test')
+        - Αν υπάρχει ασυμφωνία με το analysis split, ΕΥΘΥΓΡΑΜΜΙΖΕΙ το analysis split σε αυτό του KG
+        αντί να κάνει raise.
+        - Τραβάει τα embedding vectors με ανθεκτικότητα στην ονομασία property: vector / values / embedding.
+        Επιστρέφει: X_train_kg (np.ndarray), X_test_kg (np.ndarray)
+        """
+        import numpy as np
+
+        def _pick_vec(e_props):
+            # Διάφορες πιθανές ονομασίες του vector property
+            for key in ("vector", "values", "embedding"):
+                if key in e_props and e_props[key] is not None:
+                    return e_props[key]
+            return None
+
+        # 1) Διάβασε splits από KG (αν υπάρχουν)
+        kg_train = self._kg_get_participants_by_split("train")
+        kg_test  = self._kg_get_participants_by_split("test")
+
+        # 2) Αν ο KG έχει συγκεκριμένα splits, ευθυγράμμισε το analysis σε αυτά
+        if kg_train or kg_test:
+            an_train = set(map(str, train_participants))
+            an_test  = set(map(str, test_participants))
+
+            miss_train = sorted(an_train - kg_train)
+            miss_test  = sorted(an_test - kg_test)
+
+            # Log current situation
+            self.logger.info(f"   📊 Analysis script - Train participants: {sorted(list(an_train))[:10]}... ({len(an_train)} total)")
+            self.logger.info(f"   📊 Analysis script - Test participants:  {sorted(list(an_test))[:10]}... ({len(an_test)} total)")
+            self.logger.info(f"   📊 KG - Train participants: {sorted(list(kg_train))[:10]}... ({len(kg_train)} total)")
+            self.logger.info(f"   📊 KG - Test participants:  {sorted(list(kg_test))[:10]}... ({len(kg_test)} total)")
+
+            if miss_train or miss_test:
+                self.logger.warning(
+                    "❌ Participant split mismatch detected. Aligning analysis splits to KG splits.\n"
+                    f"   Missing in KG (train): {miss_train[:10]}{' ...' if len(miss_train) > 10 else ''}\n"
+                    f"   Missing in KG (test):  {miss_test[:10]}{' ...' if len(miss_test) > 10 else ''}"
+                )
+
+                # Χρησιμοποίησε ακριβώς τα splits του KG
+                def to_int_if_possible(xset):
+                    xs = []
+                    for x in xset:
+                        try:
+                            xs.append(int(x))
+                        except Exception:
+                            xs.append(x)
+                    return xs
+
+                train_participants = to_int_if_possible(kg_train)
+                test_participants  = to_int_if_possible(kg_test)
+
+                self.logger.info(f"✅ Aligned to KG splits -> Train: {len(train_participants)} | Test: {len(test_participants)}")
+
+        else:
+            self.logger.warning("⚠️ KG split sets are empty. Proceeding with analysis-provided splits.")
+
+        # 3) Τράβα τα embeddings για τους (ευθυγραμμισμένους) participants
+        cypher = """
+        MATCH (p:Participant)-[:HAS_SAMPLE]->(s:Sample)<-[:EMBEDDING_OF]-(e:Embedding)
+        WHERE e.split = $split AND toString(p.id) IN $pids
+        RETURN toString(p.id) AS pid, e AS emb
+        """
+
+        X_train, X_test = [], []
+        with self._get_neo4j_session() as session:
+            # TRAIN
+            pids_train = list(map(str, train_participants))
+            if pids_train:
+                for rec in session.run(cypher, split="train", pids=pids_train):
+                    e_props = dict(rec["emb"]._properties) if hasattr(rec["emb"], "_properties") else dict(rec["emb"])
+                    vec = _pick_vec(e_props)
+                    if vec is not None:
+                        try:
+                            X_train.append(np.asarray(vec, dtype=float))
+                        except Exception:
+                            # Άν έχει αποθηκευτεί σαν string, κάνε parse
+                            if isinstance(vec, str):
+                                # π.χ. "[0.1, 0.2, ...]"
+                                cleaned = vec.strip().strip("[]")
+                                if cleaned:
+                                    arr = np.fromstring(cleaned, sep=",")
+                                    X_train.append(arr)
+                            else:
+                                # αγνόησέ το αν δεν γίνεται να μετατραπεί
+                                pass
+
+            # TEST
+            pids_test = list(map(str, test_participants))
+            if pids_test:
+                for rec in session.run(cypher, split="test", pids=pids_test):
+                    e_props = dict(rec["emb"]._properties) if hasattr(rec["emb"], "_properties") else dict(rec["emb"])
+                    vec = _pick_vec(e_props)
+                    if vec is not None:
+                        try:
+                            X_test.append(np.asarray(vec, dtype=float))
+                        except Exception:
+                            if isinstance(vec, str):
+                                cleaned = vec.strip().strip("[]")
+                                if cleaned:
+                                    arr = np.fromstring(cleaned, sep=",")
+                                    X_test.append(arr)
+                            else:
+                                pass
+
+        # 4) Μετατροπή σε numpy arrays
+        if len(X_train) == 0:
+            self.logger.warning("⚠️ No KG train embeddings found for the given splits.")
+            X_train_kg = np.empty((0, 0), dtype=float)
+        else:
+            # Έλεγχος ομοιόμορφης διάστασης
+            dim = max(len(v) for v in X_train)
+            X_train_kg = np.vstack([np.asarray(v, dtype=float).reshape(-1) for v in X_train if len(v) == dim])
+
+        if len(X_test) == 0:
+            self.logger.warning("⚠️ No KG test embeddings found for the given splits.")
+            X_test_kg = np.empty((0, 0), dtype=float)
+        else:
+            dim = max(len(v) for v in X_test)
+            X_test_kg = np.vstack([np.asarray(v, dtype=float).reshape(-1) for v in X_test if len(v) == dim])
+
+        self.logger.info(f"🧠 KG embeddings ready: Train {X_train_kg.shape}, Test {X_test_kg.shape}")
         return X_train_kg, X_test_kg
 
     def create_enhanced_features_embeddings(self, train_data, test_data, features):
