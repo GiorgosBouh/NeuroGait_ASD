@@ -763,68 +763,61 @@ class RealisticAnalysis:
             rec = s.run(q, split=split).single()
             return set(rec["pids"] or [])
 
-    def create_neurogait_kg_embeddings(self, train_participants, test_participants):
+    def create_neurogait_kg_embeddings(self, train_participants, test_participants, *args, align_with_kg=True, **kwargs):
         """
         Φτιάχνει X_train_kg, X_test_kg από τον Neo4j KG.
-        - Διαβάζει τους participants από τους κόμβους Embedding με βάση e.split ('train' / 'test')
-        - Αν υπάρχει ασυμφωνία με το analysis split, ΕΥΘΥΓΡΑΜΜΙΖΕΙ το analysis split σε αυτό του KG
-        αντί να κάνει raise.
-        - Τραβάει τα embedding vectors με ανθεκτικότητα στην ονομασία property: vector / values / embedding.
+        Συμβατή με παλιές κλήσεις που ίσως περνάνε και 3ο positional όρισμα.
+        - Διαβάζει τους participants από τους κόμβους Embedding με e.split = 'train'/'test'
+        - Αν υπάρχει ασυμφωνία με τα splits του analysis, ευθυγραμμίζει στο KG (εκτός αν align_with_kg=False)
+        - Τραβάει τα vectors από ιδιότητες: vector / values / embedding (ό,τι υπάρχει)
         Επιστρέφει: X_train_kg (np.ndarray), X_test_kg (np.ndarray)
         """
         import numpy as np
 
         def _pick_vec(e_props):
-            # Διάφορες πιθανές ονομασίες του vector property
+            # πιθανές ονομασίες property για το embedding vector
             for key in ("vector", "values", "embedding"):
                 if key in e_props and e_props[key] is not None:
                     return e_props[key]
             return None
 
-        # 1) Διάβασε splits από KG (αν υπάρχουν)
+        # --- 1) Διάβασε splits από KG
         kg_train = self._kg_get_participants_by_split("train")
         kg_test  = self._kg_get_participants_by_split("test")
 
-        # 2) Αν ο KG έχει συγκεκριμένα splits, ευθυγράμμισε το analysis σε αυτά
-        if kg_train or kg_test:
-            an_train = set(map(str, train_participants))
-            an_test  = set(map(str, test_participants))
+        # --- 2) Logging κατάστασης
+        an_train = set(map(str, train_participants))
+        an_test  = set(map(str, test_participants))
+        self.logger.info(f"   📊 Analysis script - Train participants: {sorted(list(an_train))[:10]}... ({len(an_train)} total)")
+        self.logger.info(f"   📊 Analysis script - Test participants:  {sorted(list(an_test))[:10]}... ({len(an_test)} total)")
+        self.logger.info(f"   📊 KG - Train participants: {sorted(list(kg_train))[:10]}... ({len(kg_train)} total)")
+        self.logger.info(f"   📊 KG - Test participants:  {sorted(list(kg_test))[:10]}... ({len(kg_test)} total)")
 
+        # --- 3) Ευθυγράμμιση με KG (αν έχει δεδομένα και είναι ενεργοποιημένο)
+        if align_with_kg and (kg_train or kg_test):
             miss_train = sorted(an_train - kg_train)
             miss_test  = sorted(an_test - kg_test)
-
-            # Log current situation
-            self.logger.info(f"   📊 Analysis script - Train participants: {sorted(list(an_train))[:10]}... ({len(an_train)} total)")
-            self.logger.info(f"   📊 Analysis script - Test participants:  {sorted(list(an_test))[:10]}... ({len(an_test)} total)")
-            self.logger.info(f"   📊 KG - Train participants: {sorted(list(kg_train))[:10]}... ({len(kg_train)} total)")
-            self.logger.info(f"   📊 KG - Test participants:  {sorted(list(kg_test))[:10]}... ({len(kg_test)} total)")
-
             if miss_train or miss_test:
                 self.logger.warning(
                     "❌ Participant split mismatch detected. Aligning analysis splits to KG splits.\n"
                     f"   Missing in KG (train): {miss_train[:10]}{' ...' if len(miss_train) > 10 else ''}\n"
                     f"   Missing in KG (test):  {miss_test[:10]}{' ...' if len(miss_test) > 10 else ''}"
                 )
-
-                # Χρησιμοποίησε ακριβώς τα splits του KG
-                def to_int_if_possible(xset):
-                    xs = []
+                def _to_int_if_possible(xset):
+                    out = []
                     for x in xset:
                         try:
-                            xs.append(int(x))
+                            out.append(int(x))
                         except Exception:
-                            xs.append(x)
-                    return xs
-
-                train_participants = to_int_if_possible(kg_train)
-                test_participants  = to_int_if_possible(kg_test)
-
+                            out.append(x)
+                    return out
+                train_participants = _to_int_if_possible(kg_train)
+                test_participants  = _to_int_if_possible(kg_test)
                 self.logger.info(f"✅ Aligned to KG splits -> Train: {len(train_participants)} | Test: {len(test_participants)}")
-
-        else:
+        elif not (kg_train or kg_test):
             self.logger.warning("⚠️ KG split sets are empty. Proceeding with analysis-provided splits.")
 
-        # 3) Τράβα τα embeddings για τους (ευθυγραμμισμένους) participants
+        # --- 4) Τράβα embeddings από Neo4j
         cypher = """
         MATCH (p:Participant)-[:HAS_SAMPLE]->(s:Sample)<-[:EMBEDDING_OF]-(e:Embedding)
         WHERE e.split = $split AND toString(p.id) IN $pids
@@ -837,56 +830,49 @@ class RealisticAnalysis:
             pids_train = list(map(str, train_participants))
             if pids_train:
                 for rec in session.run(cypher, split="train", pids=pids_train):
-                    e_props = dict(rec["emb"]._properties) if hasattr(rec["emb"], "_properties") else dict(rec["emb"])
+                    emb_node = rec["emb"]
+                    e_props = dict(getattr(emb_node, "_properties", emb_node))
                     vec = _pick_vec(e_props)
-                    if vec is not None:
-                        try:
-                            X_train.append(np.asarray(vec, dtype=float))
-                        except Exception:
-                            # Άν έχει αποθηκευτεί σαν string, κάνε parse
-                            if isinstance(vec, str):
-                                # π.χ. "[0.1, 0.2, ...]"
-                                cleaned = vec.strip().strip("[]")
-                                if cleaned:
-                                    arr = np.fromstring(cleaned, sep=",")
-                                    X_train.append(arr)
-                            else:
-                                # αγνόησέ το αν δεν γίνεται να μετατραπεί
-                                pass
-
+                    if vec is None:
+                        continue
+                    try:
+                        X_train.append(np.asarray(vec, dtype=float))
+                    except Exception:
+                        if isinstance(vec, str):
+                            cleaned = vec.strip().strip("[]")
+                            if cleaned:
+                                arr = np.fromstring(cleaned, sep=",")
+                                X_train.append(arr)
             # TEST
             pids_test = list(map(str, test_participants))
             if pids_test:
                 for rec in session.run(cypher, split="test", pids=pids_test):
-                    e_props = dict(rec["emb"]._properties) if hasattr(rec["emb"], "_properties") else dict(rec["emb"])
+                    emb_node = rec["emb"]
+                    e_props = dict(getattr(emb_node, "_properties", emb_node))
                     vec = _pick_vec(e_props)
-                    if vec is not None:
-                        try:
-                            X_test.append(np.asarray(vec, dtype=float))
-                        except Exception:
-                            if isinstance(vec, str):
-                                cleaned = vec.strip().strip("[]")
-                                if cleaned:
-                                    arr = np.fromstring(cleaned, sep=",")
-                                    X_test.append(arr)
-                            else:
-                                pass
+                    if vec is None:
+                        continue
+                    try:
+                        X_test.append(np.asarray(vec, dtype=float))
+                    except Exception:
+                        if isinstance(vec, str):
+                            cleaned = vec.strip().strip("[]")
+                            if cleaned:
+                                arr = np.fromstring(cleaned, sep=",")
+                                X_test.append(arr)
 
-        # 4) Μετατροπή σε numpy arrays
-        if len(X_train) == 0:
-            self.logger.warning("⚠️ No KG train embeddings found for the given splits.")
-            X_train_kg = np.empty((0, 0), dtype=float)
-        else:
-            # Έλεγχος ομοιόμορφης διάστασης
-            dim = max(len(v) for v in X_train)
-            X_train_kg = np.vstack([np.asarray(v, dtype=float).reshape(-1) for v in X_train if len(v) == dim])
+        # --- 5) Σε numpy arrays με ομοιόμορφη διάσταση
+        def _stack_or_empty(vectors):
+            if len(vectors) == 0:
+                return np.empty((0, 0), dtype=float)
+            dim = max(len(v) for v in vectors)
+            packed = [np.asarray(v, dtype=float).reshape(-1) for v in vectors if len(v) == dim]
+            if not packed:
+                return np.empty((0, 0), dtype=float)
+            return np.vstack(packed)
 
-        if len(X_test) == 0:
-            self.logger.warning("⚠️ No KG test embeddings found for the given splits.")
-            X_test_kg = np.empty((0, 0), dtype=float)
-        else:
-            dim = max(len(v) for v in X_test)
-            X_test_kg = np.vstack([np.asarray(v, dtype=float).reshape(-1) for v in X_test if len(v) == dim])
+        X_train_kg = _stack_or_empty(X_train)
+        X_test_kg  = _stack_or_empty(X_test)
 
         self.logger.info(f"🧠 KG embeddings ready: Train {X_train_kg.shape}, Test {X_test_kg.shape}")
         return X_train_kg, X_test_kg
