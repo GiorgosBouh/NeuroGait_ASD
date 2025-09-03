@@ -1887,106 +1887,131 @@ def _close_ad_hoc_driver(self):
     
     def run_kg_comparison_analysis(self):
         """
-        Τρέχει την KG ανάλυση (Raw vs NeuroGait KG vs Enhanced Features) και
-        επιστρέφει δομημένα αποτελέσματα. Είναι ανθεκτική σε ελλείψεις (π.χ.
-        αν δεν υπάρχουν train/test participant ids στα attributes).
+        Run KG comparison analysis (Raw vs NeuroGait KG vs Enhanced Features)
         """
-        import numpy as np
-
-        logger = getattr(self, "logger", None)
-        def _log(level, msg):
-            if logger is not None and hasattr(logger, level):
-                getattr(logger, level)(msg)
-            else:
-                print(msg)
-
-        _log("info", "\n🧠 KNOWLEDGE GRAPH COMPARISON ANALYSIS")
-        _log("info", "=" * 70)
-        _log("info", "🎯 Comparing: Raw Features, NeuroGait KG, and Enhanced Features")
-        _log("info", "🔒 Using actual Neo4j graph structure and enhanced feature engineering")
-        _log("info", "📊 Complete statistical comparison\n")
-
-        # 1) Προσπάθησε να πάρεις τους participant ids από attributes που ήδη γέμισαν στα προηγούμενα βήματα
-        train_participants = getattr(self, "train_participants", None)
-        test_participants  = getattr(self, "test_participants", None)
-
-        # 2) Fallback: αν δεν υπάρχουν, διάβασέ τους από τα train/test DataFrames (αν υπάρχουν)
-        if (train_participants is None or test_participants is None):
-            train_df = getattr(self, "train_df", None)
-            test_df  = getattr(self, "test_df", None)
-            if train_df is not None and "participant_id" in train_df.columns:
-                try:
-                    train_participants = sorted(set(map(int, train_df["participant_id"].unique())))
-                except Exception:
-                    train_participants = sorted(set(map(str, train_df["participant_id"].unique())))
-            if test_df is not None and "participant_id" in test_df.columns:
-                try:
-                    test_participants = sorted(set(map(int, test_df["participant_id"].unique())))
-                except Exception:
-                    test_participants = sorted(set(map(str, test_df["participant_id"].unique())))
-
-        # 3) Τελευταίο fallback: αν πάλι είναι None, προχώρα με κενές λίστες αλλά βγάλε προειδοποίηση
-        if train_participants is None:
-            _log("warning", "⚠️ train_participants δεν βρέθηκαν. Προχωράω με κενή λίστα.")
-            train_participants = []
-        if test_participants is None:
-            _log("warning", "⚠️ test_participants δεν βρέθηκαν. Προχωράω με κενή λίστα.")
-            test_participants = []
-
-        # 4) Πάρε KG embeddings από Neo4j. ΣΗΜΑΝΤΙΚΟ: align_with_kg=True ώστε να γίνει έλεγχος split-ταιριάσματος.
-        X_train_kg, X_test_kg = self.create_neurogait_kg_embeddings(
-            train_participants, test_participants, align_with_kg=True
+        print("\n🧠 KNOWLEDGE GRAPH COMPARISON ANALYSIS")
+        print("=" * 70)
+        print("🎯 Comparing: Raw Features, NeuroGait KG, and Enhanced Features")
+        print("🔒 Using actual Neo4j graph structure and enhanced feature engineering")
+        print("📊 Complete statistical comparison\n")
+        
+        # Enhanced preprocessing with clinical features
+        df, best_features, best_set_name, train_indices, test_indices, train_sample_pids, test_pids = self.load_and_prepare_data()
+        train_data, test_data = self.proper_train_test_split(df, train_indices, test_indices)
+        
+        # Preprocess data without leakage
+        train_clean, test_clean, clean_features = self.preprocess_data(train_data, test_data, best_features)
+        
+        # Feature selection
+        X_train, X_test, selected_features = self.optimized_feature_selection(
+            train_clean, test_clean, clean_features
         )
-
-        _log("info", f"✅ KG embeddings created: train {getattr(X_train_kg, 'shape', None)}, test {getattr(X_test_kg, 'shape', None)}")
-
-        # 5) Labels (αν υπάρχουν ήδη από τα προηγούμενα στάδια)
-        y_train = getattr(self, "y_train", None)
-        y_test  = getattr(self, "y_test", None)
-
-        def _label_from_df(df):
-            if df is None:
-                return None
-            for col in ("diagnosis", "label", "class"):
-                if col in df.columns:
-                    vals = df[col]
-                    # αν είναι ήδη 0/1
-                    if set(vals.unique()) <= {0, 1}:
-                        return vals.to_numpy()
-                    # map known labels -> 0/1
-                    mapping = {"ASD": 1, "A": 1, "Typical": 0, "T": 0, 1: 1, 0: 0}
-                    return vals.map(mapping).to_numpy()
-            return None
-
-        if y_train is None:
-            y_train = _label_from_df(getattr(self, "train_df", None))
-        if y_test is None:
-            y_test = _label_from_df(getattr(self, "test_df", None))
-
-        # 6) Πακέταρε αποτελέσματα
-        X_train_kg = np.asarray(X_train_kg) if X_train_kg is not None else None
-        X_test_kg  = np.asarray(X_test_kg)  if X_test_kg  is not None else None
-
-        dim = 0
-        if X_train_kg is not None and X_train_kg.ndim == 2:
-            dim = X_train_kg.shape[1]
-        elif X_test_kg is not None and X_test_kg.ndim == 2:
-            dim = X_test_kg.shape[1]
-
-        results = {
-            "X_train_kg": X_train_kg,
-            "X_test_kg":  X_test_kg,
-            "y_train": y_train,
-            "y_test":  y_test,
-            "info": {
-                "n_train": X_train_kg.shape[0] if X_train_kg is not None else 0,
-                "n_test":  X_test_kg.shape[0]  if X_test_kg  is not None else 0,
-                "dim":     dim
+        
+        y_train = train_clean['diagnosis']
+        y_test = test_clean['diagnosis']
+        X_train_scaled, X_test_scaled = self.prepare_data_properly(X_train, X_test)
+        
+        # Get sample-level participant IDs for the cleaned training data
+        train_sample_pids_clean = train_clean['participant_id'].values
+        
+        # === TIER 1: RAW CLINICAL FEATURES ===
+        print(f"\n{'='*50}")
+        print("📊 TIER 1: RAW CLINICAL FEATURES")
+        print(f"{'='*50}")
+        
+        raw_results = self.train_optimized_models(
+            X_train_scaled, X_test_scaled, y_train, y_test, train_sample_pids_clean, 
+            f"Raw Clinical Features ({best_set_name})"
+        )
+        
+        # === TIER 2: NEUROGAIT KG EMBEDDINGS ===
+        print(f"\n{'='*50}")
+        print("🧠 TIER 2: NEUROGAIT KG EMBEDDINGS")
+        print(f"{'='*50}")
+        
+        # Get participant IDs for KG
+        train_participants = train_clean['participant_id'].unique()
+        test_participants = test_clean['participant_id'].unique()
+        
+        # Create KG embeddings using Neo4j
+        X_train_kg, X_test_kg = self.create_neurogait_kg_embeddings(
+            train_participants, test_participants
+        )
+        
+        # Ensure we have valid KG embeddings
+        if X_train_kg.shape[0] == 0 or X_test_kg.shape[0] == 0:
+            print("⚠️ No KG embeddings found - falling back to enhanced KG")
+            X_train_kg, X_test_kg = self.create_enhanced_kg_embeddings(X_train_scaled, X_test_scaled)
+        
+        neurogait_kg_results = self.train_optimized_models(
+            X_train_kg, X_test_kg, y_train, y_test, train_sample_pids_clean, "NeuroGait KG"
+        )
+        
+        # === TIER 3: ENHANCED FEATURES ===
+        print(f"\n{'='*50}")
+        print("🔥 TIER 3: ENHANCED FEATURES")
+        print(f"{'='*50}")
+        
+        enhanced_results = {}
+        if ENHANCED_FEATURES_AVAILABLE:
+            try:
+                X_train_enhanced, X_test_enhanced = self.create_enhanced_features_embeddings(
+                    train_clean, test_clean, selected_features
+                )
+                
+                enhanced_results = self.train_optimized_models(
+                    X_train_enhanced, X_test_enhanced, y_train, y_test, train_sample_pids_clean, "Enhanced Features"
+                )
+            except Exception as e:
+                print(f"❌ Enhanced features failed: {e}")
+                # Fallback to simple enhanced KG
+                X_train_enhanced, X_test_enhanced = self.create_enhanced_kg_embeddings(X_train_scaled, X_test_scaled)
+                enhanced_results = self.train_optimized_models(
+                    X_train_enhanced, X_test_enhanced, y_train, y_test, train_sample_pids_clean, "Enhanced Features (Fallback)"
+                )
+        else:
+            print("⚠️ Enhanced features not available - skipping")
+        
+        # === COMPREHENSIVE COMPARISON ===
+        print(f"\n{'='*70}")
+        print("📊 COMPREHENSIVE KG COMPARISON RESULTS")
+        print(f"{'='*70}")
+        
+        # Collect all results
+        all_results = {
+            'Raw Clinical Features': raw_results,
+            'NeuroGait KG': neurogait_kg_results
+        }
+        
+        if enhanced_results:
+            all_results['Enhanced Features'] = enhanced_results
+        
+        # Statistical comparison
+        statistical_results = self.statistical_comparison_analysis(all_results)
+        
+        # Print results
+        self.print_kg_comparison_results(all_results, best_set_name, {
+            'train_participants': len(train_participants),
+            'test_participants': len(test_participants),
+            'original_features': len(best_features),
+            'selected_features': len(selected_features)
+        }, statistical_results)
+        
+        return {
+            'all_results': all_results,
+            'statistical_results': statistical_results,
+            'data_summary': {
+                'train_participants': len(train_participants),
+                'test_participants': len(test_participants),
+                'train_samples': len(X_train),
+                'test_samples': len(X_test)
+            },
+            'feature_info': {
+                'clinical_set': best_set_name,
+                'original_count': len(best_features),
+                'selected_count': len(selected_features)
             }
         }
-
-        _log("info", f"📦 KG analysis results packaged: {results['info']}")
-        return results
 
     def print_kg_comparison_results(self, all_results, clinical_set_name, data_summary, statistical_results):
         """Print comprehensive KG comparison results"""
