@@ -1884,94 +1884,110 @@ def _close_ad_hoc_driver(self):
                 'selected_count': len(selected_features)
             }
         }
+    
     def run_kg_comparison_analysis(self):
         """
-        Τρέχει την KG ανάλυση (Tier 2) και επιστρέφει τα αποτελέσματα.
-        - Εξάγει τα participant splits (train/test) από ήδη προετοιμασμένα dataframes ή attributes.
-        - Δημιουργεί KG embeddings από τον Neo4j.
-        - Επιστρέφει λεξικό με τα X_train_kg, X_test_kg (και προαιρετικά info).
-        Σκοπός: να είναι σταθερή και να μην σκάει αν λείπει κάτι – προτιμά warnings.
+        Τρέχει την KG ανάλυση (Raw vs NeuroGait KG vs Enhanced Features) και
+        επιστρέφει δομημένα αποτελέσματα. Είναι ανθεκτική σε ελλείψεις (π.χ.
+        αν δεν υπάρχουν train/test participant ids στα attributes).
         """
         import numpy as np
 
         logger = getattr(self, "logger", None)
         def _log(level, msg):
-            if logger is not None:
+            if logger is not None and hasattr(logger, level):
                 getattr(logger, level)(msg)
             else:
                 print(msg)
 
-        _log("info", "\n🧠 KNOWLEDGE GRAPH COMPARISON ANALYSIS\n" + "="*70)
+        _log("info", "\n🧠 KNOWLEDGE GRAPH COMPARISON ANALYSIS")
+        _log("info", "=" * 70)
+        _log("info", "🎯 Comparing: Raw Features, NeuroGait KG, and Enhanced Features")
+        _log("info", "🔒 Using actual Neo4j graph structure and enhanced feature engineering")
+        _log("info", "📊 Complete statistical comparison\n")
 
-        # 1) Προσπάθησε να βρεις τα train/test participant ids
+        # 1) Προσπάθησε να πάρεις τους participant ids από attributes που ήδη γέμισαν στα προηγούμενα βήματα
         train_participants = getattr(self, "train_participants", None)
         test_participants  = getattr(self, "test_participants", None)
 
-        # fallback από dataframes που πιθανώς υπάρχουν από τα προηγούμενα στάδια
+        # 2) Fallback: αν δεν υπάρχουν, διάβασέ τους από τα train/test DataFrames (αν υπάρχουν)
         if (train_participants is None or test_participants is None):
             train_df = getattr(self, "train_df", None)
             test_df  = getattr(self, "test_df", None)
             if train_df is not None and "participant_id" in train_df.columns:
-                train_participants = sorted(set(map(int, train_df["participant_id"].unique())))
+                try:
+                    train_participants = sorted(set(map(int, train_df["participant_id"].unique())))
+                except Exception:
+                    train_participants = sorted(set(map(str, train_df["participant_id"].unique())))
             if test_df is not None and "participant_id" in test_df.columns:
-                test_participants  = sorted(set(map(int, test_df["participant_id"].unique())))
+                try:
+                    test_participants = sorted(set(map(int, test_df["participant_id"].unique())))
+                except Exception:
+                    test_participants = sorted(set(map(str, test_df["participant_id"].unique())))
 
-        # αν ακόμα είναι None, ρίξε προειδοποίηση αλλά προσπάθησε να συνεχίσεις “άδειος”
+        # 3) Τελευταίο fallback: αν πάλι είναι None, προχώρα με κενές λίστες αλλά βγάλε προειδοποίηση
         if train_participants is None:
-            _log("warning", "⚠️ train_participants δεν βρέθηκαν. Θα προχωρήσω με κενή λίστα.")
+            _log("warning", "⚠️ train_participants δεν βρέθηκαν. Προχωράω με κενή λίστα.")
             train_participants = []
         if test_participants is None:
-            _log("warning", "⚠️ test_participants δεν βρέθηκαν. Θα προχωρήσω με κενή λίστα.")
+            _log("warning", "⚠️ test_participants δεν βρέθηκαν. Προχωράω με κενή λίστα.")
             test_participants = []
 
-        # 2) Δημιούργησε KG embeddings από Neo4j
+        # 4) Πάρε KG embeddings από Neo4j. ΣΗΜΑΝΤΙΚΟ: align_with_kg=True ώστε να γίνει έλεγχος split-ταιριάσματος.
         X_train_kg, X_test_kg = self.create_neurogait_kg_embeddings(
             train_participants, test_participants, align_with_kg=True
         )
 
-        _log("info", f"✅ KG embeddings created: train {X_train_kg.shape}, test {X_test_kg.shape}")
+        _log("info", f"✅ KG embeddings created: train {getattr(X_train_kg, 'shape', None)}, test {getattr(X_test_kg, 'shape', None)}")
 
-        # 3) (Προαιρετικά) Βρες labels αν υπάρχουν, αλλιώς γύρνα μόνο τα embeddings
-        y_train = None
-        y_test  = None
+        # 5) Labels (αν υπάρχουν ήδη από τα προηγούμενα στάδια)
+        y_train = getattr(self, "y_train", None)
+        y_test  = getattr(self, "y_test", None)
 
-        if getattr(self, "y_train", None) is not None:
-            y_train = self.y_train
-        if getattr(self, "y_test", None) is not None:
-            y_test = self.y_test
-
-    def _label_from_df(df):
-        if df is None:
+        def _label_from_df(df):
+            if df is None:
+                return None
+            for col in ("diagnosis", "label", "class"):
+                if col in df.columns:
+                    vals = df[col]
+                    # αν είναι ήδη 0/1
+                    if set(vals.unique()) <= {0, 1}:
+                        return vals.to_numpy()
+                    # map known labels -> 0/1
+                    mapping = {"ASD": 1, "A": 1, "Typical": 0, "T": 0, 1: 1, 0: 0}
+                    return vals.map(mapping).to_numpy()
             return None
-        for col in ("diagnosis", "label", "class"):
-            if col in df.columns:
-                vals = df[col]
-                if set(vals.unique()) <= {0, 1}:
-                    return vals.to_numpy()
-                mapping = {"ASD": 1, "A": 1, "Typical": 0, "T": 0, 1: 1, 0: 0}
-                return vals.map(mapping).to_numpy()
-        return None
 
-    if y_train is None:
-        y_train = _label_from_df(getattr(self, "train_df", None))
-    if y_test is None:
-        y_test = _label_from_df(getattr(self, "test_df", None))
+        if y_train is None:
+            y_train = _label_from_df(getattr(self, "train_df", None))
+        if y_test is None:
+            y_test = _label_from_df(getattr(self, "test_df", None))
 
-    results = {
-        "X_train_kg": X_train_kg if isinstance(X_train_kg, np.ndarray) else np.asarray(X_train_kg),
-        "X_test_kg":  X_test_kg  if isinstance(X_test_kg,  np.ndarray) else np.asarray(X_test_kg),
-        "y_train": y_train,
-        "y_test":  y_test,
-        "info": {
-            "n_train": X_train_kg.shape[0] if X_train_kg is not None else 0,
-            "n_test":  X_test_kg.shape[0]  if X_test_kg  is not None else 0,
-            "dim":     X_train_kg.shape[1] if (X_train_kg is not None and X_train_kg.ndim == 2) else (
-                       X_test_kg.shape[1]  if (X_test_kg  is not None and X_test_kg.ndim  == 2) else 0)
+        # 6) Πακέταρε αποτελέσματα
+        X_train_kg = np.asarray(X_train_kg) if X_train_kg is not None else None
+        X_test_kg  = np.asarray(X_test_kg)  if X_test_kg  is not None else None
+
+        dim = 0
+        if X_train_kg is not None and X_train_kg.ndim == 2:
+            dim = X_train_kg.shape[1]
+        elif X_test_kg is not None and X_test_kg.ndim == 2:
+            dim = X_test_kg.shape[1]
+
+        results = {
+            "X_train_kg": X_train_kg,
+            "X_test_kg":  X_test_kg,
+            "y_train": y_train,
+            "y_test":  y_test,
+            "info": {
+                "n_train": X_train_kg.shape[0] if X_train_kg is not None else 0,
+                "n_test":  X_test_kg.shape[0]  if X_test_kg  is not None else 0,
+                "dim":     dim
+            }
         }
-    }
 
-    _log("info", f"📦 KG analysis results packaged: {results['info']}")
-    return results
+        _log("info", f"📦 KG analysis results packaged: {results['info']}")
+        return results
+
     def print_kg_comparison_results(self, all_results, clinical_set_name, data_summary, statistical_results):
         """Print comprehensive KG comparison results"""
         
