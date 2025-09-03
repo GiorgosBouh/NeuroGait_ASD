@@ -26,6 +26,8 @@ import xgboost as xgb
 from sklearn.metrics import roc_auc_score, f1_score, accuracy_score, precision_score, recall_score
 from scipy.stats import wilcoxon, friedmanchisquare
 from statsmodels.stats.multitest import multipletests
+import os
+from neo4j import GraphDatabase
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -762,6 +764,35 @@ class RealisticAnalysis:
         with self._get_neo4j_session() as s:
             rec = s.run(q, split=split).single()
             return set(rec["pids"] or [])
+    def _get_neo4j_session(self):
+        """
+        Επιστρέφει Neo4j session.
+        - Αν υπάρχει ήδη driver στην κλάση (π.χ. self.kg_driver ή self.driver) τον χρησιμοποιεί.
+        - Αλλιώς φτιάχνει ad-hoc driver από τα env vars: NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD, NEO4J_DATABASE.
+        Χρησιμοποίησε το 'with self._get_neo4j_session() as s:' όπου χρειάζεσαι session.
+        """
+        # 1) Προτίμησε explicit KG driver αν υπάρχει
+        if hasattr(self, "kg_driver") and self.kg_driver:
+            db = getattr(self, "kg_database", os.getenv("NEO4J_DATABASE", "neo4j"))
+            return self.kg_driver.session(database=db)
+
+        # 2) Διαφορετικά, αν έχεις generic driver στην κλάση
+        if hasattr(self, "driver") and self.driver:
+            db = getattr(self, "database", os.getenv("NEO4J_DATABASE", "neo4j"))
+            return self.driver.session(database=db)
+
+        # 3) Fallback: ad-hoc driver από env vars
+        uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+        user = os.getenv("NEO4J_USER", "neo4j")
+        pwd  = os.getenv("NEO4J_PASSWORD", "password")
+        db   = os.getenv("NEO4J_DATABASE", "neo4j")
+
+        # Κράτα τον για reuse/cleanup
+        if not hasattr(self, "_ad_hoc_driver") or self._ad_hoc_driver is None:
+            self._ad_hoc_driver = GraphDatabase.driver(uri, auth=(user, pwd))
+            self._ad_hoc_database = db
+
+        return self._ad_hoc_driver.session(database=self._ad_hoc_database)
 
     def create_neurogait_kg_embeddings(self, train_participants, test_participants, *args, align_with_kg=True, **kwargs):
         """
