@@ -224,36 +224,41 @@ class SynchronizedLeakageFreeKGBuilder:
     
     def create_constraints_and_indexes(self):
         """Create constraints and indexes with error handling - FIXED VERSION"""
-        # First drop any existing constraints with the same names to avoid conflicts
-        constraints_to_drop = [
-            "participant_id_unique",
-            "sample_id_unique", 
-            "embedding_unique"
-        ]
-        
-        indexes_to_drop = [
-            "sample_participant_idx",
-            "sample_split_idx",
-            "embedding_sample_idx",
-            "participant_diagnosis_idx"
-        ]
-        
+        # First drop ALL constraints and indexes completely
         with self.driver.session() as session:
-            # Drop old constraints
-            for constraint in constraints_to_drop:
-                try:
-                    session.run(f"DROP CONSTRAINT {constraint} IF EXISTS")
-                except Exception as e:
-                    logger.debug(f"Could not drop constraint {constraint}: {e}")
+            # Drop ALL constraints
+            try:
+                constraints_result = session.run("SHOW CONSTRAINTS")
+                constraints = [record['name'] for record in constraints_result]
+                
+                for constraint in constraints:
+                    try:
+                        session.run(f"DROP CONSTRAINT {constraint}")
+                        logger.info(f"   Dropped constraint: {constraint}")
+                    except Exception as e:
+                        logger.warning(f"   Could not drop constraint {constraint}: {e}")
+            except Exception as e:
+                logger.warning(f"   Could not list constraints: {e}")
             
-            # Drop old indexes
-            for index in indexes_to_drop:
-                try:
-                    session.run(f"DROP INDEX {index} IF EXISTS")
-                except Exception as e:
-                    logger.debug(f"Could not drop index {index}: {e}")
+            # Drop ALL indexes
+            try:
+                indexes_result = session.run("SHOW INDEXES")
+                indexes = [record['name'] for record in indexes_result if record['name'] is not None]
+                
+                for index in indexes:
+                    try:
+                        session.run(f"DROP INDEX {index}")
+                        logger.info(f"   Dropped index: {index}")
+                    except Exception as e:
+                        logger.warning(f"   Could not drop index {index}: {e}")
+            except Exception as e:
+                logger.warning(f"   Could not list indexes: {e}")
             
-            # Now create new constraints
+            # Wait a moment for cleanup
+            import time
+            time.sleep(1)
+            
+            # Now create new constraints with unique names
             constraints = [
                 "CREATE CONSTRAINT participant_id_unique FOR (p:Participant) REQUIRE p.id IS UNIQUE",
                 "CREATE CONSTRAINT sample_id_unique FOR (s:Sample) REQUIRE s.id IS UNIQUE",
@@ -267,19 +272,29 @@ class SynchronizedLeakageFreeKGBuilder:
                 "CREATE INDEX participant_diagnosis_idx FOR (p:Participant) ON (p.diagnosis)"
             ]
             
+            # Create constraints with error handling
             for constraint in constraints:
                 try:
                     session.run(constraint)
+                    logger.info(f"   Created constraint: {constraint.split()[2]}")
                 except Exception as e:
-                    logger.error(f"❌ Failed to create constraint: {e}")
-                    raise
+                    if "already exists" in str(e):
+                        logger.warning(f"   Constraint already exists, skipping: {constraint.split()[2]}")
+                    else:
+                        logger.error(f"❌ Failed to create constraint: {e}")
+                        raise
             
+            # Create indexes with error handling
             for index in indexes:
                 try:
                     session.run(index)
+                    logger.info(f"   Created index: {index.split()[2]}")
                 except Exception as e:
-                    logger.error(f"❌ Failed to create index: {e}")
-                    raise
+                    if "already exists" in str(e):
+                        logger.warning(f"   Index already exists, skipping: {index.split()[2]}")
+                    else:
+                        logger.error(f"❌ Failed to create index: {e}")
+                        raise
             
             logger.info("✅ Constraints and indexes created successfully")
     
