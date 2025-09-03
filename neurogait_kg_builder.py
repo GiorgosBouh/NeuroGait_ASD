@@ -37,6 +37,48 @@ logger = logging.getLogger(__name__)
 load_dotenv('.env')
 
 class SynchronizedLeakageFreeKGBuilder:
+    def clear_database_completely(self):
+        """Completely clear database including constraints and indexes"""
+        logger.info("🗑️ Completely clearing database (including constraints and indexes)...")
+        
+        try:
+            with self.driver.session() as session:
+                # First drop all constraints
+                constraints_result = session.run("SHOW CONSTRAINTS")
+                constraints = [record['name'] for record in constraints_result]
+                
+                for constraint in constraints:
+                    try:
+                        session.run(f"DROP CONSTRAINT {constraint} IF EXISTS")
+                        logger.info(f"   Dropped constraint: {constraint}")
+                    except Exception as e:
+                        logger.warning(f"   Could not drop constraint {constraint}: {e}")
+                
+                # Then drop all indexes
+                indexes_result = session.run("SHOW INDEXES")
+                indexes = [record['name'] for record in indexes_result if record['name'] is not None]
+                
+                for index in indexes:
+                    try:
+                        session.run(f"DROP INDEX {index} IF EXISTS")
+                        logger.info(f"   Dropped index: {index}")
+                    except Exception as e:
+                        logger.warning(f"   Could not drop index {index}: {e}")
+                
+                # Finally delete all nodes
+                result = session.run("MATCH (n) RETURN COUNT(n) AS node_count")
+                count = result.single()["node_count"]
+                
+                if count > 0:
+                    session.run("MATCH (n) DETACH DELETE n")
+                    logger.info(f"   Deleted {count} nodes")
+                
+                logger.info("✅ Database completely cleared")
+                return True
+                
+        except Exception as e:
+            logger.error(f"❌ Error completely clearing database: {e}")
+            raise
     def __init__(self, samples_per_participant=8):
         self.uri = os.getenv('NEO4J_URI', 'bolt://localhost:7687')
         self.user = os.getenv('NEO4J_USER', 'neo4j')
@@ -181,34 +223,65 @@ class SynchronizedLeakageFreeKGBuilder:
             raise
     
     def create_constraints_and_indexes(self):
-        """Create constraints and indexes with error handling"""
-        constraints = [
-            "CREATE CONSTRAINT participant_id_unique IF NOT EXISTS FOR (p:Participant) REQUIRE p.id IS UNIQUE",
-            "CREATE CONSTRAINT sample_id_unique IF NOT EXISTS FOR (s:Sample) REQUIRE s.id IS UNIQUE",
-            "CREATE CONSTRAINT embedding_unique IF NOT EXISTS FOR (e:Embedding) REQUIRE e.sample_id IS UNIQUE"
+        """Create constraints and indexes with error handling - FIXED VERSION"""
+        # First drop any existing constraints with the same names to avoid conflicts
+        constraints_to_drop = [
+            "participant_id_unique",
+            "sample_id_unique", 
+            "embedding_unique"
         ]
         
-        indexes = [
-            "CREATE INDEX sample_participant_idx IF NOT EXISTS FOR (s:Sample) ON (s.participant_id)",
-            "CREATE INDEX sample_split_idx IF NOT EXISTS FOR (s:Sample) ON (s.data_split)",
-            "CREATE INDEX embedding_sample_idx IF NOT EXISTS FOR (e:Embedding) ON (e.sample_id)",
-            "CREATE INDEX participant_diagnosis_idx IF NOT EXISTS FOR (p:Participant) ON (p.diagnosis)"
+        indexes_to_drop = [
+            "sample_participant_idx",
+            "sample_split_idx",
+            "embedding_sample_idx",
+            "participant_diagnosis_idx"
         ]
         
         with self.driver.session() as session:
+            # Drop old constraints
+            for constraint in constraints_to_drop:
+                try:
+                    session.run(f"DROP CONSTRAINT {constraint} IF EXISTS")
+                except Exception as e:
+                    logger.debug(f"Could not drop constraint {constraint}: {e}")
+            
+            # Drop old indexes
+            for index in indexes_to_drop:
+                try:
+                    session.run(f"DROP INDEX {index} IF EXISTS")
+                except Exception as e:
+                    logger.debug(f"Could not drop index {index}: {e}")
+            
+            # Now create new constraints
+            constraints = [
+                "CREATE CONSTRAINT participant_id_unique FOR (p:Participant) REQUIRE p.id IS UNIQUE",
+                "CREATE CONSTRAINT sample_id_unique FOR (s:Sample) REQUIRE s.id IS UNIQUE",
+                "CREATE CONSTRAINT embedding_unique FOR (e:Embedding) REQUIRE e.sample_id IS UNIQUE"
+            ]
+            
+            indexes = [
+                "CREATE INDEX sample_participant_idx FOR (s:Sample) ON (s.participant_id)",
+                "CREATE INDEX sample_split_idx FOR (s:Sample) ON (s.data_split)",
+                "CREATE INDEX embedding_sample_idx FOR (e:Embedding) ON (e.sample_id)",
+                "CREATE INDEX participant_diagnosis_idx FOR (p:Participant) ON (p.diagnosis)"
+            ]
+            
             for constraint in constraints:
                 try:
                     session.run(constraint)
                 except Exception as e:
-                    logger.debug(f"Constraint might already exist: {e}")
+                    logger.error(f"❌ Failed to create constraint: {e}")
+                    raise
             
             for index in indexes:
                 try:
                     session.run(index)
                 except Exception as e:
-                    logger.debug(f"Index might already exist: {e}")
+                    logger.error(f"❌ Failed to create index: {e}")
+                    raise
             
-            logger.info("✅ Constraints and indexes created")
+            logger.info("✅ Constraints and indexes created successfully")
     
     def load_and_split_data_leakage_free(self, filepath="Final dataset.csv"):
         """Load data and perform IDENTICAL split as analysis script with matching preprocessing"""
