@@ -106,8 +106,33 @@ except ImportError as e:
 
 class RealisticAnalysis:
     def __init__(self):
+        # ----- υπάρχουσες ρυθμίσεις σου -----
         self.random_state = 42
         self.samples_per_participant = 8
+
+        # ----- ΝΕΑ: Neo4j / logging πεδία για τα KG embeddings -----
+        import os
+        self.database = os.getenv("NEO4J_DATABASE", "neo4j")
+
+        # Αν έχεις ήδη driver αλλού, άστο None κι ενεργοποιείται με τα helpers
+        self.driver = None
+
+        # Ad-hoc driver fallback (δημιουργείται lazy από τα helpers)
+        self._ad_hoc_driver = None
+        self._ad_hoc_database = self.database
+
+        # Προαιρετικό: απλό logger αν δεν έχεις ήδη
+        try:
+            import logging
+            self.logger = logging.getLogger("RealisticAnalysis")
+            if not self.logger.handlers:
+                h = logging.StreamHandler()
+                fmt = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+                h.setFormatter(fmt)
+                self.logger.addHandler(h)
+                self.logger.setLevel(logging.INFO)
+        except Exception:
+            self.logger = None
         
     def get_clinical_features(self, all_features):
         """Get clinical feature sets from domain expert analysis"""
@@ -764,72 +789,89 @@ class RealisticAnalysis:
         with self._get_neo4j_session() as s:
             rec = s.run(q, split=split).single()
             return set(rec["pids"] or [])
-    def _get_neo4j_session(self):
+    def _ensure_neo4j_driver(self):
         """
-        Επιστρέφει Neo4j session.
-        - Αν υπάρχει ήδη driver στην κλάση (π.χ. self.kg_driver ή self.driver) τον χρησιμοποιεί.
-        - Αλλιώς φτιάχνει ad-hoc driver από τα env vars: NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD, NEO4J_DATABASE.
-        Χρησιμοποίησε το 'with self._get_neo4j_session() as s:' όπου χρειάζεσαι session.
+        Εξασφαλίζει ότι υπάρχει διαθέσιμος Neo4j driver στο self.driver.
+        Αν δεν υπάρχει, δημιουργεί από env vars.
         """
-        # 1) Προτίμησε explicit KG driver αν υπάρχει
-        if hasattr(self, "kg_driver") and self.kg_driver:
-            db = getattr(self, "kg_database", os.getenv("NEO4J_DATABASE", "neo4j"))
-            return self.kg_driver.session(database=db)
+        if self.driver is not None:
+            return
 
-        # 2) Διαφορετικά, αν έχεις generic driver στην κλάση
-        if hasattr(self, "driver") and self.driver:
-            db = getattr(self, "database", os.getenv("NEO4J_DATABASE", "neo4j"))
-            return self.driver.session(database=db)
-
-        # 3) Fallback: ad-hoc driver από env vars
         uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
         user = os.getenv("NEO4J_USER", "neo4j")
         pwd  = os.getenv("NEO4J_PASSWORD", "password")
-        db   = os.getenv("NEO4J_DATABASE", "neo4j")
+        db   = os.getenv("NEO4J_DATABASE", self.database or "neo4j")
 
-        # Κράτα τον για reuse/cleanup
-        if not hasattr(self, "_ad_hoc_driver") or self._ad_hoc_driver is None:
-            self._ad_hoc_driver = GraphDatabase.driver(uri, auth=(user, pwd))
-            self._ad_hoc_database = db
+        # Κράτα ad-hoc driver για reuse
+        self._ad_hoc_driver = GraphDatabase.driver(uri, auth=(user, pwd))
+        self._ad_hoc_database = db
+        # Δεν πειράζουμε self.driver αν το έχεις αλλού (π.χ. injected)
+        # Θα χρησιμοποιούμε το ad-hoc session από _get_neo4j_session()
 
-        return self._ad_hoc_driver.session(database=self._ad_hoc_database)
+
+    def _get_neo4j_session(self):
+        """
+        Επιστρέφει Neo4j session.
+        - Αν υπάρχει self.driver, το χρησιμοποιεί.
+        - Αλλιώς, δημιουργεί ad-hoc driver από env vars (lazy).
+        """
+        # 1) Προτίμησε explicit driver που ίσως έχεις ήδη βάλει στην κλάση
+        if getattr(self, "driver", None):
+            return self.driver.session(database=self.database or "neo4j")
+
+        # 2) Fallback ad-hoc driver
+        if self._ad_hoc_driver is None:
+            self._ensure_neo4j_driver()
+        return self._ad_hoc_driver.session(database=self._ad_hoc_database or "neo4j")
+
+
+def _close_ad_hoc_driver(self):
+    """Κλείνει προαιρετικά τον ad-hoc driver στο teardown."""
+    try:
+        if self._ad_hoc_driver is not None:
+            self._ad_hoc_driver.close()
+            self._ad_hoc_driver = None
+    except Exception:
+        pass
 
     def create_neurogait_kg_embeddings(self, train_participants, test_participants, *args, align_with_kg=True, **kwargs):
         """
         Φτιάχνει X_train_kg, X_test_kg από τον Neo4j KG.
-        Συμβατή με παλιές κλήσεις που ίσως περνάνε και 3ο positional όρισμα.
-        - Διαβάζει τους participants από τους κόμβους Embedding με e.split = 'train'/'test'
-        - Αν υπάρχει ασυμφωνία με τα splits του analysis, ευθυγραμμίζει στο KG (εκτός αν align_with_kg=False)
-        - Τραβάει τα vectors από ιδιότητες: vector / values / embedding (ό,τι υπάρχει)
-        Επιστρέφει: X_train_kg (np.ndarray), X_test_kg (np.ndarray)
+        - Συμβατή με παλιές κλήσεις (δέχεται extra positional *args).
+        - Αν υπάρχει ασυμφωνία splits Analysis↔KG, ευθυγραμμίζει στο KG (εκτός αν align_with_kg=False).
+        - Αναζητά vector property σε: 'vector', 'values', ή 'embedding'.
         """
-        import numpy as np
-
         def _pick_vec(e_props):
-            # πιθανές ονομασίες property για το embedding vector
             for key in ("vector", "values", "embedding"):
                 if key in e_props and e_props[key] is not None:
                     return e_props[key]
             return None
 
-        # --- 1) Διάβασε splits από KG
+        # --- 1) Splits από KG
         kg_train = self._kg_get_participants_by_split("train")
         kg_test  = self._kg_get_participants_by_split("test")
 
-        # --- 2) Logging κατάστασης
+        # --- 2) Logging κατάστασης (ασφαλές αν δεν έχεις self.logger)
+        logger = getattr(self, "logger", None)
+        def _log(level, msg):
+            if logger is not None:
+                getattr(logger, level)(msg)
+            else:
+                print(msg)
+
         an_train = set(map(str, train_participants))
         an_test  = set(map(str, test_participants))
-        self.logger.info(f"   📊 Analysis script - Train participants: {sorted(list(an_train))[:10]}... ({len(an_train)} total)")
-        self.logger.info(f"   📊 Analysis script - Test participants:  {sorted(list(an_test))[:10]}... ({len(an_test)} total)")
-        self.logger.info(f"   📊 KG - Train participants: {sorted(list(kg_train))[:10]}... ({len(kg_train)} total)")
-        self.logger.info(f"   📊 KG - Test participants:  {sorted(list(kg_test))[:10]}... ({len(kg_test)} total)")
+        _log("info", f"   📊 Analysis script - Train participants: {sorted(list(an_train))[:10]}... ({len(an_train)} total)")
+        _log("info", f"   📊 Analysis script - Test participants:  {sorted(list(an_test))[:10]}... ({len(an_test)} total)")
+        _log("info", f"   📊 KG - Train participants: {sorted(list(kg_train))[:10]}... ({len(kg_train)} total)")
+        _log("info", f"   📊 KG - Test participants:  {sorted(list(kg_test))[:10]}... ({len(kg_test)} total)")
 
-        # --- 3) Ευθυγράμμιση με KG (αν έχει δεδομένα και είναι ενεργοποιημένο)
+        # --- 3) Ευθυγράμμιση με KG (αν υπάρχει)
         if align_with_kg and (kg_train or kg_test):
             miss_train = sorted(an_train - kg_train)
             miss_test  = sorted(an_test - kg_test)
             if miss_train or miss_test:
-                self.logger.warning(
+                _log("warning",
                     "❌ Participant split mismatch detected. Aligning analysis splits to KG splits.\n"
                     f"   Missing in KG (train): {miss_train[:10]}{' ...' if len(miss_train) > 10 else ''}\n"
                     f"   Missing in KG (test):  {miss_test[:10]}{' ...' if len(miss_test) > 10 else ''}"
@@ -844,11 +886,11 @@ class RealisticAnalysis:
                     return out
                 train_participants = _to_int_if_possible(kg_train)
                 test_participants  = _to_int_if_possible(kg_test)
-                self.logger.info(f"✅ Aligned to KG splits -> Train: {len(train_participants)} | Test: {len(test_participants)}")
+                _log("info", f"✅ Aligned to KG splits -> Train: {len(train_participants)} | Test: {len(test_participants)}")
         elif not (kg_train or kg_test):
-            self.logger.warning("⚠️ KG split sets are empty. Proceeding with analysis-provided splits.")
+            _log("warning", "⚠️ KG split sets are empty. Proceeding with analysis-provided splits.")
 
-        # --- 4) Τράβα embeddings από Neo4j
+        # --- 4) Φέρε embeddings από Neo4j
         cypher = """
         MATCH (p:Participant)-[:HAS_SAMPLE]->(s:Sample)<-[:EMBEDDING_OF]-(e:Embedding)
         WHERE e.split = $split AND toString(p.id) IN $pids
@@ -874,6 +916,7 @@ class RealisticAnalysis:
                             if cleaned:
                                 arr = np.fromstring(cleaned, sep=",")
                                 X_train.append(arr)
+
             # TEST
             pids_test = list(map(str, test_participants))
             if pids_test:
@@ -892,7 +935,7 @@ class RealisticAnalysis:
                                 arr = np.fromstring(cleaned, sep=",")
                                 X_test.append(arr)
 
-        # --- 5) Σε numpy arrays με ομοιόμορφη διάσταση
+        # --- 5) Στοκάρισμα σε σταθερό σχήμα
         def _stack_or_empty(vectors):
             if len(vectors) == 0:
                 return np.empty((0, 0), dtype=float)
@@ -904,9 +947,8 @@ class RealisticAnalysis:
 
         X_train_kg = _stack_or_empty(X_train)
         X_test_kg  = _stack_or_empty(X_test)
-
-        self.logger.info(f"🧠 KG embeddings ready: Train {X_train_kg.shape}, Test {X_test_kg.shape}")
-        return X_train_kg, X_test_kg
+        _log("info", f"🧠 KG embeddings ready: Train {X_train_kg.shape}, Test {X_test_kg.shape}")
+        return X_train_kg, X_test_kg    
 
     def create_enhanced_features_embeddings(self, train_data, test_data, features):
         """Create enhanced features using EnhancedKGFeatureBuilder - FIXED VERSION"""
