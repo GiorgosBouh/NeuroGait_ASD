@@ -82,7 +82,7 @@ class SynchronizedLeakageFreeKGBuilder:
     def __init__(self, samples_per_participant=8):
         self.uri = os.getenv('NEO4J_URI', 'bolt://localhost:7687')
         self.user = os.getenv('NEO4J_USER', 'neo4j')
-        self.password = os.getenv('NEO4J_PASSWORD', 'password')
+        self.password = os.getenv('NEO4J_PASSWORD', 'palatiou')
         self.database = os.getenv('NEO4J_DATABASE', 'neo4j')  # ← ΠΡΟΣΘΕΣΕ ΤΟ
         self.driver = None
         self.samples_per_participant = samples_per_participant
