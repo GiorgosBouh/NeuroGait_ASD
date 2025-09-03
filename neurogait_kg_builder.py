@@ -83,6 +83,7 @@ class SynchronizedLeakageFreeKGBuilder:
         self.uri = os.getenv('NEO4J_URI', 'bolt://localhost:7687')
         self.user = os.getenv('NEO4J_USER', 'neo4j')
         self.password = os.getenv('NEO4J_PASSWORD', 'password')
+        self.database = os.getenv('NEO4J_DATABASE', 'neo4j')  # ← ΠΡΟΣΘΕΣΕ ΤΟ
         self.driver = None
         self.samples_per_participant = samples_per_participant
         
@@ -115,6 +116,10 @@ class SynchronizedLeakageFreeKGBuilder:
         self.train_pids = None
         self.test_pids = None
         self.train_only_scaler = None
+    def _get_session(self):
+        # Fallback αν για κάποιο λόγο λείπει το self.database
+        db = getattr(self, "database", None) or os.getenv("NEO4J_DATABASE", "neo4j")
+        return self.driver.session(database=db)
         
     def _auto_detect_features(self):
         """Auto-detect available features to ensure synchronization with analysis script"""
@@ -224,20 +229,20 @@ class SynchronizedLeakageFreeKGBuilder:
     
     def drop_legacy_schema_artifacts(self):
         """
-        Safely drop legacy/duplicate indexes that could conflict with unique constraints.
-        Call this before (re)creating constraints/indexes.
+        Safely drop legacy/duplicate indexes that conflict with unique constraints.
+        This prevents errors like 'equivalent index already exists'.
         """
         legacy_indexes = [
-            "embedding_sample_idx",   # παλιός index που διπλοκαλύπτει το unique constraint
-            "index_343aff4e",         # από logs
-            "index_f7700477",         # από logs
+            "embedding_sample_idx",
+            "index_343aff4e",
+            "index_f7700477",
         ]
         try:
             from neo4j.exceptions import ClientError
         except Exception:
-            ClientError = Exception  # fallback, σε περίπτωση διαφορετικής έκδοσης driver
+            ClientError = Exception
 
-        with self.driver.session(database=self.database) as session:
+        with self._get_session() as session:
             for idx in legacy_indexes:
                 try:
                     session.run(f"DROP INDEX {idx} IF EXISTS")
@@ -248,10 +253,10 @@ class SynchronizedLeakageFreeKGBuilder:
         """
         Idempotent schema setup:
         - UNIQUE constraints: Participant.id, Sample.id, Embedding.sample_id
-        - Supportive non-unique indexes: Sample.participant_id, Sample.data_split, Participant.diagnosis
-        - Avoids creating an index that duplicates a unique constraint’s backing index (Embedding.sample_id)
+        - Supportive indexes: Sample.participant_id, Sample.data_split, Participant.diagnosis
+        - Avoid duplicate index for Embedding.sample_id (backed by UNIQUE)
         """
-        # 1) Καθάρισε παλιά artifacts που μπορεί να συγκρούονται
+        # Καθάρισε πιθανά παλιά artifacts που συγκρούονται
         self.drop_legacy_schema_artifacts()
 
         constraints = [
@@ -260,7 +265,6 @@ class SynchronizedLeakageFreeKGBuilder:
             "CREATE CONSTRAINT embedding_unique IF NOT EXISTS FOR (e:Embedding) REQUIRE e.sample_id IS UNIQUE",
         ]
 
-        # 2) ΜΟΝΟ βοηθητικοί indexes (ΟΧΙ για Embedding.sample_id — καλύπτεται από το unique)
         indexes = [
             "CREATE INDEX sample_participant_idx IF NOT EXISTS FOR (s:Sample) ON (s.participant_id)",
             "CREATE INDEX sample_split_idx IF NOT EXISTS FOR (s:Sample) ON (s.data_split)",
@@ -272,7 +276,7 @@ class SynchronizedLeakageFreeKGBuilder:
         except Exception:
             ClientError = Exception
 
-        with self.driver.session(database=self.database) as session:
+        with self._get_session() as session:
             # Constraints
             for c in constraints:
                 try:
