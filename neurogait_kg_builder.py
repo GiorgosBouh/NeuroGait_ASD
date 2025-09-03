@@ -123,6 +123,33 @@ class SynchronizedLeakageFreeKGBuilder:
         # Fallback αν για κάποιο λόγο λείπει το self.database
         db = getattr(self, "database", None) or os.getenv("NEO4J_DATABASE", "neo4j")
         return self.driver.session(database=db)
+    def _resolve_columns(self, df):
+        """
+        Προσπαθεί να βρει τα ονόματα των βασικών στηλών στο df.
+        Αν κάτι λείπει, επιστρέφει None για εκείνο το κλειδί.
+        """
+        candidates = {
+            "participant_id": ["participant_id", "ParticipantID", "participant", "PID", "pid", "subject_id", "SubjectID", "subject"],
+            "sample_id":      ["sample_id", "SampleID", "sample", "Sample", "id", "ID"],
+            "diagnosis":      ["diagnosis", "Diagnosis", "label", "Label", "class", "Class", "group"],
+            "data_split":     ["data_split", "split", "Split", "set", "Set", "split_group"],
+            "augmentation":   ["augmentation_type", "augmentation", "Augmentation", "aug", "Aug"],
+            "velocity":       ["Velocity", "velocity"]
+        }
+        cols = {}
+        cols_lower = {c.lower(): c for c in df.columns}
+        for key, names in candidates.items():
+            found = None
+            for name in names:
+                if name in df.columns:
+                    found = name
+                    break
+                # case-insensitive fallback
+                if name.lower() in cols_lower:
+                    found = cols_lower[name.lower()]
+                    break
+            cols[key] = found
+        return cols
         
     def _auto_detect_features(self):
         """Auto-detect available features to ensure synchronization with analysis script"""
@@ -593,18 +620,40 @@ class SynchronizedLeakageFreeKGBuilder:
     def create_participants_and_samples(self, df_final):
         """
         Idempotent creation of Participants, Samples, and their relationships.
-        Uses MERGE on unique keys to avoid duplicate-node constraint violations.
+        - Ανιχνεύει ονόματα στηλών (participant_id, sample_id, diagnosis, data_split, augmentation, velocity)
+        - Αν δεν υπάρχει sample_id, το συνθέτει: S_<participant>_<rowindex>
+        - Χρησιμοποιεί MERGE για να αποφύγει duplicate/constraint errors
         """
-        # Ετοίμασε σειρές για UNWIND
+        cols = self._resolve_columns(df_final)
+
+        # Υποχρεωτικά πεδία: participant_id (και sample_id ή σύνθεση)
+        if not cols["participant_id"]:
+            raise ValueError(
+                f"Δεν βρέθηκε στήλη participant_id. Διαθέσιμες στήλες: {list(df_final.columns)}"
+            )
+
         rows = []
-        for _, r in df_final.iterrows():
+        for i, (_, r) in enumerate(df_final.iterrows()):
+            pid = str(r[cols["participant_id"]])
+            # sample_id: από στήλη αν υπάρχει, αλλιώς σύνθεση
+            if cols["sample_id"] and cols["sample_id"] in r:
+                sid = str(r[cols["sample_id"]])
+            else:
+                # Σύνθεση ασφαλούς μοναδικού id ανά γραμμή
+                # (προαιρετικά μπορείς να ενσωματώσεις και augmentation/split αν θέλεις)
+                sid = f"S_{pid}_{i}"
+
             rows.append({
-                "participant_id": str(r["participant_id"]),
-                "diagnosis": r.get("diagnosis", None),
-                "split": r.get("data_split", None),
-                "augmentation": r.get("augmentation_type", "original"),
-                "sample_id": str(r["sample_id"]),
-                "velocity": float(r["Velocity"]) if "Velocity" in r and r["Velocity"] is not None else None,
+                "participant_id": pid,
+                "diagnosis": (r[cols["diagnosis"]] if cols["diagnosis"] and cols["diagnosis"] in r else None),
+                "split": (r[cols["data_split"]] if cols["data_split"] and cols["data_split"] in r else None),
+                "augmentation": (r[cols["augmentation"]] if cols["augmentation"] and cols["augmentation"] in r else "original"),
+                "sample_id": sid,
+                "velocity": (
+                    float(r[cols["velocity"]])
+                    if cols["velocity"] and cols["velocity"] in r and r[cols["velocity"]] is not None
+                    else None
+                ),
             })
 
         cypher = """
@@ -631,7 +680,6 @@ class SynchronizedLeakageFreeKGBuilder:
             s.participant_id = coalesce(s.participant_id, row.participant_id),
             s.velocity       = coalesce(s.velocity, row.velocity)
 
-        // Relationship (avoid duplicates)
         MERGE (p)-[:HAS_SAMPLE]->(s)
         """
 
