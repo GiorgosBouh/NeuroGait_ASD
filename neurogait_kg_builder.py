@@ -222,81 +222,82 @@ class SynchronizedLeakageFreeKGBuilder:
             logger.error(f"❌ Error clearing database: {e}")
             raise
     
+    def drop_legacy_schema_artifacts(self):
+        """
+        Safely drop legacy/duplicate indexes that could conflict with unique constraints.
+        Call this before (re)creating constraints/indexes.
+        """
+        legacy_indexes = [
+            "embedding_sample_idx",   # παλιός index που διπλοκαλύπτει το unique constraint
+            "index_343aff4e",         # από logs
+            "index_f7700477",         # από logs
+        ]
+        try:
+            from neo4j.exceptions import ClientError
+        except Exception:
+            ClientError = Exception  # fallback, σε περίπτωση διαφορετικής έκδοσης driver
+
+        with self.driver.session(database=self.database) as session:
+            for idx in legacy_indexes:
+                try:
+                    session.run(f"DROP INDEX {idx} IF EXISTS")
+                    self.logger.info(f"   Dropped index (if existed): {idx}")
+                except ClientError as e:
+                    self.logger.warning(f"   Could not drop index {idx}: {e}")
     def create_constraints_and_indexes(self):
-        """Create constraints and indexes with error handling - FIXED VERSION"""
-        # First drop ALL constraints and indexes completely
-        with self.driver.session() as session:
-            # Drop ALL constraints
-            try:
-                constraints_result = session.run("SHOW CONSTRAINTS")
-                constraints = [record['name'] for record in constraints_result]
-                
-                for constraint in constraints:
-                    try:
-                        session.run(f"DROP CONSTRAINT {constraint}")
-                        logger.info(f"   Dropped constraint: {constraint}")
-                    except Exception as e:
-                        logger.warning(f"   Could not drop constraint {constraint}: {e}")
-            except Exception as e:
-                logger.warning(f"   Could not list constraints: {e}")
-            
-            # Drop ALL indexes
-            try:
-                indexes_result = session.run("SHOW INDEXES")
-                indexes = [record['name'] for record in indexes_result if record['name'] is not None]
-                
-                for index in indexes:
-                    try:
-                        session.run(f"DROP INDEX {index}")
-                        logger.info(f"   Dropped index: {index}")
-                    except Exception as e:
-                        logger.warning(f"   Could not drop index {index}: {e}")
-            except Exception as e:
-                logger.warning(f"   Could not list indexes: {e}")
-            
-            # Wait a moment for cleanup
-            import time
-            time.sleep(1)
-            
-            # Now create new constraints with unique names
-            constraints = [
-                "CREATE CONSTRAINT participant_id_unique FOR (p:Participant) REQUIRE p.id IS UNIQUE",
-                "CREATE CONSTRAINT sample_id_unique FOR (s:Sample) REQUIRE s.id IS UNIQUE",
-                "CREATE CONSTRAINT embedding_unique FOR (e:Embedding) REQUIRE e.sample_id IS UNIQUE"
-            ]
-            
-            indexes = [
-                "CREATE INDEX sample_participant_idx FOR (s:Sample) ON (s.participant_id)",
-                "CREATE INDEX sample_split_idx FOR (s:Sample) ON (s.data_split)",
-                "CREATE INDEX embedding_sample_idx FOR (e:Embedding) ON (e.sample_id)",
-                "CREATE INDEX participant_diagnosis_idx FOR (p:Participant) ON (p.diagnosis)"
-            ]
-            
-            # Create constraints with error handling
-            for constraint in constraints:
+        """
+        Idempotent schema setup:
+        - UNIQUE constraints: Participant.id, Sample.id, Embedding.sample_id
+        - Supportive non-unique indexes: Sample.participant_id, Sample.data_split, Participant.diagnosis
+        - Avoids creating an index that duplicates a unique constraint’s backing index (Embedding.sample_id)
+        """
+        # 1) Καθάρισε παλιά artifacts που μπορεί να συγκρούονται
+        self.drop_legacy_schema_artifacts()
+
+        constraints = [
+            "CREATE CONSTRAINT participant_id_unique IF NOT EXISTS FOR (p:Participant) REQUIRE p.id IS UNIQUE",
+            "CREATE CONSTRAINT sample_id_unique IF NOT EXISTS FOR (s:Sample) REQUIRE s.id IS UNIQUE",
+            "CREATE CONSTRAINT embedding_unique IF NOT EXISTS FOR (e:Embedding) REQUIRE e.sample_id IS UNIQUE",
+        ]
+
+        # 2) ΜΟΝΟ βοηθητικοί indexes (ΟΧΙ για Embedding.sample_id — καλύπτεται από το unique)
+        indexes = [
+            "CREATE INDEX sample_participant_idx IF NOT EXISTS FOR (s:Sample) ON (s.participant_id)",
+            "CREATE INDEX sample_split_idx IF NOT EXISTS FOR (s:Sample) ON (s.data_split)",
+            "CREATE INDEX participant_diagnosis_idx IF NOT EXISTS FOR (p:Participant) ON (p.diagnosis)",
+        ]
+
+        try:
+            from neo4j.exceptions import ClientError
+        except Exception:
+            ClientError = Exception
+
+        with self.driver.session(database=self.database) as session:
+            # Constraints
+            for c in constraints:
                 try:
-                    session.run(constraint)
-                    logger.info(f"   Created constraint: {constraint.split()[2]}")
-                except Exception as e:
-                    if "already exists" in str(e):
-                        logger.warning(f"   Constraint already exists, skipping: {constraint.split()[2]}")
+                    session.run(c)
+                    self.logger.info(f"   Ensured constraint: {c.split(' IF NOT EXISTS')[0]}")
+                except ClientError as e:
+                    msg = str(e)
+                    if ("ConstraintAlreadyExists" in msg) or ("already exists" in msg):
+                        self.logger.debug(f"   Constraint already exists, skipping: {c}")
                     else:
-                        logger.error(f"❌ Failed to create constraint: {e}")
+                        self.logger.error(f"   Failed to create constraint: {e}")
                         raise
-            
-            # Create indexes with error handling
-            for index in indexes:
+
+            # Indexes
+            for i in indexes:
                 try:
-                    session.run(index)
-                    logger.info(f"   Created index: {index.split()[2]}")
-                except Exception as e:
-                    if "already exists" in str(e):
-                        logger.warning(f"   Index already exists, skipping: {index.split()[2]}")
+                    session.run(i)
+                    self.logger.info(f"   Ensured index: {i.split(' IF NOT EXISTS')[0]}")
+                except ClientError as e:
+                    msg = str(e)
+                    if ("equivalent index already exists" in msg) or ("already exists" in msg):
+                        self.logger.debug(f"   Index already exists, skipping: {i}")
                     else:
-                        logger.error(f"❌ Failed to create index: {e}")
+                        self.logger.error(f"   Failed to create index: {e}")
                         raise
-            
-            logger.info("✅ Constraints and indexes created successfully")
     
     def load_and_split_data_leakage_free(self, filepath="Final dataset.csv"):
         """Load data and perform IDENTICAL split as analysis script with matching preprocessing"""
