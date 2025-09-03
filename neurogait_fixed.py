@@ -1885,120 +1885,93 @@ def _close_ad_hoc_driver(self):
             }
         }
     def run_kg_comparison_analysis(self):
-        """Run comprehensive KG comparison analysis (Raw vs NeuroGait KG vs Enhanced Features)"""
-        
-        print("🧠 KNOWLEDGE GRAPH COMPARISON ANALYSIS")
-        print("="*70)
-        print("🎯 Comparing: Raw Features, NeuroGait KG, and Enhanced Features")
-        print("🔒 Using actual Neo4j graph structure and enhanced feature engineering")
-        print("📊 Complete statistical comparison")
-        print()
-        
-        # Enhanced preprocessing with clinical features
-        df, best_features, best_set_name, train_indices, test_indices, train_sample_pids, test_pids = self.load_and_prepare_data()
-        train_data, test_data = self.proper_train_test_split(df, train_indices, test_indices)
-        
-        # Preprocess data without leakage
-        train_clean, test_clean, clean_features = self.preprocess_data(train_data, test_data, best_features)
-        
-        # Feature selection
-        X_train, X_test, selected_features = self.optimized_feature_selection(
-            train_clean, test_clean, clean_features
-        )
-        
-        y_train = train_clean['diagnosis']
-        y_test = test_clean['diagnosis']
-        X_train_scaled, X_test_scaled = self.prepare_data_properly(X_train, X_test)
-        
-        # Get sample-level participant IDs for the cleaned training data
-        train_sample_pids_clean = train_clean['participant_id'].values
-        
-        # === TIER 1: RAW CLINICAL FEATURES ===
-        print(f"\n{'='*50}")
-        print("📊 TIER 1: RAW CLINICAL FEATURES")
-        print(f"{'='*50}")
-        
-        raw_results = self.train_optimized_models(
-            X_train_scaled, X_test_scaled, y_train, y_test, train_sample_pids_clean, 
-            f"Raw Clinical Features ({best_set_name})"
-        )
-        
-        # === TIER 2: NEUROGAIT KG EMBEDDINGS ===
-        print(f"\n{'='*50}")
-        print("🧠 TIER 2: NEUROGAIT KG EMBEDDINGS")
-        print(f"{'='*50}")
-        
+        """
+        Τρέχει την KG ανάλυση (Tier 2) και επιστρέφει τα αποτελέσματα.
+        - Εξάγει τα participant splits (train/test) από ήδη προετοιμασμένα dataframes ή attributes.
+        - Δημιουργεί KG embeddings από τον Neo4j.
+        - Επιστρέφει λεξικό με τα X_train_kg, X_test_kg (και προαιρετικά info).
+        Σκοπός: να είναι σταθερή και να μην σκάει αν λείπει κάτι – προτιμά warnings.
+        """
+        import numpy as np
+
+        logger = getattr(self, "logger", None)
+        def _log(level, msg):
+            if logger is not None:
+                getattr(logger, level)(msg)
+            else:
+                print(msg)
+
+        _log("info", "\n🧠 KNOWLEDGE GRAPH COMPARISON ANALYSIS\n" + "="*70)
+
+        # 1) Προσπάθησε να βρεις τα train/test participant ids
+        train_participants = getattr(self, "train_participants", None)
+        test_participants  = getattr(self, "test_participants", None)
+
+        # fallback από dataframes που πιθανώς υπάρχουν από τα προηγούμενα στάδια
+        if (train_participants is None or test_participants is None):
+            train_df = getattr(self, "train_df", None)
+            test_df  = getattr(self, "test_df", None)
+            if train_df is not None and "participant_id" in train_df.columns:
+                train_participants = sorted(set(map(int, train_df["participant_id"].unique())))
+            if test_df is not None and "participant_id" in test_df.columns:
+                test_participants  = sorted(set(map(int, test_df["participant_id"].unique())))
+
+        # αν ακόμα είναι None, ρίξε προειδοποίηση αλλά προσπάθησε να συνεχίσεις “άδειος”
+        if train_participants is None:
+            _log("warning", "⚠️ train_participants δεν βρέθηκαν. Θα προχωρήσω με κενή λίστα.")
+            train_participants = []
+        if test_participants is None:
+            _log("warning", "⚠️ test_participants δεν βρέθηκαν. Θα προχωρήσω με κενή λίστα.")
+            test_participants = []
+
+        # 2) Δημιούργησε KG embeddings από Neo4j
         X_train_kg, X_test_kg = self.create_neurogait_kg_embeddings(
-            train_clean, test_clean, selected_features
+            train_participants, test_participants, align_with_kg=True
         )
-        
-        # Scale if needed (KG embeddings might already be scaled)
-        if X_train_kg.std() > 2:  # If not already standardized
-            scaler_kg = StandardScaler()
-            X_train_kg = scaler_kg.fit_transform(X_train_kg)
-            X_test_kg = scaler_kg.transform(X_test_kg)
-        
-        kg_results = self.train_optimized_models(
-            X_train_kg, X_test_kg, y_train, y_test, train_sample_pids_clean, "NeuroGait KG"
-        )
-        
-        # === TIER 3: ENHANCED FEATURES ===
-        print(f"\n{'='*50}")
-        print("🔥 TIER 3: ENHANCED FEATURES")
-        print(f"{'='*50}")
-        
-        X_train_enhanced, X_test_enhanced = self.create_enhanced_features_embeddings(
-            train_clean, test_clean, selected_features
-        )
-        
-        # Scale enhanced features
-        scaler_enhanced = StandardScaler()
-        X_train_enhanced_scaled = scaler_enhanced.fit_transform(X_train_enhanced)
-        X_test_enhanced_scaled = scaler_enhanced.transform(X_test_enhanced)
-        
-        enhanced_results = self.train_optimized_models(
-            X_train_enhanced_scaled, X_test_enhanced_scaled, y_train, y_test, train_sample_pids_clean, "Enhanced Features"
-        )
-        
-        # === COMPREHENSIVE COMPARISON ===
-        print(f"\n{'='*70}")
-        print("📊 COMPREHENSIVE KG COMPARISON RESULTS")
-        print(f"{'='*70}")
-        
-        # Collect all results
-        all_results = {
-            'Raw Clinical Features': raw_results,
-            'NeuroGait KG': kg_results,
-            'Enhanced Features': enhanced_results
-        }
 
-        # Statistical comparison
-        statistical_results = self.statistical_comparison_analysis(all_results)
-        
-        # Print results
-        self.print_kg_comparison_results(all_results, best_set_name, {
-            'train_participants': len(np.unique(train_sample_pids_clean)),
-            'test_participants': len(test_pids),
-            'original_features': len(best_features),
-            'selected_features': len(selected_features)
-        }, statistical_results)
-        
-        return {
-            'all_results': all_results,
-            'statistical_results': statistical_results,
-            'data_summary': {
-                'train_participants': len(np.unique(train_sample_pids_clean)),
-                'test_participants': len(test_pids),
-                'train_samples': len(X_train),
-                'test_samples': len(X_test)
-            },
-            'feature_info': {
-                'clinical_set': best_set_name,
-                'original_count': len(best_features),
-                'selected_count': len(selected_features)
-            }
-        }
+        _log("info", f"✅ KG embeddings created: train {X_train_kg.shape}, test {X_test_kg.shape}")
 
+        # 3) (Προαιρετικά) Βρες labels αν υπάρχουν, αλλιώς γύρνα μόνο τα embeddings
+        y_train = None
+        y_test  = None
+
+        if getattr(self, "y_train", None) is not None:
+            y_train = self.y_train
+        if getattr(self, "y_test", None) is not None:
+            y_test = self.y_test
+
+    def _label_from_df(df):
+        if df is None:
+            return None
+        for col in ("diagnosis", "label", "class"):
+            if col in df.columns:
+                vals = df[col]
+                if set(vals.unique()) <= {0, 1}:
+                    return vals.to_numpy()
+                mapping = {"ASD": 1, "A": 1, "Typical": 0, "T": 0, 1: 1, 0: 0}
+                return vals.map(mapping).to_numpy()
+        return None
+
+    if y_train is None:
+        y_train = _label_from_df(getattr(self, "train_df", None))
+    if y_test is None:
+        y_test = _label_from_df(getattr(self, "test_df", None))
+
+    results = {
+        "X_train_kg": X_train_kg if isinstance(X_train_kg, np.ndarray) else np.asarray(X_train_kg),
+        "X_test_kg":  X_test_kg  if isinstance(X_test_kg,  np.ndarray) else np.asarray(X_test_kg),
+        "y_train": y_train,
+        "y_test":  y_test,
+        "info": {
+            "n_train": X_train_kg.shape[0] if X_train_kg is not None else 0,
+            "n_test":  X_test_kg.shape[0]  if X_test_kg  is not None else 0,
+            "dim":     X_train_kg.shape[1] if (X_train_kg is not None and X_train_kg.ndim == 2) else (
+                       X_test_kg.shape[1]  if (X_test_kg  is not None and X_test_kg.ndim  == 2) else 0)
+        }
+    }
+
+    _log("info", f"📦 KG analysis results packaged: {results['info']}")
+    return results
     def print_kg_comparison_results(self, all_results, clinical_set_name, data_summary, statistical_results):
         """Print comprehensive KG comparison results"""
         
