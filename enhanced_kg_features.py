@@ -25,10 +25,6 @@ class GraphEnhancedNeuroGaitAnalysis:
         
         # Dynamic import to avoid circular imports
         try:
-            from enhanced_kg_graph_features import GraphBasedKGFeatureBuilder
-            self.graph_builder = GraphBasedKGFeatureBuilder(samples_per_participant)
-        except ImportError:
-            logger.error("Could not import GraphBasedKGFeatureBuilder from enhanced_kg_graph_features")
             self.graph_builder = None
         
     def load_data(self, filepath="Final dataset.csv"):
@@ -281,5 +277,42 @@ class EnhancedKGFeatureBuilder:
             
         return X_enhanced.values, list(X_enhanced.columns)
 
+class EnhancedKGFeatureBuilder:
+    def create_enhanced_kg_features(self, df, base_features):
+        """Create enhanced features using domain knowledge - FIXED VERSION"""
+        if not base_features:
+            raise ValueError("No base features provided")
+            
+        # Verify base features exist in dataframe
+        missing_features = [f for f in base_features if f not in df.columns]
+        if missing_features:
+            raise ValueError(f"Missing features in dataframe: {missing_features}")
+            
+        X_enhanced = df[base_features].copy()
+            
+        # Add some basic enhanced features
+        for side in ['L', 'R']:
+            hes_col = f'mean HESH{side}'
+            spel_col = f'mean SPEL{side}'
+            
+            if hes_col in base_features and spel_col in base_features:
+                # Add zero check to prevent division by zero
+                denominator = df[spel_col].copy()
+                denominator = denominator.replace(0, 1e-8)  # Replace zeros with small number
+                X_enhanced[f'HESH_SPEL_ratio_{side}'] = df[hes_col] / denominator
+            
+        # Add bilateral symmetry features
+        for feature in base_features:
+            if feature.endswith('L') and feature.replace('L', 'R') in base_features:
+                base_name = feature[:-1]
+                left_col = f'{base_name}L'
+                right_col = f'{base_name}R'
+                X_enhanced[f'{base_name}_symmetry'] = (df[left_col] - df[right_col]).abs()
+            
+        # Fill NaN values
+        X_enhanced = X_enhanced.fillna(0)
+            
+        return X_enhanced.values, list(X_enhanced.columns)
 if __name__ == "__main__":
     main()
+

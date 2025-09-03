@@ -912,40 +912,49 @@ class RealisticAnalysis:
         return X_train_kg, X_test_kg
 
     def create_enhanced_features_embeddings(self, train_data, test_data, features):
-        """Create enhanced features using EnhancedKGFeatureBuilder - NO FALLBACKS"""
+        """Create enhanced features using EnhancedKGFeatureBuilder - FIXED VERSION"""
         print(f"\n🔥 ENHANCED KG FEATURES:")
         
         if not ENHANCED_FEATURES_AVAILABLE:
             raise ImportError("Enhanced features not available. Ensure enhanced_kg_features.py exists and contains EnhancedKGFeatureBuilder class.")
         
-        enhancer = EnhancedKGFeatureBuilder()
-        
-        # Create enhanced features for training data - MUST succeed
-        X_train_enhanced, feature_names = enhancer.create_enhanced_kg_features(
-            train_data, features
-        )
-        
-        # Create enhanced features for test data - MUST succeed
-        X_test_enhanced, _ = enhancer.create_enhanced_kg_features(
-            test_data, features
-        )
-        
-        # Verify shapes are correct
-        if X_train_enhanced.shape[0] != len(train_data):
-            raise ValueError(f"Train enhanced features shape mismatch: got {X_train_enhanced.shape[0]}, expected {len(train_data)}")
-        
-        if X_test_enhanced.shape[0] != len(test_data):
-            raise ValueError(f"Test enhanced features shape mismatch: got {X_test_enhanced.shape[0]}, expected {len(test_data)}")
-        
-        if X_train_enhanced.shape[1] != X_test_enhanced.shape[1]:
-            raise ValueError(f"Feature dimension mismatch: train {X_train_enhanced.shape[1]} != test {X_test_enhanced.shape[1]}")
-        
-        print(f"   ✅ Enhanced KG features created successfully")
-        print(f"      Train: {X_train_enhanced.shape}, Test: {X_test_enhanced.shape}")
-        print(f"      Features: {len(features)} → {X_train_enhanced.shape[1]} (+{X_train_enhanced.shape[1] - len(features)})")
-        
-        return X_train_enhanced, X_test_enhanced
+        try:
+            # Import here to avoid circular imports
+            from enhanced_kg_features import EnhancedKGFeatureBuilder
+            enhancer = EnhancedKGFeatureBuilder()
             
+            # Create enhanced features for training data
+            X_train_enhanced, feature_names = enhancer.create_enhanced_kg_features(
+                train_data, features
+            )
+            
+            # Create enhanced features for test data
+            X_test_enhanced, _ = enhancer.create_enhanced_kg_features(
+                test_data, features
+            )
+            
+            # Verify shapes are correct
+            if X_train_enhanced.shape[0] != len(train_data):
+                raise ValueError(f"Train enhanced features shape mismatch: got {X_train_enhanced.shape[0]}, expected {len(train_data)}")
+            
+            if X_test_enhanced.shape[0] != len(test_data):
+                raise ValueError(f"Test enhanced features shape mismatch: got {X_test_enhanced.shape[0]}, expected {len(test_data)}")
+            
+            if X_train_enhanced.shape[1] != X_test_enhanced.shape[1]:
+                raise ValueError(f"Feature dimension mismatch: train {X_train_enhanced.shape[1]} != test {X_test_enhanced.shape[1]}")
+            
+            print(f"   ✅ Enhanced KG features created successfully")
+            print(f"      Train: {X_train_enhanced.shape}, Test: {X_test_enhanced.shape}")
+            print(f"      Features: {len(features)} → {X_train_enhanced.shape[1]} (+{X_train_enhanced.shape[1] - len(features)})")
+            
+            return X_train_enhanced, X_test_enhanced
+            
+        except ImportError as e:
+            print(f"❌ Could not import EnhancedKGFeatureBuilder: {e}")
+            raise
+        except Exception as e:
+            print(f"❌ Error creating enhanced features: {e}")
+            raise
     def statistical_comparison_analysis(self, tier1_results):
         """Statistical comparison with proper validation - CLEAN VERSION"""
         print("\n📊 DETAILED STATISTICAL ANALYSIS (sample-level, paired):")
