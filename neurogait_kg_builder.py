@@ -82,11 +82,14 @@ class SynchronizedLeakageFreeKGBuilder:
     def __init__(self, samples_per_participant=8):
         self.uri = os.getenv('NEO4J_URI', 'bolt://localhost:7687')
         self.user = os.getenv('NEO4J_USER', 'neo4j')
-        self.password = os.getenv('NEO4J_PASSWORD', 'palatiou')
-        self.database = os.getenv('NEO4J_DATABASE', 'neo4j')  # ← ΠΡΟΣΘΕΣΕ ΤΟ
+        self.password = os.getenv('NEO4J_PASSWORD', 'password')
+        self.database = os.getenv('NEO4J_DATABASE', 'neo4j')  # <-- ήδη το βάλαμε
         self.driver = None
         self.samples_per_participant = samples_per_participant
-        
+
+        # <-- ΠΡΟΣΘΗΚΗ: logger instance για να μην ξανασκάει
+        self.logger = logging.getLogger(__name__)
+
         # Enhanced augmentation types with descriptions
         self.augmentation_types = {
             'original': {'description': 'Original sample', 'index': 0},
@@ -98,10 +101,10 @@ class SynchronizedLeakageFreeKGBuilder:
             'horizontal_flip': {'description': 'Horizontally flipped values', 'index': 6},
             'temporal_slice': {'description': 'Random temporal slice', 'index': 7}
         }
-        
+
         # CRITICAL FIX: Auto-detect available features to sync with analysis script
         self.essential_movement_features = self._auto_detect_features()
-        
+
         # Configuration - CRITICAL: no PCA, strict leakage prevention
         self.config = {
             'embedding_dim': len(self.essential_movement_features),
@@ -111,7 +114,7 @@ class SynchronizedLeakageFreeKGBuilder:
             'use_pca': False,
             'strict_leakage_prevention': True
         }
-        
+
         # Leakage prevention tracking
         self.train_pids = None
         self.test_pids = None
