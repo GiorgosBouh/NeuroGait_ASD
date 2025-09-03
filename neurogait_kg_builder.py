@@ -590,88 +590,54 @@ class SynchronizedLeakageFreeKGBuilder:
             
             logger.info("✅ Enhanced graph structure created with leakage prevention metadata")
     
-    def create_participants_and_samples(self, df):
-        """Create participants and samples with enhanced leakage tracking"""
-        logger.info("👥 Creating participants and samples with leakage tracking...")
-        
-        # First create all participants
-        unique_participants = df[['participant_id', 'diagnosis', 'data_split']].drop_duplicates()
-        
-        with self.driver.session() as session:
-            # Create participants in batches
-            batch_size = 50
-            for i in range(0, len(unique_participants), batch_size):
-                batch = unique_participants.iloc[i:i+batch_size]
-                participants_data = batch.to_dict('records')
-                
-                session.run("""
-                    UNWIND $participants AS p
-                    MERGE (participant:Participant {
-                        id: 'P_' + toString(p.participant_id),
-                        original_id: p.participant_id,
-                        diagnosis: p.diagnosis,
-                        data_split: p.data_split
-                    })
-                    SET participant.created_at = datetime()
-                    WITH participant, p
-                    MATCH (c:Classification {label: p.diagnosis})
-                    MATCH (ds:DataSplit {name: p.data_split})
-                    MERGE (participant)-[:HAS_DIAGNOSIS]->(c)
-                    MERGE (participant)-[:IN_SPLIT]->(ds)
-                """, participants=participants_data)
-            
-            logger.info(f"✅ Created {len(unique_participants)} participants")
-            
-            # CRITICAL VALIDATION: Verify participant split in graph
-            result = session.run("""
-                MATCH (p:Participant)
-                WITH p.data_split as split, count(p) as count
-                RETURN split, count
-                ORDER BY split
-            """).data()
-            
-            logger.info("📊 Participant split validation in graph:")
-            for row in result:
-                logger.info(f"   {row['split']}: {row['count']} participants")
-            
-            # Create samples with augmentation info
-            samples_data = []
-            for _, row in df.iterrows():
-                aug_type = list(self.augmentation_types.keys())[row.name % 8]
-                samples_data.append({
-                    'sample_id': f"S_{row['participant_id']}_{row.name % 8}",
-                    'participant_id': f"P_{row['participant_id']}",
-                    'diagnosis': row['diagnosis'],
-                    'data_split': row['data_split'],
-                    'augmentation_type': aug_type,
-                    'sample_index': row.name
-                })
-            
-            # Create samples in batches
-            batch_size = 100
-            for i in range(0, len(samples_data), batch_size):
-                batch = samples_data[i:i+batch_size]
-                
-                session.run("""
-                    UNWIND $samples AS s
-                    MATCH (p:Participant {id: s.participant_id})
-                    MATCH (at:AugmentationType {name: s.augmentation_type})
-                    MATCH (ds:DataSplit {name: s.data_split})
-                    CREATE (sample:Sample {
-                        id: s.sample_id,
-                        participant_id: s.participant_id,
-                        diagnosis: s.diagnosis,
-                        data_split: s.data_split,
-                        augmentation_type: s.augmentation_type,
-                        sample_index: s.sample_index,
-                        created_at: datetime()
-                    })
-                    CREATE (p)-[:HAS_SAMPLE]->(sample)
-                    CREATE (sample)-[:AUGMENTED_BY]->(at)
-                    CREATE (sample)-[:IN_SPLIT]->(ds)
-                """, samples=batch)
-            
-            logger.info(f"✅ Created {len(df)} samples with leakage tracking")
+    def create_participants_and_samples(self, df_final):
+        """
+        Idempotent creation of Participants, Samples, and their relationships.
+        Uses MERGE on unique keys to avoid duplicate-node constraint violations.
+        """
+        # Ετοίμασε σειρές για UNWIND
+        rows = []
+        for _, r in df_final.iterrows():
+            rows.append({
+                "participant_id": str(r["participant_id"]),
+                "diagnosis": r.get("diagnosis", None),
+                "split": r.get("data_split", None),
+                "augmentation": r.get("augmentation_type", "original"),
+                "sample_id": str(r["sample_id"]),
+                "velocity": float(r["Velocity"]) if "Velocity" in r and r["Velocity"] is not None else None,
+            })
+
+        cypher = """
+        UNWIND $rows AS row
+        // Participant (unique on id)
+        MERGE (p:Participant {id: row.participant_id})
+        ON CREATE SET
+            p.created_at = timestamp(),
+            p.diagnosis  = row.diagnosis
+        ON MATCH SET
+            p.diagnosis  = coalesce(p.diagnosis, row.diagnosis)
+
+        // Sample (unique on id)
+        MERGE (s:Sample {id: row.sample_id})
+        ON CREATE SET
+            s.created_at     = timestamp(),
+            s.data_split     = row.split,
+            s.augmentation   = row.augmentation,
+            s.participant_id = row.participant_id,
+            s.velocity       = row.velocity
+        ON MATCH SET
+            s.data_split     = coalesce(s.data_split, row.split),
+            s.augmentation   = coalesce(s.augmentation, row.augmentation),
+            s.participant_id = coalesce(s.participant_id, row.participant_id),
+            s.velocity       = coalesce(s.velocity, row.velocity)
+
+        // Relationship (avoid duplicates)
+        MERGE (p)-[:HAS_SAMPLE]->(s)
+        """
+
+        with self._get_session() as session:
+            session.run(cypher, rows=rows)
+        self.logger.info("✅ Participants & Samples upserted without duplicates")
     
     def create_embeddings_in_graph(self, df, embedding_cols):
         """Store embeddings with leakage prevention metadata"""
