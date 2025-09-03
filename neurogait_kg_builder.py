@@ -211,7 +211,7 @@ class SynchronizedLeakageFreeKGBuilder:
             logger.info("✅ Constraints and indexes created")
     
     def load_and_split_data_leakage_free(self, filepath="Final dataset.csv"):
-        """Load data and perform IDENTICAL split as analysis script"""
+        """Load data and perform IDENTICAL split as analysis script with matching preprocessing"""
         logger.info(f"📊 Loading and splitting data (LEAKAGE-FREE) from {filepath}...")
         
         try:
@@ -223,34 +223,58 @@ class SynchronizedLeakageFreeKGBuilder:
             
             logger.info(f"📋 Loaded CSV with {len(df)} rows and {len(df.columns)} columns")
             
-            # Convert numeric columns
+            # Convert numeric columns (SAME AS ANALYSIS SCRIPT)
             numeric_cols = [col for col in df.columns if col != 'class']
+            converted_features = []
+            
             for col in numeric_cols:
-                if df[col].dtype == 'object':
-                    df[col] = df[col].apply(self.convert_to_float)
+                try:
+                    if df[col].dtype == 'object':
+                        converted_col = pd.to_numeric(df[col].astype(str).str.replace(',', '.'), errors='coerce')
+                        if not converted_col.isna().all() and converted_col.var() > 1e-10:
+                            df[col] = converted_col
+                            converted_features.append(col)
+                    else:
+                        if df[col].var() > 1e-10:
+                            converted_features.append(col)
+                except:
+                    continue
+            
+            logger.info(f"📊 Converted {len(converted_features)} numeric features")
             
             # Create participant structure (IDENTICAL to analysis script)
             df['participant_id'] = df.index // self.samples_per_participant
+            df['diagnosis_binary'] = df['class'].map({'A': 1, 'T': 0})
             df['diagnosis'] = df['class'].map({'A': 'ASD', 'T': 'Typical'})
             
-            # CRITICAL: IDENTICAL participant-level split as analysis script
-            participant_info = df.groupby('participant_id')['diagnosis'].first().reset_index()
+            # CRITICAL: Apply SAME preprocessing as analysis script BEFORE split
+            logger.info("🔄 Applying analysis script preprocessing before split...")
+            
+            # Get clinical features (simulate the same feature selection)
+            clinical_sets = self._get_clinical_features_for_kg(converted_features)
+            best_features, best_set_name = self._select_best_clinical_set_for_kg(df, clinical_sets)
+            
+            # Apply the same preprocessing pipeline as analysis script
+            df_preprocessed = self._apply_analysis_preprocessing(df, best_features)
+            
+            # NOW create participant-level split on preprocessed data
+            participant_info = df_preprocessed.groupby('participant_id')['diagnosis_binary'].first().reset_index()
             
             # Stratified split by diagnosis with SAME random state
             train_pids, test_pids = train_test_split(
                 participant_info['participant_id'].values,
                 test_size=self.config['test_size'],
-                stratify=participant_info['diagnosis'].values,
-                random_state=self.config['random_state']  # CRITICAL: Same as analysis
+                stratify=participant_info['diagnosis_binary'].values,
+                random_state=self.config['random_state']
             )
             
             # Store for leakage prevention
             self.train_pids = set(train_pids)
             self.test_pids = set(test_pids)
             
-            # Mark splits
-            df['data_split'] = 'test'
-            df.loc[df['participant_id'].isin(train_pids), 'data_split'] = 'train'
+            # Mark splits on preprocessed data
+            df_preprocessed['data_split'] = 'test'
+            df_preprocessed.loc[df_preprocessed['participant_id'].isin(train_pids), 'data_split'] = 'train'
             
             # CRITICAL VALIDATION: No participant overlap
             overlap = self.train_pids & self.test_pids
@@ -258,10 +282,10 @@ class SynchronizedLeakageFreeKGBuilder:
                 raise ValueError(f"CRITICAL ERROR: Participant overlap detected: {overlap}")
             
             # Verify split matches expectations
-            train_diagnosis = df[df['data_split']=='train']['diagnosis'].value_counts()
-            test_diagnosis = df[df['data_split']=='test']['diagnosis'].value_counts()
+            train_diagnosis = df_preprocessed[df_preprocessed['data_split']=='train']['diagnosis'].value_counts()
+            test_diagnosis = df_preprocessed[df_preprocessed['data_split']=='test']['diagnosis'].value_counts()
             
-            logger.info("\n📊 LEAKAGE-FREE Data Split Summary:")
+            logger.info("\n📊 LEAKAGE-FREE Data Split Summary (After Preprocessing):")
             logger.info(f"   Total participants: {len(participant_info)}")
             logger.info(f"   Train participants: {len(train_pids)}")
             logger.info(f"   Test participants: {len(test_pids)}")
@@ -278,7 +302,7 @@ class SynchronizedLeakageFreeKGBuilder:
             
             logger.info("✅ LEAKAGE-FREE split validation passed")
             
-            return df, train_pids, test_pids
+            return df_preprocessed, train_pids, test_pids
             
         except Exception as e:
             logger.error(f"❌ Error loading/splitting data: {e}")
@@ -736,6 +760,116 @@ class SynchronizedLeakageFreeKGBuilder:
         
         logger.info("💾 Saved comprehensive metadata to neurogait_synchronized_leakage_free_metadata.json")
     
+    def _get_clinical_features_for_kg(self, all_features):
+        """Replicate the clinical feature selection logic from analysis script"""
+        clinical_sets = {}
+        
+        # Balance Stability features
+        balance_keywords = [
+            'spine', 'trunk', 'torso', 'midspain', 'spinebase', 'balance', 'stability', 
+            'sway', 'postural', 'leg', 'foot', 'knee', 'hip', 'ankle', 'SPKNL', 'SPKNR', 
+            'HIANL', 'HIANR', 'KNFOL', 'KNFOR', 'angle', 'rotation'
+        ]
+        
+        balance_features = []
+        for feature in all_features:
+            feature_lower = feature.lower()
+            if any(keyword in feature_lower for keyword in balance_keywords) or \
+            any(keyword in feature for keyword in ['Midspain', 'SpineBase', 'SPKNL', 'SPKNR', 'HIANL', 'HIANR']):
+                balance_features.append(feature)
+        
+        clinical_sets['balance_stability'] = balance_features[:30]
+        
+        # Gait Focused features
+        gait_keywords = [
+            'gact', 'stat', 'swit', 'time', 'duration', 'cycle', 'step', 'stride', 
+            'length', 'width', 'distance', 'leg', 'foot', 'knee', 'hip', 'velocity', 'speed'
+        ]
+        
+        gait_features = []
+        for feature in all_features:
+            feature_lower = feature.lower()
+            if any(keyword in feature_lower for keyword in gait_keywords) or \
+            any(keyword in feature for keyword in ['GaCT', 'StaT', 'SwiT']):
+                gait_features.append(feature)
+        
+        clinical_sets['gait_focused'] = gait_features[:20]
+        
+        # ASD Specific features
+        asd_keywords = [
+            'gait', 'stat', 'swit', 'heshl', 'heshr', 'spell', 'spelr', 'coordination', 'timing',
+            'shwrl', 'shwrr', 'elhal', 'elhar', 'thhal', 'thhar'
+        ]
+        
+        asd_features = []
+        for feature in all_features:
+            feature_lower = feature.lower()
+            if any(keyword in feature_lower for keyword in asd_keywords) or \
+            any(keyword in feature for keyword in ['GaCT', 'StaT', 'SwiT', 'HESHL', 'HESHR', 'SHWRL', 'SHWRR']):
+                asd_features.append(feature)
+        
+        clinical_sets['asd_specific'] = asd_features[:15]
+        
+        # Combined Best
+        combined_features = list(set(
+            clinical_sets['balance_stability'][:15] + 
+            clinical_sets['gait_focused'][:10] + 
+            clinical_sets['asd_specific'][:8]
+        ))
+        clinical_sets['combined_best'] = combined_features
+        
+        return clinical_sets
+
+    def _select_best_clinical_set_for_kg(self, df, clinical_sets):
+        """Replicate the best clinical set selection logic"""
+        best_set_name = "combined_best"  # Use the same set the analysis script typically selects
+        best_features = clinical_sets[best_set_name]
+        
+        # Filter to available features
+        available_features = [f for f in best_features if f in df.columns]
+        
+        logger.info(f"🎯 Selected clinical feature set: {best_set_name} ({len(available_features)} features)")
+        
+        return available_features, best_set_name
+
+    def _apply_analysis_preprocessing(self, df, features):
+        """Apply the same preprocessing steps as the analysis script"""
+        logger.info("🧹 Applying analysis script preprocessing...")
+        
+        # Handle missing values using the same thresholds
+        missing_threshold = 0.6
+        missing_per_feature = df[features].isna().sum() / len(df)
+        good_features = missing_per_feature[missing_per_feature <= missing_threshold].index.tolist()
+        
+        logger.info(f"   🗑️ Removed {len(features) - len(good_features)} features with >{missing_threshold*100}% missing")
+        
+        # Remove samples with too many missing values
+        missing_per_sample = df[good_features].isna().sum(axis=1) / len(good_features)
+        good_samples = missing_per_sample <= 0.5
+        df_clean = df[good_samples].copy()
+        
+        logger.info(f"   🗑️ Removed {(~good_samples).sum()} samples with >50% missing")
+        
+        # Remove constant features
+        constant_features = []
+        for col in good_features:
+            if df_clean[col].nunique() <= 1:
+                constant_features.append(col)
+        
+        final_features = [f for f in good_features if f not in constant_features]
+        
+        # Remove duplicates (this is what causes the participant split mismatch!)
+        df_final = df_clean.drop_duplicates(subset=final_features)
+        
+        # Recreate participant IDs after duplicate removal
+        df_final = df_final.reset_index(drop=True)
+        df_final['participant_id'] = df_final.index // self.samples_per_participant
+        
+        logger.info(f"   📊 Final preprocessing: {len(df)} → {len(df_final)} samples")
+        logger.info(f"   📊 Constant features removed: {len(constant_features)}")
+        
+        return df_final
+
     def close(self):
         """Close database connection safely"""
         if self.driver:
