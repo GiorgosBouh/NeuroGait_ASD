@@ -937,10 +937,10 @@ class RealisticAnalysis:
                 )
 
         # --- 4) Φέρε embeddings από Neo4j - STRICT REQUIREMENTS
-        cypher = """
-        MATCH (p:Participant)-[:HAS_SAMPLE]->(s:Sample)<-[:EMBEDDING_OF]-(e:Embedding)
-        WHERE e.split = $split AND toString(p.id) IN $pids
-        RETURN toString(p.id) AS pid, e AS emb
+        q = """
+        MATCH (p:Participant)-[:HAS_SAMPLE]->(s:Sample)-[:HAS_EMBEDDING]->(e:Embedding)
+        WHERE e.data_split = $split
+        RETURN collect(DISTINCT toString(p.id)) AS pids
         """
 
         X_train, X_test = [], []
