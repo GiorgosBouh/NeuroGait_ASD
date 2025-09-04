@@ -2107,15 +2107,15 @@ class RealisticAnalysis:
         """
         Run KG comparison analysis (Raw vs NeuroGait KG vs Enhanced Features)
         """
-        import os, inspect
+        import os, inspect, numpy as np
         import neurogait_kg_builder as kgmod
 
+        # ---------- Local helpers ----------
         def _ensure_kg_builder_local():
             # Αν υπάρχει ήδη, τέλος
             if getattr(self, "kg_builder", None) is not None:
                 return
 
-            # Βρες κλάση builder μέσα στο neurogait_kg_builder
             required = {"create_participants_and_samples", "create_embeddings_in_graph"}
             preferred = "enforce_participant_level_split"
 
@@ -2129,18 +2129,15 @@ class RealisticAnalysis:
                     "CRITICAL ERROR: No KG builder class found in neurogait_kg_builder.py "
                     f"with methods {sorted(list(required))}."
                 )
-
-            # Δώσε προτεραιότητα σε κλάση που έχει και enforce_participant_level_split
             candidates.sort(key=lambda c: int(hasattr(c, preferred)), reverse=True)
             BuilderClass = candidates[0]
 
-            # Credentials
+            # creds
             uri = getattr(self, "neo4j_uri", None) or os.getenv("NEO4J_URI", "bolt://localhost:7687")
             user = getattr(self, "neo4j_user", None) or os.getenv("NEO4J_USER", "neo4j")
             pwd  = getattr(self, "neo4j_password", None) or os.getenv("NEO4J_PASSWORD", "palatiou")
             logger = getattr(self, "logger", None)
 
-            # Πιθανοί χάρτες παραμέτρων
             param_map = {
                 "uri": uri, "neo4j_uri": uri, "bolt_uri": uri, "url": uri, "host": uri,
                 "user": user, "username": user, "neo4j_user": user,
@@ -2159,14 +2156,12 @@ class RealisticAnalysis:
                         out[pname] = source_map[pname]
                 return out
 
-            # Προσπάθησε constructor με ό,τι δέχεται
             try:
                 ctor_kwargs = subset_kwargs(BuilderClass.__init__, param_map)
                 self.kg_builder = BuilderClass(**ctor_kwargs) if ctor_kwargs else BuilderClass()
             except TypeError:
                 self.kg_builder = BuilderClass()
 
-            # Δοκίμασε configure/connect/set_connection/init_driver/setup
             for meth_name in ("configure", "connect", "set_connection", "init_driver", "setup"):
                 if hasattr(self.kg_builder, meth_name):
                     meth = getattr(self.kg_builder, meth_name)
@@ -2176,16 +2171,79 @@ class RealisticAnalysis:
                     except TypeError:
                         pass
 
-            # Τελικός έλεγχος
-            for m in required:
-                if not hasattr(self.kg_builder, m):
-                    raise TypeError(f"CRITICAL ERROR: KG builder '{BuilderClass.__name__}' is missing method '{m}'.")
-            if not hasattr(self.kg_builder, preferred):
+            # απαιτούμε και enforce για να ισιώνουμε τα splits
+            if not hasattr(self.kg_builder, "enforce_participant_level_split"):
                 raise TypeError(
-                    f"CRITICAL ERROR: KG builder '{BuilderClass.__name__}' is missing '{preferred}'. "
-                    "Add it to ensure participant-level split consistency."
+                    f"CRITICAL ERROR: KG builder '{BuilderClass.__name__}' is missing 'enforce_participant_level_split'."
                 )
 
+        def _ensure_ad_hoc_driver():
+            # Neo4j driver για τα ad-hoc queries
+            from neo4j import GraphDatabase
+            if getattr(self, "_ad_hoc_driver", None) is not None:
+                return
+            kb = getattr(self, "kg_builder", None)
+            if kb is not None:
+                for attr in ("driver", "_driver", "neo4j_driver"):
+                    drv = getattr(kb, attr, None)
+                    if drv is not None:
+                        self._ad_hoc_driver = drv
+                        break
+            if getattr(self, "_ad_hoc_driver", None) is None:
+                uri = getattr(self, "neo4j_uri", None) or os.getenv("NEO4J_URI", "bolt://localhost:7687")
+                user = getattr(self, "neo4j_user", None) or os.getenv("NEO4J_USER", "neo4j")
+                pwd  = getattr(self, "neo4j_password", None) or os.getenv("NEO4J_PASSWORD", "palatiou")
+                self._ad_hoc_driver = GraphDatabase.driver(uri, auth=(user, pwd))
+            if not hasattr(self, "_ad_hoc_database"):
+                self._ad_hoc_database = os.getenv("NEO4J_DATABASE", "neo4j")
+
+        def _get_neo4j_session():
+            _ensure_ad_hoc_driver()
+            return self._ad_hoc_driver.session(database=getattr(self, "_ad_hoc_database", "neo4j"))
+
+        def _fetch_embeddings_for_ids(split: str, sample_ids: list):
+            """
+            Επιστρέφει (X, found_ids, missing_ids) όπου:
+            - X: numpy array [n_found, dim] στην ΙΔΙΑ σειρά με τα ζητούμενα sample_ids (όσα βρέθηκαν).
+            - found_ids: λίστα με τα sample_ids που βρέθηκαν (στη σειρά)
+            - missing_ids: όσα δεν βρέθηκαν
+            """
+            if not sample_ids:
+                return np.zeros((0, 0), dtype=float), [], sample_ids
+
+            # Χτίζουμε θέσεις για να διατηρήσουμε σειρά
+            rows = [{"pos": i, "sid": str(sid)} for i, sid in enumerate(sample_ids)]
+
+            cypher = """
+            UNWIND $rows AS row
+            MATCH (:Sample {id: row.sid})-[:HAS_EMBEDDING]->(e:Embedding)
+            WHERE e.data_split = $split
+            RETURN row.pos AS pos, e.sample_id AS sid, e.vector AS vec
+            ORDER BY pos
+            """
+
+            with _get_neo4j_session() as s:
+                data = s.run(cypher, rows=rows, split=split).data()
+
+            if not data:
+                return np.zeros((0, 0), dtype=float), [], sample_ids
+
+            # Εξαγωγή με σειρά (pos)
+            data.sort(key=lambda r: r["pos"])
+            found_vecs = []
+            found_ids = []
+            for r in data:
+                vec = r["vec"]
+                # Προστασία: μερικές φορές ο οδηγός επιστρέφει memoryview/bytes -> cast σε list of float
+                vec = [float(x) for x in vec]
+                found_vecs.append(vec)
+                found_ids.append(r["sid"])
+
+            X = np.array(found_vecs, dtype=float)
+            missing_ids = [sid for sid in sample_ids if sid not in set(found_ids)]
+            return X, found_ids, missing_ids
+
+        # ---------- Banner ----------
         print("\n🧠 KNOWLEDGE GRAPH COMPARISON ANALYSIS")
         print("=" * 70)
         print("🎯 Comparing: Raw Features, NeuroGait KG, and Enhanced Features")
@@ -2209,8 +2267,9 @@ class RealisticAnalysis:
         y_test = test_clean['diagnosis']
         X_train_scaled, X_test_scaled = self.prepare_data_properly(X_train, X_test)
         
-        # 5) PIDs ανά δείγμα (για εκπαίδευση/weights κ.λπ.)
+        # 5) PIDs ανά δείγμα
         train_sample_pids_clean = train_clean['participant_id'].values
+        test_sample_pids_clean  = test_clean['participant_id'].values
         
         # === TIER 1: RAW CLINICAL FEATURES ===
         print(f"\n{'='*50}")
@@ -2231,29 +2290,73 @@ class RealisticAnalysis:
         train_participants = train_clean['participant_id'].unique()
         test_participants  = test_clean['participant_id'].unique()
 
-        # 7) Βεβαιώσου ότι υπάρχει builder & ΕΦΑΡΜΟΣΕ uniform split ΣΤΟ KG
+        # 7) Βεβαιώσου ότι υπάρχει builder & driver και ΕΦΑΡΜΟΣΕ uniform split ΣΤΟ KG
         _ensure_kg_builder_local()
-        self._ensure_ad_hoc_driver()  # <<<<<<<<<< ΠΡΟΣΘΗΚΗ: driver για τα ad-hoc queries του analyzer
+        _ensure_ad_hoc_driver()
         self.kg_builder.enforce_participant_level_split(
             train_participants.tolist(),
             test_participants.tolist()
         )
 
-        # 8) Δημιουργία embeddings ΑΠΟ τη Neo4j (ΧΩΡΙΣ fallbacks)
-        X_train_kg, X_test_kg = self.create_neurogait_kg_embeddings(
-            train_participants, test_participants, align_with_kg=False
-        )
+        # 7.1) Ανάκτησε/σύνθεσε sample_ids ΣΤΟΝ ΙΔΙΟ πίνακα (train/test)
+        # Προτιμάμε υπάρχουσα στήλη 'sample_id'. Εναλλακτικά 'sample_index' -> S_<pid>_<sample_index>.
+        def _resolve_sample_ids(df_clean):
+            if 'sample_id' in df_clean.columns:
+                return df_clean['sample_id'].astype(str).tolist()
+            if 'sample_index' in df_clean.columns:
+                # sample_id schema: S_<participant_id>_<sample_index>
+                return [f"S_{str(pid)}_{int(idx)}" for pid, idx in zip(df_clean['participant_id'], df_clean['sample_index'])]
+            # Αν δεν υπάρχει τίποτα, σταματάμε με σαφές μήνυμα: θέλουμε ρητά τα sample_ids μετά το preprocessing.
+            raise RuntimeError(
+                "CRITICAL ERROR: Cannot align KG embeddings without 'sample_id' (or 'sample_index') "
+                "in the cleaned data. Ensure preprocess_data retains a 'sample_id' column."
+            )
 
-        # 9) Σαφής έλεγχος: πρέπει να υπάρχουν embeddings και για train και για test
-        if (X_train_kg is None or X_test_kg is None or
-            X_train_kg.shape[0] == 0 or X_test_kg.shape[0] == 0):
+        train_sample_ids_ordered = _resolve_sample_ids(train_clean)
+        test_sample_ids_ordered  = _resolve_sample_ids(test_clean)
+
+        # 8) Δημιουργία KG embeddings **ακριβώς** για αυτά τα sample_ids και **στην ίδια σειρά**
+        X_train_kg, found_train_ids, miss_train_ids = _fetch_embeddings_for_ids("train", train_sample_ids_ordered)
+        X_test_kg,  found_test_ids,  miss_test_ids  = _fetch_embeddings_for_ids("test",  test_sample_ids_ordered)
+
+        # 9) Έλεγχοι/στοίχιση με μάσκες ώστε X,y,pids να έχουν ίσο μήκος και ίδια σειρά
+        if X_train_kg.shape[0] == 0 or X_test_kg.shape[0] == 0:
             raise RuntimeError(
                 "CRITICAL ERROR: No KG embeddings returned after enforcing participant-level split. "
-                "Verify each train/test participant has exactly the expected number of Sample and Embedding nodes."
+                "Check that Sample/Embedding nodes exist for the cleaned train/test samples."
             )
-        
+
+        # Χτίζουμε σύνολο από found ids για γρήγορο masking
+        set_found_train = set(found_train_ids)
+        set_found_test  = set(found_test_ids)
+
+        # Μάσκες στη σειρά ΤΩΝ ΔΕΔΟΜΕΝΩΝ (train_clean/test_clean)
+        mask_train = np.array([sid in set_found_train for sid in train_sample_ids_ordered], dtype=bool)
+        mask_test  = np.array([sid in set_found_test  for sid in test_sample_ids_ordered ], dtype=bool)
+
+        # Κόβουμε y/pids και (για συνέπεια reporting) τα scaled X των raw, μόνο για το KG tier
+        y_train_k = np.asarray(y_train)[mask_train]
+        y_test_k  = np.asarray(y_test)[mask_test]
+        train_pids_k = np.asarray(train_sample_pids_clean)[mask_train]
+        test_pids_k  = np.asarray(test_sample_pids_clean)[mask_test]
+
+        # Διαστασιολογικοί έλεγχοι
+        if not (X_train_kg.shape[0] == y_train_k.shape[0] == train_pids_k.shape[0]):
+            raise RuntimeError(
+                f"CRITICAL ERROR (train KG alignment): X={X_train_kg.shape[0]}, y={y_train_k.shape[0]}, pids={train_pids_k.shape[0]}"
+            )
+        if not (X_test_kg.shape[0] == y_test_k.shape[0] == test_pids_k.shape[0]):
+            raise RuntimeError(
+                f"CRITICAL ERROR (test KG alignment): X={X_test_kg.shape[0]}, y={y_test_k.shape[0]}, pids={test_pids_k.shape[0]}"
+            )
+
+        # Προειδοποίηση αν πετάξαμε δείγματα
+        if miss_train_ids or miss_test_ids:
+            print(f"⚠️ Dropped samples without KG embeddings -> train: {len(miss_train_ids)}, test: {len(miss_test_ids)}")
+
+        # Εκπαίδευση με πλήρως στοιχισμένα KG embeddings
         neurogait_kg_results = self.train_optimized_models(
-            X_train_kg, X_test_kg, y_train, y_test, train_sample_pids_clean, "NeuroGait KG"
+            X_train_kg, X_test_kg, y_train_k, y_test_k, train_pids_k, "NeuroGait KG"
         )
         
         # === TIER 3: ENHANCED FEATURES ===
@@ -2313,6 +2416,7 @@ class RealisticAnalysis:
                 'selected_count': len(selected_features)
             }
         }
+
     def print_kg_comparison_results(self, all_results, clinical_set_name, data_summary, statistical_results):
         """Print comprehensive KG comparison results"""
         
