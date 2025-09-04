@@ -840,7 +840,7 @@ class RealisticAnalysis:
         Επιστρέφει σύνολο από strings (participant ids όπως είναι αποθηκευμένα).
         """
         q = """
-        MATCH (p:Participant)-[:HAS_SAMPLE]->(s:Sample)-[:HAS_EMBEDDING]->(e:Embedding)
+        MATCH (p:Participant)-[:HAS_SAMPLE]->(s:Sample)-[:HAS_EMBEDDING]->(e:Embedding)  
         WHERE e.data_split = $split
         RETURN collect(DISTINCT toString(p.id)) AS pids
         """
