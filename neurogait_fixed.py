@@ -2014,7 +2014,7 @@ class RealisticAnalysis:
         
         # Create KG embeddings using Neo4j
         X_train_kg, X_test_kg = self.create_neurogait_kg_embeddings(
-            train_participants, test_participants
+            train_participants, test_participants, align_with_kg=False
         )
         
         # Ensure we have valid KG embeddings
