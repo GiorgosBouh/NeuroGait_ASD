@@ -973,7 +973,7 @@ class SynchronizedLeakageFreeKGBuilder:
         
         # Recreate participant IDs after duplicate removal
         df_final = df_final.reset_index(drop=True)
-        df_final['participant_id'] = df_final.index // self.samples_per_participant
+        df_final['participant_id'] = (df_final.index // self.samples_per_participant) + 1
         
         logger.info(f"   📊 Final preprocessing: {len(df)} → {len(df_final)} samples")
         logger.info(f"   📊 Constant features removed: {len(constant_features)}")
