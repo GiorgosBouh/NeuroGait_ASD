@@ -366,7 +366,7 @@ class SynchronizedLeakageFreeKGBuilder:
             logger.info(f"📊 Converted {len(converted_features)} numeric features")
             
             # Create participant structure (IDENTICAL to analysis script)
-            df['participant_id'] = df.index // self.samples_per_participant
+            df['participant_id'] = (df.index // self.samples_per_participant) + 1
             df['diagnosis_binary'] = df['class'].map({'A': 1, 'T': 0})
             df['diagnosis'] = df['class'].map({'A': 'ASD', 'T': 'Typical'})
             

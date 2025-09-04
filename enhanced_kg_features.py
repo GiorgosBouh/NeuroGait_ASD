@@ -67,7 +67,7 @@ class EnhancedKGFeatureBuilder:
         # participant_id: βάσει index//samples_per_participant αν δεν υπάρχει ήδη
         if "participant_id" not in df.columns:
             try:
-                df["participant_id"] = df.index // self.samples_per_participant
+                df["participant_id"] = (df.index // self.samples_per_participant) + 1
             except Exception as e:
                 logger.error(f"❌ Failed while creating participant_id: {e}")
                 raise
@@ -186,7 +186,8 @@ class EnhancedKGFeatureBuilder:
         participant_ids = (
             df[cols["participant_id"]].astype(str).to_numpy()
             if cols["participant_id"] and cols["participant_id"] in df.columns
-            else np.array([str(i // self.samples_per_participant) for i in range(len(df))])
+            else np.array([str((i // self.samples_per_participant) + 1) for i in range(len(df))])
+
         )
 
         meta = {

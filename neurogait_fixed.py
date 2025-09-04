@@ -361,7 +361,7 @@ class RealisticAnalysis:
         print(f"📊 Converted {len(converted_features)} numeric features")
         
         # Participant mapping
-        df['participant_id'] = df.index // self.samples_per_participant
+        df['participant_id'] = (df.index // self.samples_per_participant) + 1
         
         # Use original diagnosis without artificial bias correction
         df['diagnosis'] = df['class'].map({'A': 1, 'T': 0})
