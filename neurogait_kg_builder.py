@@ -620,28 +620,26 @@ class SynchronizedLeakageFreeKGBuilder:
     def create_participants_and_samples(self, df_final):
         """
         Idempotent creation of Participants, Samples, and their relationships.
-        - Ανιχνεύει ονόματα στηλών (participant_id, sample_id, diagnosis, data_split, augmentation, velocity)
-        - Αν δεν υπάρχει sample_id, το συνθέτει: S_<participant>_<rowindex>
-        - Χρησιμοποιεί MERGE για να αποφύγει duplicate/constraint errors
+        - Εντοπίζει στήλες (participant_id, sample_id, diagnosis, data_split, augmentation, velocity)
+        - Αν δεν υπάρχει sample_id στο DF, το συνθέτει ως S_<participant>_<idx> όπου idx = DataFrame index
+        - MERGE για αποφυγή διπλοτύπων
         """
         cols = self._resolve_columns(df_final)
-
-        # Υποχρεωτικά πεδία: participant_id (και sample_id ή σύνθεση)
         if not cols["participant_id"]:
             raise ValueError(
                 f"Δεν βρέθηκε στήλη participant_id. Διαθέσιμες στήλες: {list(df_final.columns)}"
             )
 
         rows = []
-        for i, (_, r) in enumerate(df_final.iterrows()):
+        # Χρησιμοποιούμε ΑΠΕΥΘΕΙΑΣ το index του DataFrame (όχι enumerate)
+        for idx, r in df_final.iterrows():
             pid = str(r[cols["participant_id"]])
-            # sample_id: από στήλη αν υπάρχει, αλλιώς σύνθεση
-            if cols["sample_id"] and cols["sample_id"] in r:
+
+            # sample_id από στήλη αν υπάρχει/είναι τιμήσιμη, αλλιώς S_<pid>_<idx>
+            if cols["sample_id"] and cols["sample_id"] in r and pd.notna(r[cols["sample_id"]]):
                 sid = str(r[cols["sample_id"]])
             else:
-                # Σύνθεση ασφαλούς μοναδικού id ανά γραμμή
-                # (προαιρετικά μπορείς να ενσωματώσεις και augmentation/split αν θέλεις)
-                sid = f"S_{pid}_{i}"
+                sid = f"S_{pid}_{idx}"
 
             rows.append({
                 "participant_id": pid,
@@ -650,9 +648,7 @@ class SynchronizedLeakageFreeKGBuilder:
                 "augmentation": (r[cols["augmentation"]] if cols["augmentation"] and cols["augmentation"] in r else "original"),
                 "sample_id": sid,
                 "velocity": (
-                    float(r[cols["velocity"]])
-                    if cols["velocity"] and cols["velocity"] in r and r[cols["velocity"]] is not None
-                    else None
+                    float(r[cols["velocity"]]) if cols["velocity"] and cols["velocity"] in r and r[cols["velocity"]] is not None else None
                 ),
             })
 
@@ -688,33 +684,38 @@ class SynchronizedLeakageFreeKGBuilder:
         self.logger.info("✅ Participants & Samples upserted without duplicates")
     
     def create_embeddings_in_graph(self, df, embedding_cols):
-        """Store embeddings with leakage prevention metadata"""
+        """Store embeddings with leakage prevention metadata, using CONSISTENT sample_id = S_<pid>_<idx>"""
         logger.info("💾 Storing leakage-free embeddings in graph...")
-        
+
         with self.driver.session() as session:
             batch_size = 100
-            for i in range(0, len(df), batch_size):
-                batch = df.iloc[i:i+batch_size]
+            for start in range(0, len(df), batch_size):
+                batch = df.iloc[start:start+batch_size]
                 embeddings_data = []
-                
+
                 for idx, row in batch.iterrows():
-                    # Use proper sample ID based on participant and index
-                    participant_id = str(row['participant_id'])
-                    sample_index = idx % self.samples_per_participant
-                    sample_id = f"S_{participant_id}_{sample_index}"
-                    
-                    embedding_vector = [row[col] for col in embedding_cols]
-                    
+                    pid = str(row['participant_id'])
+
+                    # Αν υπάρχει ήδη sample_id στο DF χρησιμοποίησέ το, αλλιώς S_<pid>_<idx>
+                    sid = None
+                    if 'sample_id' in row and pd.notna(row['sample_id']):
+                        sid = str(row['sample_id'])
+                    else:
+                        sid = f"S_{pid}_{idx}"
+
+                    vector = [float(row[col]) for col in embedding_cols]
+
                     embeddings_data.append({
-                        'sample_id': sample_id,
-                        'participant_id': participant_id,
-                        'vector': embedding_vector,
-                        'dimension': len(embedding_vector),
+                        'sample_id': sid,
+                        'participant_id': pid,
+                        'vector': vector,
+                        'dimension': len(vector),
                         'data_split': row['data_split'],
                         'leakage_free': True,
                         'preprocessing_method': 'train_only_standardization'
                     })
-                
+
+                # ΣΚΕΜΜΕΝΑ διατηρούμε MATCH ώστε να "fail fast" αν δεν υπάρχουν Sample nodes με αυτό το id
                 session.run("""
                     UNWIND $embeddings AS e
                     MATCH (s:Sample {id: e.sample_id})
@@ -730,7 +731,7 @@ class SynchronizedLeakageFreeKGBuilder:
                     })
                     CREATE (s)-[:HAS_EMBEDDING]->(embedding)
                 """, embeddings=embeddings_data)
-        
+
         logger.info("✅ Leakage-free embeddings stored in graph with metadata")
     
     def comprehensive_leakage_validation(self):
