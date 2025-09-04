@@ -840,8 +840,8 @@ class RealisticAnalysis:
         Επιστρέφει σύνολο από strings (participant ids όπως είναι αποθηκευμένα).
         """
         q = """
-        MATCH (p:Participant)-[:HAS_SAMPLE]->(:Sample)<-[:EMBEDDING_OF]-(e:Embedding)
-        WHERE e.split = $split
+        MATCH (p:Participant)-[:HAS_SAMPLE]->(s:Sample)-[:HAS_EMBEDDING]->(e:Embedding)
+        WHERE e.data_split = $split
         RETURN collect(DISTINCT toString(p.id)) AS pids
         """
         with self._get_neo4j_session() as s:
