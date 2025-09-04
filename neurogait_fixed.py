@@ -86,21 +86,30 @@ def rank_biserial_to_label(r):
         return "Negligible"
 
 # ΠΡΟΣΘΗΚΗ - Enhanced Features Support
+# STRICT DEPENDENCY CHECKING - NO FALLBACKS
 try:
     from neurogait_kg_builder import SynchronizedLeakageFreeKGBuilder
     NEUROGAIT_KG_AVAILABLE = True
-    print("✅ NeuroGait KG Builder available (using neurogait_kg_builder.py)")
+    print("✅ NeuroGait KG Builder available")
 except ImportError as e:
-    print(f"⚠️ NeuroGait KG Builder not available - {str(e)}")
-    print("   Ensure neurogait_kg_builder.py exists in the same directory")
+    print(f"❌ CRITICAL ERROR: NeuroGait KG Builder not available - {str(e)}")
+    print("   REQUIREMENT: neurogait_kg_builder.py must exist in the same directory")
     NEUROGAIT_KG_AVAILABLE = False
+
 try:
     from enhanced_kg_features import EnhancedKGFeatureBuilder
+    # STRICT METHOD VALIDATION
+    test_builder = EnhancedKGFeatureBuilder()
+    if not hasattr(test_builder, 'create_enhanced_kg_features'):
+        raise ImportError("CRITICAL ERROR: EnhancedKGFeatureBuilder missing required method 'create_enhanced_kg_features'")
     ENHANCED_FEATURES_AVAILABLE = True
-    print("✅ Enhanced KG Features available")
+    print("✅ Enhanced KG Features available with all required methods")
 except ImportError as e:
-    print(f"⚠️ Enhanced features not available - {str(e)}")
-    print("   Ensure enhanced_kg_features.py contains EnhancedKGFeatureBuilder class")
+    print(f"❌ CRITICAL ERROR: Enhanced features not available - {str(e)}")
+    print("   REQUIREMENT: enhanced_kg_features.py must contain complete EnhancedKGFeatureBuilder class")
+    ENHANCED_FEATURES_AVAILABLE = False
+except Exception as e:
+    print(f"❌ CRITICAL ERROR: Enhanced features validation failed - {str(e)}")
     ENHANCED_FEATURES_AVAILABLE = False
 
 
@@ -547,57 +556,106 @@ class RealisticAnalysis:
         
         return X_train_scaled, X_test_scaled
         
-    def create_enhanced_kg_embeddings(self, X_train, X_test):
-        """Create enhanced KG embeddings with better parameters"""
-        print(f"\n🧠 ENHANCED KG EMBEDDINGS:")
+    def create_enhanced_features_embeddings(self, train_data, test_data, features):
+        """Create enhanced features using EnhancedKGFeatureBuilder - STRICT VERSION"""
+        print(f"\n🔥 ENHANCED KG FEATURES:")
         
-        def optimized_graph_processing(X):
-            """Optimized graph processing with stronger interactions"""
-            X_kg = X.copy()
-            n_samples, n_features = X.shape
-            
-            print(f"      Processing {n_features} features with enhanced interactions...")
-            
-            # Stronger feature interactions
-            if n_features >= 3:
-                interaction_strength = 0.08
-                
-                # More sophisticated interactions
-                for i in range(min(8, n_features - 1)):
-                    for j in range(i + 1, min(i + 4, n_features)):
-                        interaction = X_kg[:, i] * X_kg[:, j] * interaction_strength
-                        X_kg[:, i] += interaction * 0.3
-                        X_kg[:, j] += interaction * 0.3
-            
-            # Enhanced smoothing
-            if n_features >= 5:
-                smoothing = 0.06
-                for i in range(2, n_features - 2):
-                    X_kg[:, i] = ((1 - 4*smoothing) * X_kg[:, i] + 
-                                  smoothing * X_kg[:, i-2] + 
-                                  smoothing * X_kg[:, i-1] + 
-                                  smoothing * X_kg[:, i+1] + 
-                                  smoothing * X_kg[:, i+2])
-            
-            # Non-linear transformation
-            X_kg = np.tanh(X_kg * 0.5)
-            
-            # Normalize but preserve structure
-            for i in range(n_features):
-                std = np.std(X_kg[:, i])
-                if std > 1e-6:
-                    X_kg[:, i] = X_kg[:, i] / std
-                    X_kg[:, i] = np.clip(X_kg[:, i], -3, 3)
-            
-            return X_kg
+        if not ENHANCED_FEATURES_AVAILABLE:
+            raise ImportError("CRITICAL ERROR: Enhanced features not available. Cannot proceed without EnhancedKGFeatureBuilder.")
         
-        X_train_kg = optimized_graph_processing(X_train)
-        X_test_kg = optimized_graph_processing(X_test)
+        # Import with strict checking
+        try:
+            from enhanced_kg_features import EnhancedKGFeatureBuilder
+        except ImportError as e:
+            raise ImportError(f"CRITICAL ERROR: Cannot import EnhancedKGFeatureBuilder: {e}")
         
-        print(f"   ✅ Enhanced KG embeddings created")
-        print(f"      Train: {X_train_kg.shape}, Test: {X_test_kg.shape}")
+        enhancer = EnhancedKGFeatureBuilder()
         
-        return X_train_kg, X_test_kg
+        # Verify method exists
+        if not hasattr(enhancer, 'create_enhanced_kg_features'):
+            raise AttributeError("CRITICAL ERROR: EnhancedKGFeatureBuilder missing 'create_enhanced_kg_features' method")
+        
+        # Create enhanced features for training data
+        try:
+            X_train_enhanced, feature_names = enhancer.create_enhanced_kg_features(train_data, features)
+        except Exception as e:
+            raise RuntimeError(f"CRITICAL ERROR: Enhanced feature creation failed for training data: {e}")
+        
+        # Create enhanced features for test data
+        try:
+            X_test_enhanced, _ = enhancer.create_enhanced_kg_features(test_data, features)
+        except Exception as e:
+            raise RuntimeError(f"CRITICAL ERROR: Enhanced feature creation failed for test data: {e}")
+        
+        # STRICT VALIDATION - NO TOLERANCE FOR ERRORS
+        if X_train_enhanced.shape[0] != len(train_data):
+            raise ValueError(f"CRITICAL ERROR: Train enhanced features shape mismatch: got {X_train_enhanced.shape[0]}, expected {len(train_data)}")
+        
+        if X_test_enhanced.shape[0] != len(test_data):
+            raise ValueError(f"CRITICAL ERROR: Test enhanced features shape mismatch: got {X_test_enhanced.shape[0]}, expected {len(test_data)}")
+        
+        if X_train_enhanced.shape[1] != X_test_enhanced.shape[1]:
+            raise ValueError(f"CRITICAL ERROR: Feature dimension mismatch: train {X_train_enhanced.shape[1]} != test {X_test_enhanced.shape[1]}")
+        
+        if np.isnan(X_train_enhanced).any() or np.isnan(X_test_enhanced).any():
+            raise ValueError("CRITICAL ERROR: Enhanced features contain NaN values")
+        
+        if np.isinf(X_train_enhanced).any() or np.isinf(X_test_enhanced).any():
+            raise ValueError("CRITICAL ERROR: Enhanced features contain infinite values")
+        
+        print(f"   ✅ Enhanced KG features created successfully")
+        print(f"      Train: {X_train_enhanced.shape}, Test: {X_test_enhanced.shape}")
+        print(f"      Features: {len(features)} → {X_train_enhanced.shape[1]} (+{X_train_enhanced.shape[1] - len(features)})")
+        
+        return X_train_enhanced, X_test_enhanced
+            
+    def optimized_graph_processing(X):
+        """Optimized graph processing with stronger interactions"""
+        X_kg = X.copy()
+        n_samples, n_features = X.shape
+        
+        print(f"      Processing {n_features} features with enhanced interactions...")
+        
+        # Stronger feature interactions
+        if n_features >= 3:
+            interaction_strength = 0.08
+            
+            # More sophisticated interactions
+            for i in range(min(8, n_features - 1)):
+                for j in range(i + 1, min(i + 4, n_features)):
+                    interaction = X_kg[:, i] * X_kg[:, j] * interaction_strength
+                    X_kg[:, i] += interaction * 0.3
+                    X_kg[:, j] += interaction * 0.3
+        
+        # Enhanced smoothing
+        if n_features >= 5:
+            smoothing = 0.06
+            for i in range(2, n_features - 2):
+                X_kg[:, i] = ((1 - 4*smoothing) * X_kg[:, i] + 
+                                smoothing * X_kg[:, i-2] + 
+                                smoothing * X_kg[:, i-1] + 
+                                smoothing * X_kg[:, i+1] + 
+                                smoothing * X_kg[:, i+2])
+        
+        # Non-linear transformation
+        X_kg = np.tanh(X_kg * 0.5)
+        
+        # Normalize but preserve structure
+        for i in range(n_features):
+            std = np.std(X_kg[:, i])
+            if std > 1e-6:
+                X_kg[:, i] = X_kg[:, i] / std
+                X_kg[:, i] = np.clip(X_kg[:, i], -3, 3)
+        
+        return X_kg
+    
+    X_train_kg = optimized_graph_processing(X_train)
+    X_test_kg = optimized_graph_processing(X_test)
+    
+    print(f"   ✅ Enhanced KG embeddings created")
+    print(f"      Train: {X_train_kg.shape}, Test: {X_test_kg.shape}")
+    
+    return X_train_kg, X_test_kg
     
     def create_conservative_kg_embeddings(self, X_train, X_test):
         """Create conservative KG embeddings"""
@@ -825,21 +883,19 @@ class RealisticAnalysis:
         return self._ad_hoc_driver.session(database=self._ad_hoc_database or "neo4j")
 
 
-def _close_ad_hoc_driver(self):
-    """Κλείνει προαιρετικά τον ad-hoc driver στο teardown."""
-    try:
-        if self._ad_hoc_driver is not None:
-            self._ad_hoc_driver.close()
-            self._ad_hoc_driver = None
-    except Exception:
-        pass
+    def _close_ad_hoc_driver(self):
+        """Κλείνει προαιρετικά τον ad-hoc driver στο teardown."""
+        try:
+            if self._ad_hoc_driver is not None:
+                self._ad_hoc_driver.close()
+                self._ad_hoc_driver = None
+        except Exception:
+            pass
 
     def create_neurogait_kg_embeddings(self, train_participants, test_participants, *args, align_with_kg=True, **kwargs):
         """
-        Φτιάχνει X_train_kg, X_test_kg από τον Neo4j KG.
-        - Συμβατή με παλιές κλήσεις (δέχεται extra positional *args).
-        - Αν υπάρχει ασυμφωνία splits Analysis↔KG, ευθυγραμμίζει στο KG (εκτός αν align_with_kg=False).
-        - Αναζητά vector property σε: 'vector', 'values', ή 'embedding'.
+        STRICT VERSION: Φτιάχνει X_train_kg, X_test_kg από τον Neo4j KG.
+        NO FALLBACKS - FAILS FAST ON ANY ERROR
         """
         def _pick_vec(e_props):
             for key in ("vector", "values", "embedding"):
@@ -847,11 +903,17 @@ def _close_ad_hoc_driver(self):
                     return e_props[key]
             return None
 
-        # --- 1) Splits από KG
-        kg_train = self._kg_get_participants_by_split("train")
-        kg_test  = self._kg_get_participants_by_split("test")
+        # --- 1) Splits από KG - STRICT REQUIREMENT
+        try:
+            kg_train = self._kg_get_participants_by_split("train")
+            kg_test = self._kg_get_participants_by_split("test")
+        except Exception as e:
+            raise RuntimeError(f"CRITICAL ERROR: Cannot get KG splits: {e}")
+        
+        if not kg_train and not kg_test:
+            raise ValueError("CRITICAL ERROR: No KG splits found. KG must be populated first.")
 
-        # --- 2) Logging κατάστασης (ασφαλές αν δεν έχεις self.logger)
+        # --- 2) Logging κατάστασης
         logger = getattr(self, "logger", None)
         def _log(level, msg):
             if logger is not None:
@@ -860,37 +922,21 @@ def _close_ad_hoc_driver(self):
                 print(msg)
 
         an_train = set(map(str, train_participants))
-        an_test  = set(map(str, test_participants))
-        _log("info", f"   📊 Analysis script - Train participants: {sorted(list(an_train))[:10]}... ({len(an_train)} total)")
-        _log("info", f"   📊 Analysis script - Test participants:  {sorted(list(an_test))[:10]}... ({len(an_test)} total)")
-        _log("info", f"   📊 KG - Train participants: {sorted(list(kg_train))[:10]}... ({len(kg_train)} total)")
-        _log("info", f"   📊 KG - Test participants:  {sorted(list(kg_test))[:10]}... ({len(kg_test)} total)")
-
-        # --- 3) Ευθυγράμμιση με KG (αν υπάρχει)
-        if align_with_kg and (kg_train or kg_test):
-            miss_train = sorted(an_train - kg_train)
-            miss_test  = sorted(an_test - kg_test)
-            if miss_train or miss_test:
-                _log("warning",
-                    "❌ Participant split mismatch detected. Aligning analysis splits to KG splits.\n"
-                    f"   Missing in KG (train): {miss_train[:10]}{' ...' if len(miss_train) > 10 else ''}\n"
-                    f"   Missing in KG (test):  {miss_test[:10]}{' ...' if len(miss_test) > 10 else ''}"
+        an_test = set(map(str, test_participants))
+        
+        # --- 3) STRICT ALIGNMENT CHECKING
+        if align_with_kg:
+            missing_train = an_train - kg_train
+            missing_test = an_test - kg_test
+            if missing_train or missing_test:
+                raise ValueError(
+                    f"CRITICAL ERROR: Participant split mismatch detected.\n"
+                    f"Missing in KG (train): {sorted(list(missing_train))}\n"
+                    f"Missing in KG (test): {sorted(list(missing_test))}\n"
+                    f"KG must contain all analysis participants."
                 )
-                def _to_int_if_possible(xset):
-                    out = []
-                    for x in xset:
-                        try:
-                            out.append(int(x))
-                        except Exception:
-                            out.append(x)
-                    return out
-                train_participants = _to_int_if_possible(kg_train)
-                test_participants  = _to_int_if_possible(kg_test)
-                _log("info", f"✅ Aligned to KG splits -> Train: {len(train_participants)} | Test: {len(test_participants)}")
-        elif not (kg_train or kg_test):
-            _log("warning", "⚠️ KG split sets are empty. Proceeding with analysis-provided splits.")
 
-        # --- 4) Φέρε embeddings από Neo4j
+        # --- 4) Φέρε embeddings από Neo4j - STRICT REQUIREMENTS
         cypher = """
         MATCH (p:Participant)-[:HAS_SAMPLE]->(s:Sample)<-[:EMBEDDING_OF]-(e:Embedding)
         WHERE e.split = $split AND toString(p.id) IN $pids
@@ -898,57 +944,90 @@ def _close_ad_hoc_driver(self):
         """
 
         X_train, X_test = [], []
-        with self._get_neo4j_session() as session:
-            # TRAIN
-            pids_train = list(map(str, train_participants))
-            if pids_train:
-                for rec in session.run(cypher, split="train", pids=pids_train):
+        
+        try:
+            with self._get_neo4j_session() as session:
+                # TRAIN
+                pids_train = list(map(str, train_participants))
+                if not pids_train:
+                    raise ValueError("CRITICAL ERROR: No training participant IDs provided")
+                
+                train_records = list(session.run(cypher, split="train", pids=pids_train))
+                if not train_records:
+                    raise ValueError(f"CRITICAL ERROR: No training embeddings found for participants: {pids_train}")
+                
+                for rec in train_records:
                     emb_node = rec["emb"]
                     e_props = dict(getattr(emb_node, "_properties", emb_node))
                     vec = _pick_vec(e_props)
                     if vec is None:
-                        continue
+                        raise ValueError(f"CRITICAL ERROR: No valid embedding vector found for training participant {rec['pid']}")
+                    
                     try:
                         X_train.append(np.asarray(vec, dtype=float))
-                    except Exception:
-                        if isinstance(vec, str):
-                            cleaned = vec.strip().strip("[]")
-                            if cleaned:
-                                arr = np.fromstring(cleaned, sep=",")
-                                X_train.append(arr)
+                    except Exception as e:
+                        raise ValueError(f"CRITICAL ERROR: Cannot convert embedding vector for training participant {rec['pid']}: {e}")
 
-            # TEST
-            pids_test = list(map(str, test_participants))
-            if pids_test:
-                for rec in session.run(cypher, split="test", pids=pids_test):
+                # TEST
+                pids_test = list(map(str, test_participants))
+                if not pids_test:
+                    raise ValueError("CRITICAL ERROR: No test participant IDs provided")
+                
+                test_records = list(session.run(cypher, split="test", pids=pids_test))
+                if not test_records:
+                    raise ValueError(f"CRITICAL ERROR: No test embeddings found for participants: {pids_test}")
+                
+                for rec in test_records:
                     emb_node = rec["emb"]
                     e_props = dict(getattr(emb_node, "_properties", emb_node))
                     vec = _pick_vec(e_props)
                     if vec is None:
-                        continue
+                        raise ValueError(f"CRITICAL ERROR: No valid embedding vector found for test participant {rec['pid']}")
+                    
                     try:
                         X_test.append(np.asarray(vec, dtype=float))
-                    except Exception:
-                        if isinstance(vec, str):
-                            cleaned = vec.strip().strip("[]")
-                            if cleaned:
-                                arr = np.fromstring(cleaned, sep=",")
-                                X_test.append(arr)
+                    except Exception as e:
+                        raise ValueError(f"CRITICAL ERROR: Cannot convert embedding vector for test participant {rec['pid']}: {e}")
 
-        # --- 5) Στοκάρισμα σε σταθερό σχήμα
-        def _stack_or_empty(vectors):
-            if len(vectors) == 0:
-                return np.empty((0, 0), dtype=float)
-            dim = max(len(v) for v in vectors)
-            packed = [np.asarray(v, dtype=float).reshape(-1) for v in vectors if len(v) == dim]
-            if not packed:
-                return np.empty((0, 0), dtype=float)
-            return np.vstack(packed)
+        except Exception as e:
+            raise RuntimeError(f"CRITICAL ERROR: Neo4j query failed: {e}")
 
-        X_train_kg = _stack_or_empty(X_train)
-        X_test_kg  = _stack_or_empty(X_test)
+        # --- 5) STRICT VALIDATION
+        if len(X_train) == 0:
+            raise ValueError("CRITICAL ERROR: No training embeddings retrieved")
+        
+        if len(X_test) == 0:
+            raise ValueError("CRITICAL ERROR: No test embeddings retrieved")
+        
+        # Check dimension consistency
+        train_dims = [len(v) for v in X_train]
+        test_dims = [len(v) for v in X_test]
+        
+        if len(set(train_dims)) > 1:
+            raise ValueError(f"CRITICAL ERROR: Inconsistent training embedding dimensions: {set(train_dims)}")
+        
+        if len(set(test_dims)) > 1:
+            raise ValueError(f"CRITICAL ERROR: Inconsistent test embedding dimensions: {set(test_dims)}")
+        
+        if train_dims[0] != test_dims[0]:
+            raise ValueError(f"CRITICAL ERROR: Dimension mismatch between train ({train_dims[0]}) and test ({test_dims[0]})")
+
+        # Stack arrays
+        try:
+            X_train_kg = np.vstack(X_train)
+            X_test_kg = np.vstack(X_test)
+        except Exception as e:
+            raise ValueError(f"CRITICAL ERROR: Cannot stack embedding arrays: {e}")
+        
+        # Final validation
+        if np.isnan(X_train_kg).any() or np.isnan(X_test_kg).any():
+            raise ValueError("CRITICAL ERROR: KG embeddings contain NaN values")
+        
+        if np.isinf(X_train_kg).any() or np.isinf(X_test_kg).any():
+            raise ValueError("CRITICAL ERROR: KG embeddings contain infinite values")
+        
         _log("info", f"🧠 KG embeddings ready: Train {X_train_kg.shape}, Test {X_test_kg.shape}")
-        return X_train_kg, X_test_kg    
+        return X_train_kg, X_test_kg
 
     def create_enhanced_features_embeddings(self, train_data, test_data, features):
         """Create enhanced features using EnhancedKGFeatureBuilder - FIXED VERSION"""
@@ -1952,16 +2031,16 @@ def _close_ad_hoc_driver(self):
         print("🔥 TIER 3: ENHANCED FEATURES")
         print(f"{'='*50}")
         
-        enhanced_results = {}
-        if ENHANCED_FEATURES_AVAILABLE:
-            try:
-                X_train_enhanced, X_test_enhanced = self.create_enhanced_features_embeddings(
-                    train_clean, test_clean, selected_features
-                )
-                
-                enhanced_results = self.train_optimized_models(
-                    X_train_enhanced, X_test_enhanced, y_train, y_test, train_sample_pids_clean, "Enhanced Features"
-                )
+        if not ENHANCED_FEATURES_AVAILABLE:
+            raise ImportError("CRITICAL ERROR: Enhanced features not available. Cannot proceed with Tier 3 analysis.")
+        
+        X_train_enhanced, X_test_enhanced = self.create_enhanced_features_embeddings(
+            train_clean, test_clean, selected_features
+        )
+        
+        enhanced_results = self.train_optimized_models(
+            X_train_enhanced, X_test_enhanced, y_train, y_test, train_sample_pids_clean, "Enhanced Features"
+        )       
             except Exception as e:
                 print(f"❌ Enhanced features failed: {e}")
                 # Fallback to simple enhanced KG
