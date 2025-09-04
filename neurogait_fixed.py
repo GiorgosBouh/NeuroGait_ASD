@@ -2042,8 +2042,7 @@ class RealisticAnalysis:
             X_train_enhanced, X_test_enhanced, y_train, y_test, train_sample_pids_clean, "Enhanced Features"
         )       
             
-        else:
-            print("⚠️ Enhanced features not available - skipping")
+    
         
         # === COMPREHENSIVE COMPARISON ===
         print(f"\n{'='*70}")
