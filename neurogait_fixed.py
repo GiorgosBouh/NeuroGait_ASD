@@ -2041,13 +2041,7 @@ class RealisticAnalysis:
         enhanced_results = self.train_optimized_models(
             X_train_enhanced, X_test_enhanced, y_train, y_test, train_sample_pids_clean, "Enhanced Features"
         )       
-            except Exception as e:
-                print(f"❌ Enhanced features failed: {e}")
-                # Fallback to simple enhanced KG
-                X_train_enhanced, X_test_enhanced = self.create_enhanced_kg_embeddings(X_train_scaled, X_test_scaled)
-                enhanced_results = self.train_optimized_models(
-                    X_train_enhanced, X_test_enhanced, y_train, y_test, train_sample_pids_clean, "Enhanced Features (Fallback)"
-                )
+            
         else:
             print("⚠️ Enhanced features not available - skipping")
         
