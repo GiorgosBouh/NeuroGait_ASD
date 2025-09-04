@@ -649,13 +649,13 @@ class RealisticAnalysis:
         
         return X_kg
     
-    X_train_kg = optimized_graph_processing(X_train)
-    X_test_kg = optimized_graph_processing(X_test)
-    
-    print(f"   ✅ Enhanced KG embeddings created")
-    print(f"      Train: {X_train_kg.shape}, Test: {X_test_kg.shape}")
-    
-    return X_train_kg, X_test_kg
+        X_train_kg = optimized_graph_processing(X_train)
+        X_test_kg = optimized_graph_processing(X_test)
+        
+        print(f"   ✅ Enhanced KG embeddings created")
+        print(f"      Train: {X_train_kg.shape}, Test: {X_test_kg.shape}")
+        
+        return X_train_kg, X_test_kg
     
     def create_conservative_kg_embeddings(self, X_train, X_test):
         """Create conservative KG embeddings"""
