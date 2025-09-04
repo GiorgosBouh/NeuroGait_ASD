@@ -1975,81 +1975,192 @@ class RealisticAnalysis:
     
     def _ensure_kg_builder(self):
         """
-        Εξασφαλίζει ότι self.kg_builder υπάρχει.
-        - Φορτώνει δυναμικά το module neurogait_kg_builder
-        - Εντοπίζει κλάση που μοιάζει με KG builder (με τα απαιτούμενα methods)
-        - Κάνει instantiate με (uri, user, password, logger) ή αντίστοιχα neo4j_* kwargs
+        Φτιάχνει self.kg_builder δυναμικά από το neurogait_kg_builder.py, χωρίς να απαιτείται συγκεκριμένο όνομα κλάσης.
+        - Εντοπίζει κλάση που έχει τουλάχιστον: create_participants_and_samples, create_embeddings_in_graph
+        (ιδανικά και enforce_participant_level_split).
+        - Κάνει instantiate περνώντας ΜΟΝΟ τα kwargs που αποδέχεται ο constructor (uri/neo4j_uri/bolt_uri, user/username/neo4j_user, password/pwd/neo4j_password, logger).
+        - Αν δεν δέχεται τίποτα, κάνει zero-arg instantiate και δοκιμάζει configure/connect/set_connection/init_driver/setup με αντίστοιχα kwargs.
         """
         if getattr(self, "kg_builder", None) is not None:
             return
 
-        # 1) Φόρτωσε το module (έχεις ήδη import ως kgmod)
-        module = kgmod
+        module = kgmod  # ήδη import στο header
 
-        # 2) Βρες κλάση που έχει τα methods που θέλουμε
-        required_methods = {
-            "create_participants_and_samples",
-            "create_embeddings_in_graph",
-            "enforce_participant_level_split",
-        }
+        required = {"create_participants_and_samples", "create_embeddings_in_graph"}
+        preferred = "enforce_participant_level_split"
+
+        # Βρες υποψήφιες κλάσεις μέσα στο module
         candidates = []
         for name, obj in module.__dict__.items():
             if inspect.isclass(obj) and obj.__module__ == module.__name__:
-                if all(hasattr(obj, m) for m in required_methods):
+                if all(hasattr(obj, m) for m in required):
                     candidates.append(obj)
 
         if not candidates:
-            # Δώσε λίγο πιο χαλαρό φίλτρο (ίσως το enforce το πρόσθεσες τώρα)
-            loose_required = {
-                "create_participants_and_samples",
-                "create_embeddings_in_graph",
-            }
-            for name, obj in module.__dict__.items():
-                if inspect.isclass(obj) and obj.__module__ == module.__name__:
-                    if all(hasattr(obj, m) for m in loose_required):
-                        candidates.append(obj)
-
-        if not candidates:
             raise ImportError(
-                "CRITICAL ERROR: Could not locate a KG builder class in neurogait_kg_builder.py "
-                "with the required methods. Ensure your builder class defines: "
-                f"{sorted(list(required_methods))}"
+                "CRITICAL ERROR: No KG builder class found in neurogait_kg_builder.py with "
+                f"methods {sorted(list(required))}."
             )
 
-        # Πάρε την πρώτη κατάλληλη κλάση
+        # Πάρε την πρώτη που έχει και το preferred method, αλλιώς την πρώτη διαθέσιμη
+        def score(c):
+            return int(hasattr(c, preferred))
+        candidates.sort(key=score, reverse=True)
         BuilderClass = candidates[0]
 
-        # 3) Ρύθμισε credentials
+        # Παραμέτρους σύνδεσης (από ιδιότητες ή env)
         uri = getattr(self, "neo4j_uri", None) or os.getenv("NEO4J_URI", "bolt://localhost:7687")
         user = getattr(self, "neo4j_user", None) or os.getenv("NEO4J_USER", "neo4j")
         pwd  = getattr(self, "neo4j_password", None) or os.getenv("NEO4J_PASSWORD", "palatiou")
         logger = getattr(self, "logger", None)
 
-        # 4) Κάνε instantiate δοκιμάζοντας κοινές υπογραφές constructor
-        last_err = None
-        for kwargs in (
-            {"uri": uri, "user": user, "password": pwd, "logger": logger},
-            {"neo4j_uri": uri, "neo4j_user": user, "neo4j_password": pwd, "logger": logger},
-            {"uri": uri, "username": user, "password": pwd, "logger": logger},
-            {"uri": uri, "user": user, "pwd": pwd, "logger": logger},
-        ):
-            try:
-                self.kg_builder = BuilderClass(**kwargs)
-                break
-            except TypeError as e:
-                last_err = e
-                continue
+        # Πιθανοί χαρτογραφημένοι τίτλοι παραμέτρων για constructor/μέθοδους ρύθμισης
+        param_map = {
+            # URI
+            "uri": uri, "neo4j_uri": uri, "bolt_uri": uri, "url": uri, "host": uri,
+            # USER
+            "user": user, "username": user, "neo4j_user": user,
+            # PASSWORD
+            "password": pwd, "pwd": pwd, "neo4j_password": pwd,
+            # LOGGER
+            "logger": logger
+        }
 
-        if getattr(self, "kg_builder", None) is None:
+        # Helper: φτιάχνει dict με ΜΟΝΟ τα ονόματα που δέχεται ένα callable
+        def subset_kwargs(func, source_map):
+            try:
+                sig = inspect.signature(func)
+            except (TypeError, ValueError):
+                return {}
+            out = {}
+            for pname in sig.parameters.keys():
+                if pname in source_map and source_map[pname] is not None:
+                    out[pname] = source_map[pname]
+            return out
+
+        # 1) Προσπάθησε constructor με τα συμβατά kwargs
+        kg_instance = None
+        try:
+            ctor_kwargs = subset_kwargs(BuilderClass.__init__, param_map)
+            if ctor_kwargs:
+                kg_instance = BuilderClass(**ctor_kwargs)
+            else:
+                # zero-arg ctor
+                kg_instance = BuilderClass()
+        except TypeError:
+            # zero-arg fallback αν ο ctor δεν δέχεται τίποτα από τα παραπάνω
+            kg_instance = BuilderClass()
+
+        # 2) Αν υπάρχει κάποια μέθοδος ρύθμισης, δοκίμασε να τη καλέσεις με συμβατά kwargs
+        for meth_name in ("configure", "connect", "set_connection", "init_driver", "setup"):
+            if hasattr(kg_instance, meth_name):
+                meth = getattr(kg_instance, meth_name)
+                try:
+                    cfg_kwargs = subset_kwargs(meth, param_map)
+                    if cfg_kwargs:
+                        meth(**cfg_kwargs)
+                    else:
+                        # αν η μέθοδος δεν παίρνει τα παραπάνω ονόματα, δοκίμασε χωρίς args
+                        meth()
+                except TypeError:
+                    # αγνόησε αν δεν ταιριάζουν καθόλου
+                    pass
+
+        # 3) Τελικός έλεγχος ότι υπάρχουν τα αναγκαία methods και (ιδανικά) το enforce
+        for m in required:
+            if not hasattr(kg_instance, m):
+                raise TypeError(f"CRITICAL ERROR: KG builder '{BuilderClass.__name__}' is missing method '{m}'.")
+        if not hasattr(kg_instance, preferred):
             raise TypeError(
-                f"CRITICAL ERROR: Found KG builder class '{BuilderClass.__name__}', "
-                f"but failed to instantiate it with common constructor signatures. Last error: {last_err}"
+                f"CRITICAL ERROR: KG builder '{BuilderClass.__name__}' is missing '{preferred}'. "
+                "Add it to ensure participant-level split consistency."
             )
+
+        self.kg_builder = kg_instance
     
     def run_kg_comparison_analysis(self):
         """
         Run KG comparison analysis (Raw vs NeuroGait KG vs Enhanced Features)
         """
+        import os, inspect
+        import neurogait_kg_builder as kgmod
+
+        def _ensure_kg_builder_local():
+            # Αν υπάρχει ήδη, τέλος
+            if getattr(self, "kg_builder", None) is not None:
+                return
+
+            # Βρες κλάση builder μέσα στο neurogait_kg_builder
+            required = {"create_participants_and_samples", "create_embeddings_in_graph"}
+            preferred = "enforce_participant_level_split"
+
+            candidates = []
+            for name, obj in kgmod.__dict__.items():
+                if inspect.isclass(obj) and obj.__module__ == kgmod.__name__:
+                    if all(hasattr(obj, m) for m in required):
+                        candidates.append(obj)
+            if not candidates:
+                raise ImportError(
+                    "CRITICAL ERROR: No KG builder class found in neurogait_kg_builder.py "
+                    f"with methods {sorted(list(required))}."
+                )
+
+            # Δώσε προτεραιότητα σε κλάση που έχει και enforce_participant_level_split
+            candidates.sort(key=lambda c: int(hasattr(c, preferred)), reverse=True)
+            BuilderClass = candidates[0]
+
+            # Credentials
+            uri = getattr(self, "neo4j_uri", None) or os.getenv("NEO4J_URI", "bolt://localhost:7687")
+            user = getattr(self, "neo4j_user", None) or os.getenv("NEO4J_USER", "neo4j")
+            pwd  = getattr(self, "neo4j_password", None) or os.getenv("NEO4J_PASSWORD", "palatiou")
+            logger = getattr(self, "logger", None)
+
+            # Πιθανοί χάρτες παραμέτρων
+            param_map = {
+                "uri": uri, "neo4j_uri": uri, "bolt_uri": uri, "url": uri, "host": uri,
+                "user": user, "username": user, "neo4j_user": user,
+                "password": pwd, "pwd": pwd, "neo4j_password": pwd,
+                "logger": logger
+            }
+
+            def subset_kwargs(func, source_map):
+                try:
+                    sig = inspect.signature(func)
+                except (TypeError, ValueError):
+                    return {}
+                out = {}
+                for pname in sig.parameters.keys():
+                    if pname in source_map and source_map[pname] is not None:
+                        out[pname] = source_map[pname]
+                return out
+
+            # Προσπάθησε constructor με ό,τι δέχεται
+            try:
+                ctor_kwargs = subset_kwargs(BuilderClass.__init__, param_map)
+                self.kg_builder = BuilderClass(**ctor_kwargs) if ctor_kwargs else BuilderClass()
+            except TypeError:
+                self.kg_builder = BuilderClass()
+
+            # Δοκίμασε configure/connect/set_connection/init_driver/setup
+            for meth_name in ("configure", "connect", "set_connection", "init_driver", "setup"):
+                if hasattr(self.kg_builder, meth_name):
+                    meth = getattr(self.kg_builder, meth_name)
+                    try:
+                        cfg_kwargs = subset_kwargs(meth, param_map)
+                        meth(**cfg_kwargs) if cfg_kwargs else meth()
+                    except TypeError:
+                        pass
+
+            # Τελικός έλεγχος
+            for m in required:
+                if not hasattr(self.kg_builder, m):
+                    raise TypeError(f"CRITICAL ERROR: KG builder '{BuilderClass.__name__}' is missing method '{m}'.")
+            if not hasattr(self.kg_builder, preferred):
+                raise TypeError(
+                    f"CRITICAL ERROR: KG builder '{BuilderClass.__name__}' is missing '{preferred}'. "
+                    "Add it to ensure participant-level split consistency."
+                )
+
         print("\n🧠 KNOWLEDGE GRAPH COMPARISON ANALYSIS")
         print("=" * 70)
         print("🎯 Comparing: Raw Features, NeuroGait KG, and Enhanced Features")
@@ -2096,7 +2207,7 @@ class RealisticAnalysis:
         test_participants = test_clean['participant_id'].unique()
 
         # 7) Βεβαιώσου ότι υπάρχει builder & ΕΦΑΡΜΟΣΕ uniform split ΣΤΟ KG
-        self._ensure_kg_builder()
+        _ensure_kg_builder_local()
         self.kg_builder.enforce_participant_level_split(
             train_participants.tolist(),
             test_participants.tolist()
@@ -2176,7 +2287,6 @@ class RealisticAnalysis:
                 'selected_count': len(selected_features)
             }
         }
-
     def print_kg_comparison_results(self, all_results, clinical_set_name, data_summary, statistical_results):
         """Print comprehensive KG comparison results"""
         
