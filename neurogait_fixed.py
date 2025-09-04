@@ -429,55 +429,105 @@ class RealisticAnalysis:
         
         return train_data, test_data
     
-    def preprocess_data(self, train_data, test_data, features):
-        """Preprocess data without leakage - fit on train, transform on test"""
-        print(f"\n🧹 DATA PREPROCESSING (No Leakage):")
-        
-        # Handle missing values using training data only
-        missing_threshold = 0.6
-        missing_per_feature = train_data[features].isna().sum() / len(train_data)
-        good_features = missing_per_feature[missing_per_feature <= missing_threshold].index.tolist()
-        
-        print(f"   🗑️ Removed {len(features) - len(good_features)} features with >{missing_threshold*100}% missing")
-        
-        # Remove samples with too many missing values (train only)
-        missing_per_sample = train_data[good_features].isna().sum(axis=1) / len(good_features)
-        good_samples = missing_per_sample <= 0.5
-        train_clean = train_data[good_samples].copy()
-        
-        print(f"   🗑️ Removed {(~good_samples).sum()} train samples with >50% missing")
-        
-        # Impute missing values using training data statistics
-        imputer = SimpleImputer(strategy='median')
-        train_imputed = train_clean.copy()
-        train_imputed[good_features] = imputer.fit_transform(train_clean[good_features])
-        
-        # Apply the same imputation to test data
-        test_imputed = test_data.copy()
-        test_imputed[good_features] = imputer.transform(test_data[good_features])
-        
-        # Remove constant features from training data
-        constant_features = []
-        for col in good_features:
-            if train_imputed[col].nunique() <= 1:
-                constant_features.append(col)
-        
-        final_features = [f for f in good_features if f not in constant_features]
-        
-        if len(final_features) == 0:
-            raise ValueError("No valid features remaining after preprocessing. Check your data quality.")
-        
-        # Remove duplicates
-        train_final = train_imputed.drop_duplicates(subset=final_features)
-        test_final = test_imputed.drop_duplicates(subset=final_features)
-        
-        print(f"   📊 Final preprocessing:")
-        print(f"      Features: {len(features)} → {len(final_features)}")
-        print(f"      Train samples: {len(train_data)} → {len(train_final)}")
-        print(f"      Test samples: {len(test_data)} → {len(test_final)}")
-        print(f"      Constant features removed: {len(constant_features)}")
-        
-        return train_final, test_final, final_features
+    def preprocess_data(self, train_data, test_data, best_features):
+        """
+        Preprocess χωρίς data leakage, ΔΙΑΤΗΡΩΝΤΑΣ τα ID columns για στοίχιση με KG:
+        - Κρατάμε participant_id, sample_id (ή/και sample_index), diagnosis
+        - Αφαίρεση features με >60% missing (υπολογισμένο ΜΟΝΟ στο train)
+        - Αφαίρεση train δειγμάτων με >50% missing (στο υπόλοιπο feature set)
+        - Imputation (median) fit ΜΟΝΟ στο train
+        Επιστρέφει: train_clean_df, test_clean_df, clean_features (λίστα ονομάτων features)
+        """
+        import numpy as np
+        import pandas as pd
+        from sklearn.impute import SimpleImputer
+
+        # --- 0) Βασικός έλεγχος εισόδων
+        if not isinstance(train_data, pd.DataFrame) or not isinstance(test_data, pd.DataFrame):
+            raise TypeError("preprocess_data expects pandas DataFrames for train_data and test_data.")
+
+        # --- 1) Ορισμός/διατήρηση ID columns που ΠΡΕΠΕΙ να περάσουν στο επόμενο στάδιο
+        must_keep_cols = [c for c in ["participant_id", "sample_id", "sample_index", "diagnosis"] if c in train_data.columns or c in test_data.columns]
+
+        # Αν ΔΕΝ υπάρχει καθόλου ούτε sample_id ούτε sample_index, ρίξε ΣΑΦΕΣ error (ο KG tier τα χρειάζεται)
+        if ("sample_id" not in must_keep_cols) and ("sample_index" not in must_keep_cols):
+            raise RuntimeError(
+                "CRITICAL ERROR: The dataset lacks both 'sample_id' and 'sample_index'. "
+                "Add/retain one of them so we can align KG embeddings to rows after preprocessing."
+            )
+
+        # --- 2) Ορισμός candidate feature set (από best_features) που υπάρχουν και στα δύο splits
+        feature_candidates = [f for f in best_features if (f in train_data.columns and f in test_data.columns)]
+        if len(feature_candidates) == 0:
+            raise RuntimeError("CRITICAL ERROR: None of the requested features exist in both train and test dataframes.")
+
+        # Φτιάξε working copies με ΜΟΝΟ τα features + IDs
+        train_df = train_data[feature_candidates + [c for c in must_keep_cols if c in train_data.columns]].copy()
+        test_df  = test_data[ feature_candidates + [c for c in must_keep_cols if c in test_data.columns] ].copy()
+
+        # --- 3) Αφαίρεση features με >60% missing (υπολογισμός στο train ΜΟΝΟ)
+        train_missing_frac = train_df[feature_candidates].isna().mean()
+        keep_features = [f for f in feature_candidates if train_missing_frac.get(f, 0.0) <= 0.60]
+
+        # Αν όλα έφυγαν, σταμάτα
+        if len(keep_features) == 0:
+            raise RuntimeError("CRITICAL ERROR: All features were dropped due to missing>60% (on train).")
+
+        # --- 4) Αφαίρεση train samples με >50% missing στα ΥΠΟΛΟΙΠΑ features
+        if len(keep_features) > 0:
+            tr_feat = train_df[keep_features]
+            # υπολογισμός ποσοστού NaN ανά γραμμή
+            row_nan_frac = tr_feat.isna().mean(axis=1)
+            keep_rows_mask = (row_nan_frac <= 0.50)
+            removed_rows = (~keep_rows_mask).sum()
+
+            # Εφάρμοσε το mask στο train_df
+            train_df = train_df.loc[keep_rows_mask].copy()
+
+            # Προαιρετικά μήνυμα (ταιριάζει με τα logs σου)
+            if removed_rows > 0:
+                print(f"   🗑️ Removed {removed_rows} train samples with >50% missing")
+
+        # --- 5) Imputation (median) fit ΜΟΝΟ στο train, apply σε train/test (χωρίς leakage)
+        imputer = SimpleImputer(strategy="median")
+        # Fit στο train
+        imputer.fit(train_df[keep_features])
+
+        # Transform
+        train_imputed = imputer.transform(train_df[keep_features])
+        test_imputed  = imputer.transform(test_df[keep_features])
+
+        # --- 6) Συναρμολόγηση τελικών DataFrames: ΠΑΝΤΑ ξανακολλάμε τα ID columns ανέπαφα
+        train_clean = pd.DataFrame(train_imputed, columns=keep_features, index=train_df.index)
+        test_clean  = pd.DataFrame(test_imputed,  columns=keep_features, index=test_df.index)
+
+        # Επισυνάπτουμε τα ID columns (στην ίδια σειρά)
+        for col in must_keep_cols:
+            if col in train_df.columns:
+                train_clean[col] = train_df[col].values
+            elif col not in train_clean.columns:
+                # αν λείπει, βάλε NaN για να μην κρασάρει downstream, αλλά καλύτερα να υπάρχει
+                train_clean[col] = np.nan
+
+            if col in test_df.columns:
+                test_clean[col] = test_df[col].values
+            elif col not in test_clean.columns:
+                test_clean[col] = np.nan
+
+        # Βεβαίωση τύπων για IDs
+        if "participant_id" in train_clean.columns:
+            train_clean["participant_id"] = train_clean["participant_id"].astype(str)
+        if "participant_id" in test_clean.columns:
+            test_clean["participant_id"] = test_clean["participant_id"].astype(str)
+
+        if "sample_id" in train_clean.columns:
+            train_clean["sample_id"] = train_clean["sample_id"].astype(str)
+        if "sample_id" in test_clean.columns:
+            test_clean["sample_id"] = test_clean["sample_id"].astype(str)
+
+        # Επιστρέφουμε το καθαρισμένο feature set και τα frames
+        clean_features = keep_features  # μόνο τα numerical/χρήσιμα features
+        return train_clean, test_clean, clean_features
     
     def optimized_feature_selection(self, train_data, test_data, features):
         """More conservative feature selection to prevent overfitting"""
