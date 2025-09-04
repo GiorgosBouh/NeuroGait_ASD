@@ -733,16 +733,18 @@ class SynchronizedLeakageFreeKGBuilder:
                 """, embeddings=embeddings_data)
 
         logger.info("✅ Leakage-free embeddings stored in graph with metadata")
+    
     def enforce_participant_level_split(self, pids_train, pids_test):
         """
         Θέτει ομοιόμορφα data_split ('train'/'test') σε ΟΛΑ τα Samples & Embeddings κάθε participant.
-        Χρησιμοποίησε το αμέσως μετά το build ή πριν αποθήκευση embeddings.
+        Χρησιμοποίησέ το αμέσως μετά τον ορισμό train/test PIDs και πριν τη δημιουργία/χρήση embeddings.
         """
-        pids_train = [str(x) for x in pids_train]
-        pids_test  = [str(x) for x in pids_test]
+        # Τυποποίηση IDs σε strings
+        pids_train = [str(x) for x in (pids_train or [])]
+        pids_test  = [str(x) for x in (pids_test or [])]
 
         with self._get_session() as session:
-            # Train side
+            # Μαρκάρισμα όλων των Sample nodes των train participants ως 'train'
             if pids_train:
                 session.run("""
                     WITH $ids AS ids
@@ -751,6 +753,7 @@ class SynchronizedLeakageFreeKGBuilder:
                     SET s.data_split = 'train';
                 """, ids=pids_train)
 
+                # Και όλων των Embedding nodes ως 'train'
                 session.run("""
                     WITH $ids AS ids
                     MATCH (p:Participant)-[:HAS_SAMPLE]->(:Sample)-[:HAS_EMBEDDING]->(e:Embedding)
@@ -758,7 +761,7 @@ class SynchronizedLeakageFreeKGBuilder:
                     SET e.data_split = 'train';
                 """, ids=pids_train)
 
-            # Test side
+            # Μαρκάρισμα όλων των Sample nodes των test participants ως 'test'
             if pids_test:
                 session.run("""
                     WITH $ids AS ids
@@ -767,6 +770,7 @@ class SynchronizedLeakageFreeKGBuilder:
                     SET s.data_split = 'test';
                 """, ids=pids_test)
 
+                # Και όλων των Embedding nodes ως 'test'
                 session.run("""
                     WITH $ids AS ids
                     MATCH (p:Participant)-[:HAS_SAMPLE]->(:Sample)-[:HAS_EMBEDDING]->(e:Embedding)

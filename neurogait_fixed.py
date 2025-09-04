@@ -29,6 +29,7 @@ from statsmodels.stats.multitest import multipletests
 import os
 from neo4j import GraphDatabase
 import warnings
+from neurogait_kg_builder import CompleteFastNeuroGaitKG
 warnings.filterwarnings('ignore')
 
 # =====================
@@ -849,22 +850,21 @@ class RealisticAnalysis:
             return set(rec["pids"] or [])
     def _ensure_neo4j_driver(self):
         """
-        Εξασφαλίζει ότι υπάρχει διαθέσιμος Neo4j driver στο self.driver.
-        Αν δεν υπάρχει, δημιουργεί από env vars.
+        Βεβαιώνεται ότι υπάρχει self.kg_builder. Αν όχι, τον δημιουργεί από env ή από τις ιδιότητες του analyzer.
         """
-        if self.driver is not None:
+        if getattr(self, "kg_builder", None) is not None:
             return
 
-        uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-        user = os.getenv("NEO4J_USER", "neo4j")
-        pwd  = os.getenv("NEO4J_PASSWORD", "password")
-        db   = os.getenv("NEO4J_DATABASE", self.database or "neo4j")
+        uri = getattr(self, "neo4j_uri", None) or os.getenv("NEO4J_URI", "bolt://localhost:7687")
+        user = getattr(self, "neo4j_user", None) or os.getenv("NEO4J_USER", "neo4j")
+        pwd  = getattr(self, "neo4j_password", None) or os.getenv("NEO4J_PASSWORD", "palatiou")
 
-        # Κράτα ad-hoc driver για reuse
-        self._ad_hoc_driver = GraphDatabase.driver(uri, auth=(user, pwd))
-        self._ad_hoc_database = db
-        # Δεν πειράζουμε self.driver αν το έχεις αλλού (π.χ. injected)
-        # Θα χρησιμοποιούμε το ad-hoc session από _get_neo4j_session()
+        self.kg_builder = CompleteFastNeuroGaitKG(
+            uri=uri,
+            user=user,
+            password=pwd,
+            logger=getattr(self, "logger", None)
+        )
 
 
     def _get_neo4j_session(self):
@@ -1981,23 +1981,24 @@ class RealisticAnalysis:
         print("🔒 Using actual Neo4j graph structure and enhanced feature engineering")
         print("📊 Complete statistical comparison\n")
         
-        # Enhanced preprocessing with clinical features
+        # 1) Προετοιμασία δεδομένων & clinical feature set
         df, best_features, best_set_name, train_indices, test_indices, train_sample_pids, test_pids = self.load_and_prepare_data()
         train_data, test_data = self.proper_train_test_split(df, train_indices, test_indices)
         
-        # Preprocess data without leakage
+        # 2) Preprocess χωρίς leakage
         train_clean, test_clean, clean_features = self.preprocess_data(train_data, test_data, best_features)
         
-        # Feature selection
+        # 3) Συντηρητικό feature selection (μόνο σε train)
         X_train, X_test, selected_features = self.optimized_feature_selection(
             train_clean, test_clean, clean_features
         )
         
+        # 4) Στόχοι & scaling (fit στον train μόνο)
         y_train = train_clean['diagnosis']
         y_test = test_clean['diagnosis']
         X_train_scaled, X_test_scaled = self.prepare_data_properly(X_train, X_test)
         
-        # Get sample-level participant IDs for the cleaned training data
+        # 5) PIDs ανά δείγμα (για εκπαίδευση/weights κ.λπ.)
         train_sample_pids_clean = train_clean['participant_id'].values
         
         # === TIER 1: RAW CLINICAL FEATURES ===
@@ -2015,26 +2016,28 @@ class RealisticAnalysis:
         print("🧠 TIER 2: NEUROGAIT KG EMBEDDINGS")
         print(f"{'='*50}")
         
-        # Get participant IDs for KG
+        # 6) PIDs για KG (participant-level split)
         train_participants = train_clean['participant_id'].unique()
         test_participants = test_clean['participant_id'].unique()
 
-        # 👉 Εξαναγκασμός ομοιόμορφου split στο KG ΠΡΙΝ φτιαχτούν τα embeddings
-        #    (διορθώνει περιπτώσεις με 1/8 embeddings σε λάθος split)
-        if getattr(self, "kg_builder", None) is None:
-            raise RuntimeError("CRITICAL ERROR: kg_builder is not initialized.")
-        self.kg_builder.enforce_participant_level_split(train_participants.tolist(), test_participants.tolist())
+        # 7) Βεβαιώσου ότι υπάρχει builder & ΕΦΑΡΜΟΣΕ uniform split ΣΤΟ KG
+        self._ensure_kg_builder()
+        self.kg_builder.enforce_participant_level_split(
+            train_participants.tolist(),
+            test_participants.tolist()
+        )
 
-        # Δημιουργία KG embeddings από Neo4j (ΧΩΡΙΣ fallbacks)
+        # 8) Δημιουργία embeddings ΑΠΟ τη Neo4j (ΧΩΡΙΣ fallbacks)
         X_train_kg, X_test_kg = self.create_neurogait_kg_embeddings(
             train_participants, test_participants, align_with_kg=False
         )
 
-        # Σαφής έλεγχος εγκυρότητας (χωρίς fallback)
-        if X_train_kg is None or X_test_kg is None or X_train_kg.shape[0] == 0 or X_test_kg.shape[0] == 0:
+        # 9) Σαφής έλεγχος: πρέπει να υπάρχουν embeddings και για train και για test
+        if (X_train_kg is None or X_test_kg is None or
+            X_train_kg.shape[0] == 0 or X_test_kg.shape[0] == 0):
             raise RuntimeError(
                 "CRITICAL ERROR: No KG embeddings returned after enforcing participant-level split. "
-                "Verify that each train/test participant has exactly the expected number of Sample and Embedding nodes."
+                "Verify each train/test participant has exactly the expected number of Sample and Embedding nodes."
             )
         
         neurogait_kg_results = self.train_optimized_models(
@@ -2062,7 +2065,6 @@ class RealisticAnalysis:
         print("📊 COMPREHENSIVE KG COMPARISON RESULTS")
         print(f"{'='*70}")
         
-        # Collect all results
         all_results = {
             'Raw Clinical Features': raw_results,
             'NeuroGait KG': neurogait_kg_results
@@ -2070,10 +2072,8 @@ class RealisticAnalysis:
         if enhanced_results:
             all_results['Enhanced Features'] = enhanced_results
         
-        # Statistical comparison
         statistical_results = self.statistical_comparison_analysis(all_results)
         
-        # Print results
         self.print_kg_comparison_results(
             all_results,
             best_set_name,
