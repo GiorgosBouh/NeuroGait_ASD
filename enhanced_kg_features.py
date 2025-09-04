@@ -228,6 +228,47 @@ class EnhancedKGFeatureBuilder:
         return rows
 
 
+    def create_enhanced_kg_features(self, df: pd.DataFrame, base_features: List[str]) -> Tuple[np.ndarray, List[str]]:
+        """
+        Create enhanced features with interaction terms, polynomial features, and domain-specific engineering.
+        Returns: (enhanced_feature_matrix, enhanced_feature_names)
+        """
+        # Strict validation - no fallbacks
+        available_features = [f for f in base_features if f in df.columns]
+        if not available_features:
+            raise ValueError(f"CRITICAL ERROR: No base features found in dataframe. Required: {base_features}, Available: {list(df.columns)}")
+        
+        X_base = df[available_features].to_numpy()
+        
+        # Check for NaN values - strict requirement
+        if np.isnan(X_base).any():
+            raise ValueError("CRITICAL ERROR: NaN values found in base features. Clean data first.")
+        
+        enhanced_features = []
+        feature_names = []
+        
+        # 1. Original features
+        enhanced_features.append(X_base)
+        feature_names.extend([f"orig_{f}" for f in available_features])
+        
+        # 2. Interaction features (pairs)
+        if len(available_features) >= 2:
+            for i in range(min(5, len(available_features))):
+                for j in range(i+1, min(i+4, len(available_features))):
+                    interaction = X_base[:, i] * X_base[:, j]
+                    enhanced_features.append(interaction.reshape(-1, 1))
+                    feature_names.append(f"interact_{available_features[i]}_{available_features[j]}")
+        
+        # 3. Polynomial features
+        for i in range(min(3, len(available_features))):
+            squared = X_base[:, i] ** 2
+            enhanced_features.append(squared.reshape(-1, 1))
+            feature_names.append(f"poly2_{available_features[i]}")
+        
+        # Combine all features
+        X_enhanced = np.hstack(enhanced_features)
+        
+        return X_enhanced, feature_names
 # --------------------------- Smoke test ---------------------------
 if __name__ == "__main__":
     # Μικρό self-test ώστε να δεις ότι φορτώνει σωστά
