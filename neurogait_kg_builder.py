@@ -697,12 +697,17 @@ class SynchronizedLeakageFreeKGBuilder:
                 batch = df.iloc[i:i+batch_size]
                 embeddings_data = []
                 
-                for _, row in batch.iterrows():
-                    sample_id = f"S_{row['participant_id']}_{row.name % 8}"
+                for idx, row in batch.iterrows():
+                    # Use proper sample ID based on participant and index
+                    participant_id = str(row['participant_id'])
+                    sample_index = idx % self.samples_per_participant
+                    sample_id = f"S_{participant_id}_{sample_index}"
+                    
                     embedding_vector = [row[col] for col in embedding_cols]
                     
                     embeddings_data.append({
                         'sample_id': sample_id,
+                        'participant_id': participant_id,
                         'vector': embedding_vector,
                         'dimension': len(embedding_vector),
                         'data_split': row['data_split'],
@@ -715,6 +720,7 @@ class SynchronizedLeakageFreeKGBuilder:
                     MATCH (s:Sample {id: e.sample_id})
                     CREATE (embedding:Embedding {
                         sample_id: e.sample_id,
+                        participant_id: e.participant_id,
                         vector: e.vector,
                         dimension: e.dimension,
                         data_split: e.data_split,
