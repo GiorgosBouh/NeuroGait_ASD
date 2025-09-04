@@ -871,18 +871,12 @@ class RealisticAnalysis:
 
     def _get_neo4j_session(self):
         """
-        Επιστρέφει Neo4j session.
-        - Αν υπάρχει self.driver, το χρησιμοποιεί.
-        - Αλλιώς, δημιουργεί ad-hoc driver από env vars (lazy).
+        Δίνει Neo4j session για τα εσωτερικά queries του analyzer.
         """
-        # 1) Προτίμησε explicit driver που ίσως έχεις ήδη βάλει στην κλάση
-        if getattr(self, "driver", None):
-            return self.driver.session(database=self.database or "neo4j")
-
-        # 2) Fallback ad-hoc driver
-        if self._ad_hoc_driver is None:
-            self._ensure_neo4j_driver()
-        return self._ad_hoc_driver.session(database=self._ad_hoc_database or "neo4j")
+        # Βεβαιώσου ότι υπάρχει driver
+        self._ensure_ad_hoc_driver()
+        dbname = getattr(self, "_ad_hoc_database", None) or "neo4j"
+        return self._ad_hoc_driver.session(database=dbname)
 
 
     def _close_ad_hoc_driver(self):
@@ -1973,6 +1967,37 @@ class RealisticAnalysis:
             }
         }
     
+    def _ensure_ad_hoc_driver(self):
+        """
+        Εξασφαλίζει ότι υπάρχει self._ad_hoc_driver (Neo4j driver) για τα ad-hoc queries του analyzer.
+        1) Αν ο builder έχει driver (π.χ. .driver ή ._driver), τον χρησιμοποιεί.
+        2) Αλλιώς φτιάχνει νέο driver από uri/user/password (ιδιότητες ή env).
+        """
+        # Ήδη υπάρχει;
+        if getattr(self, "_ad_hoc_driver", None) is not None:
+            return
+
+        # 1) Δοκίμασε να πάρεις driver από τον builder
+        kb = getattr(self, "kg_builder", None)
+        if kb is not None:
+            for attr in ("driver", "_driver", "neo4j_driver"):
+                drv = getattr(kb, attr, None)
+                if drv is not None:
+                    self._ad_hoc_driver = drv
+                    break
+
+        # 2) Αν δεν βρέθηκε από builder, φτιάξε νέο
+        if getattr(self, "_ad_hoc_driver", None) is None:
+            uri = getattr(self, "neo4j_uri", None) or os.getenv("NEO4J_URI", "bolt://localhost:7687")
+            user = getattr(self, "neo4j_user", None) or os.getenv("NEO4J_USER", "neo4j")
+            pwd  = getattr(self, "neo4j_password", None) or os.getenv("NEO4J_PASSWORD", "palatiou")
+            self._ad_hoc_driver = GraphDatabase.driver(uri, auth=(user, pwd))
+
+        # Προαιρετικά: default database name
+        if not hasattr(self, "_ad_hoc_database"):
+            # Αν έχεις custom DB name, όρισέ το κάπου αλλού· εδώ δίνουμε default "neo4j"
+            self._ad_hoc_database = os.getenv("NEO4J_DATABASE", "neo4j")
+
     def _ensure_kg_builder(self):
         """
         Φτιάχνει self.kg_builder δυναμικά από το neurogait_kg_builder.py, χωρίς να απαιτείται συγκεκριμένο όνομα κλάσης.
@@ -2204,10 +2229,11 @@ class RealisticAnalysis:
         
         # 6) PIDs για KG (participant-level split)
         train_participants = train_clean['participant_id'].unique()
-        test_participants = test_clean['participant_id'].unique()
+        test_participants  = test_clean['participant_id'].unique()
 
         # 7) Βεβαιώσου ότι υπάρχει builder & ΕΦΑΡΜΟΣΕ uniform split ΣΤΟ KG
         _ensure_kg_builder_local()
+        self._ensure_ad_hoc_driver()  # <<<<<<<<<< ΠΡΟΣΘΗΚΗ: driver για τα ad-hoc queries του analyzer
         self.kg_builder.enforce_participant_level_split(
             train_participants.tolist(),
             test_participants.tolist()
