@@ -968,12 +968,12 @@ class SynchronizedLeakageFreeKGBuilder:
         
         final_features = [f for f in good_features if f not in constant_features]
         
-        # Remove duplicates (this is what causes the participant split mismatch!)
+        # Remove duplicates but PRESERVE original participant_id mapping
+        original_participant_mapping = df_clean['participant_id'].copy()
         df_final = df_clean.drop_duplicates(subset=final_features)
         
-        # Recreate participant IDs after duplicate removal
-        df_final = df_final.reset_index(drop=True)
-        df_final['participant_id'] = (df_final.index // self.samples_per_participant) + 1
+        # DO NOT recreate participant_id - keep the preserved mapping
+        # This ensures consistency with analysis script participant numbering
         
         logger.info(f"   📊 Final preprocessing: {len(df)} → {len(df_final)} samples")
         logger.info(f"   📊 Constant features removed: {len(constant_features)}")
