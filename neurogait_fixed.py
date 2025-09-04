@@ -29,7 +29,9 @@ from statsmodels.stats.multitest import multipletests
 import os
 from neo4j import GraphDatabase
 import warnings
-from neurogait_kg_builder import CompleteFastNeuroGaitKG
+import importlib
+import inspect
+import neurogait_kg_builder as kgmod
 warnings.filterwarnings('ignore')
 
 # =====================
@@ -1970,6 +1972,79 @@ class RealisticAnalysis:
                 'selected_count': len(selected_features)
             }
         }
+    
+    def _ensure_kg_builder(self):
+        """
+        Εξασφαλίζει ότι self.kg_builder υπάρχει.
+        - Φορτώνει δυναμικά το module neurogait_kg_builder
+        - Εντοπίζει κλάση που μοιάζει με KG builder (με τα απαιτούμενα methods)
+        - Κάνει instantiate με (uri, user, password, logger) ή αντίστοιχα neo4j_* kwargs
+        """
+        if getattr(self, "kg_builder", None) is not None:
+            return
+
+        # 1) Φόρτωσε το module (έχεις ήδη import ως kgmod)
+        module = kgmod
+
+        # 2) Βρες κλάση που έχει τα methods που θέλουμε
+        required_methods = {
+            "create_participants_and_samples",
+            "create_embeddings_in_graph",
+            "enforce_participant_level_split",
+        }
+        candidates = []
+        for name, obj in module.__dict__.items():
+            if inspect.isclass(obj) and obj.__module__ == module.__name__:
+                if all(hasattr(obj, m) for m in required_methods):
+                    candidates.append(obj)
+
+        if not candidates:
+            # Δώσε λίγο πιο χαλαρό φίλτρο (ίσως το enforce το πρόσθεσες τώρα)
+            loose_required = {
+                "create_participants_and_samples",
+                "create_embeddings_in_graph",
+            }
+            for name, obj in module.__dict__.items():
+                if inspect.isclass(obj) and obj.__module__ == module.__name__:
+                    if all(hasattr(obj, m) for m in loose_required):
+                        candidates.append(obj)
+
+        if not candidates:
+            raise ImportError(
+                "CRITICAL ERROR: Could not locate a KG builder class in neurogait_kg_builder.py "
+                "with the required methods. Ensure your builder class defines: "
+                f"{sorted(list(required_methods))}"
+            )
+
+        # Πάρε την πρώτη κατάλληλη κλάση
+        BuilderClass = candidates[0]
+
+        # 3) Ρύθμισε credentials
+        uri = getattr(self, "neo4j_uri", None) or os.getenv("NEO4J_URI", "bolt://localhost:7687")
+        user = getattr(self, "neo4j_user", None) or os.getenv("NEO4J_USER", "neo4j")
+        pwd  = getattr(self, "neo4j_password", None) or os.getenv("NEO4J_PASSWORD", "palatiou")
+        logger = getattr(self, "logger", None)
+
+        # 4) Κάνε instantiate δοκιμάζοντας κοινές υπογραφές constructor
+        last_err = None
+        for kwargs in (
+            {"uri": uri, "user": user, "password": pwd, "logger": logger},
+            {"neo4j_uri": uri, "neo4j_user": user, "neo4j_password": pwd, "logger": logger},
+            {"uri": uri, "username": user, "password": pwd, "logger": logger},
+            {"uri": uri, "user": user, "pwd": pwd, "logger": logger},
+        ):
+            try:
+                self.kg_builder = BuilderClass(**kwargs)
+                break
+            except TypeError as e:
+                last_err = e
+                continue
+
+        if getattr(self, "kg_builder", None) is None:
+            raise TypeError(
+                f"CRITICAL ERROR: Found KG builder class '{BuilderClass.__name__}', "
+                f"but failed to instantiate it with common constructor signatures. Last error: {last_err}"
+            )
     
     def run_kg_comparison_analysis(self):
         """
