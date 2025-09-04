@@ -733,6 +733,48 @@ class SynchronizedLeakageFreeKGBuilder:
                 """, embeddings=embeddings_data)
 
         logger.info("✅ Leakage-free embeddings stored in graph with metadata")
+    def enforce_participant_level_split(self, pids_train, pids_test):
+        """
+        Θέτει ομοιόμορφα data_split ('train'/'test') σε ΟΛΑ τα Samples & Embeddings κάθε participant.
+        Χρησιμοποίησε το αμέσως μετά το build ή πριν αποθήκευση embeddings.
+        """
+        pids_train = [str(x) for x in pids_train]
+        pids_test  = [str(x) for x in pids_test]
+
+        with self._get_session() as session:
+            # Train side
+            if pids_train:
+                session.run("""
+                    WITH $ids AS ids
+                    MATCH (p:Participant)-[:HAS_SAMPLE]->(s:Sample)
+                    WHERE p.id IN ids
+                    SET s.data_split = 'train';
+                """, ids=pids_train)
+
+                session.run("""
+                    WITH $ids AS ids
+                    MATCH (p:Participant)-[:HAS_SAMPLE]->(:Sample)-[:HAS_EMBEDDING]->(e:Embedding)
+                    WHERE p.id IN ids
+                    SET e.data_split = 'train';
+                """, ids=pids_train)
+
+            # Test side
+            if pids_test:
+                session.run("""
+                    WITH $ids AS ids
+                    MATCH (p:Participant)-[:HAS_SAMPLE]->(s:Sample)
+                    WHERE p.id IN ids
+                    SET s.data_split = 'test';
+                """, ids=pids_test)
+
+                session.run("""
+                    WITH $ids AS ids
+                    MATCH (p:Participant)-[:HAS_SAMPLE]->(:Sample)-[:HAS_EMBEDDING]->(e:Embedding)
+                    WHERE p.id IN ids
+                    SET e.data_split = 'test';
+                """, ids=pids_test)
+
+        self.logger.info("✅ Enforced participant-level splits on Samples & Embeddings.")
     
     def comprehensive_leakage_validation(self):
         """Comprehensive leakage validation with multiple checks"""

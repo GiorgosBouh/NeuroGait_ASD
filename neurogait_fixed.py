@@ -2018,16 +2018,24 @@ class RealisticAnalysis:
         # Get participant IDs for KG
         train_participants = train_clean['participant_id'].unique()
         test_participants = test_clean['participant_id'].unique()
-        
-        # Create KG embeddings using Neo4j
+
+        # 👉 Εξαναγκασμός ομοιόμορφου split στο KG ΠΡΙΝ φτιαχτούν τα embeddings
+        #    (διορθώνει περιπτώσεις με 1/8 embeddings σε λάθος split)
+        if getattr(self, "kg_builder", None) is None:
+            raise RuntimeError("CRITICAL ERROR: kg_builder is not initialized.")
+        self.kg_builder.enforce_participant_level_split(train_participants.tolist(), test_participants.tolist())
+
+        # Δημιουργία KG embeddings από Neo4j (ΧΩΡΙΣ fallbacks)
         X_train_kg, X_test_kg = self.create_neurogait_kg_embeddings(
             train_participants, test_participants, align_with_kg=False
         )
-        
-        # Ensure we have valid KG embeddings
-        if X_train_kg.shape[0] == 0 or X_test_kg.shape[0] == 0:
-            print("⚠️ No KG embeddings found - falling back to enhanced KG")
-            X_train_kg, X_test_kg = self.create_enhanced_kg_embeddings(X_train_scaled, X_test_scaled)
+
+        # Σαφής έλεγχος εγκυρότητας (χωρίς fallback)
+        if X_train_kg is None or X_test_kg is None or X_train_kg.shape[0] == 0 or X_test_kg.shape[0] == 0:
+            raise RuntimeError(
+                "CRITICAL ERROR: No KG embeddings returned after enforcing participant-level split. "
+                "Verify that each train/test participant has exactly the expected number of Sample and Embedding nodes."
+            )
         
         neurogait_kg_results = self.train_optimized_models(
             X_train_kg, X_test_kg, y_train, y_test, train_sample_pids_clean, "NeuroGait KG"
@@ -2049,8 +2057,6 @@ class RealisticAnalysis:
             X_train_enhanced, X_test_enhanced, y_train, y_test, train_sample_pids_clean, "Enhanced Features"
         )       
             
-    
-        
         # === COMPREHENSIVE COMPARISON ===
         print(f"\n{'='*70}")
         print("📊 COMPREHENSIVE KG COMPARISON RESULTS")
@@ -2061,7 +2067,6 @@ class RealisticAnalysis:
             'Raw Clinical Features': raw_results,
             'NeuroGait KG': neurogait_kg_results
         }
-        
         if enhanced_results:
             all_results['Enhanced Features'] = enhanced_results
         
@@ -2069,12 +2074,17 @@ class RealisticAnalysis:
         statistical_results = self.statistical_comparison_analysis(all_results)
         
         # Print results
-        self.print_kg_comparison_results(all_results, best_set_name, {
-            'train_participants': len(train_participants),
-            'test_participants': len(test_participants),
-            'original_features': len(best_features),
-            'selected_features': len(selected_features)
-        }, statistical_results)
+        self.print_kg_comparison_results(
+            all_results,
+            best_set_name,
+            {
+                'train_participants': len(train_participants),
+                'test_participants': len(test_participants),
+                'original_features': len(best_features),
+                'selected_features': len(selected_features)
+            },
+            statistical_results
+        )
         
         return {
             'all_results': all_results,
