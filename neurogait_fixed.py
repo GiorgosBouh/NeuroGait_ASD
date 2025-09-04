@@ -937,14 +937,14 @@ class RealisticAnalysis:
                 )
 
         # --- 4) Φέρε embeddings από Neo4j - STRICT REQUIREMENTS
-        q = """
+        cypher = """
         MATCH (p:Participant)-[:HAS_SAMPLE]->(s:Sample)-[:HAS_EMBEDDING]->(e:Embedding)
-        WHERE e.data_split = $split
-        RETURN collect(DISTINCT toString(p.id)) AS pids
+        WHERE e.data_split = $split AND toString(p.id) IN $pids
+        RETURN toString(p.id) AS pid, e AS emb
         """
 
         X_train, X_test = [], []
-        
+
         try:
             with self._get_neo4j_session() as session:
                 # TRAIN
@@ -955,13 +955,13 @@ class RealisticAnalysis:
                 train_records = list(session.run(cypher, split="train", pids=pids_train))
                 if not train_records:
                     raise ValueError(f"CRITICAL ERROR: No training embeddings found for participants: {pids_train}")
-                
-                for rec in train_records:
-                    emb_node = rec["emb"]
-                    e_props = dict(getattr(emb_node, "_properties", emb_node))
-                    vec = _pick_vec(e_props)
-                    if vec is None:
-                        raise ValueError(f"CRITICAL ERROR: No valid embedding vector found for training participant {rec['pid']}")
+                        
+                        for rec in train_records:
+                            emb_node = rec["emb"]
+                            e_props = dict(getattr(emb_node, "_properties", emb_node))
+                            vec = _pick_vec(e_props)
+                            if vec is None:
+                                raise ValueError(f"CRITICAL ERROR: No valid embedding vector found for training participant {rec['pid']}")
                     
                     try:
                         X_train.append(np.asarray(vec, dtype=float))
