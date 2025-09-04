@@ -892,7 +892,7 @@ class RealisticAnalysis:
         except Exception:
             pass
 
-    def create_neurogait_kg_embeddings(self, train_participants, test_participants, *args, align_with_kg=True, **kwargs):
+    def create_neurogait_kg_embeddings(self, train_participants, test_participants, *args, align_with_kg=False, **kwargs):
         """
         STRICT VERSION: Φτιάχνει X_train_kg, X_test_kg από τον Neo4j KG.
         NO FALLBACKS - FAILS FAST ON ANY ERROR
@@ -956,12 +956,12 @@ class RealisticAnalysis:
                 if not train_records:
                     raise ValueError(f"CRITICAL ERROR: No training embeddings found for participants: {pids_train}")
                         
-                        for rec in train_records:
-                            emb_node = rec["emb"]
-                            e_props = dict(getattr(emb_node, "_properties", emb_node))
-                            vec = _pick_vec(e_props)
-                            if vec is None:
-                                raise ValueError(f"CRITICAL ERROR: No valid embedding vector found for training participant {rec['pid']}")
+                for rec in train_records:
+                    emb_node = rec["emb"]
+                    e_props = dict(getattr(emb_node, "_properties", emb_node))
+                    vec = _pick_vec(e_props)
+                    if vec is None:
+                        raise ValueError(f"CRITICAL ERROR: No valid embedding vector found for training participant {rec['pid']}")
                     
                     try:
                         X_train.append(np.asarray(vec, dtype=float))
