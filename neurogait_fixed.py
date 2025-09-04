@@ -2159,6 +2159,7 @@ class RealisticAnalysis:
         """
         import os, inspect, numpy as np
         import neurogait_kg_builder as kgmod
+        from neo4j import GraphDatabase
 
         # ---------- Local helpers ----------
         def _ensure_kg_builder_local():
@@ -2228,8 +2229,6 @@ class RealisticAnalysis:
                 )
 
         def _ensure_ad_hoc_driver():
-            # Neo4j driver για τα ad-hoc queries
-            from neo4j import GraphDatabase
             if getattr(self, "_ad_hoc_driver", None) is not None:
                 return
             kb = getattr(self, "kg_builder", None)
@@ -2258,10 +2257,10 @@ class RealisticAnalysis:
             - found_ids: λίστα με τα sample_ids που βρέθηκαν (στη σειρά)
             - missing_ids: όσα δεν βρέθηκαν
             """
+            import numpy as np
             if not sample_ids:
                 return np.zeros((0, 0), dtype=float), [], sample_ids
 
-            # Χτίζουμε θέσεις για να διατηρήσουμε σειρά
             rows = [{"pos": i, "sid": str(sid)} for i, sid in enumerate(sample_ids)]
 
             cypher = """
@@ -2278,14 +2277,10 @@ class RealisticAnalysis:
             if not data:
                 return np.zeros((0, 0), dtype=float), [], sample_ids
 
-            # Εξαγωγή με σειρά (pos)
             data.sort(key=lambda r: r["pos"])
-            found_vecs = []
-            found_ids = []
+            found_vecs, found_ids = [], []
             for r in data:
-                vec = r["vec"]
-                # Προστασία: μερικές φορές ο οδηγός επιστρέφει memoryview/bytes -> cast σε list of float
-                vec = [float(x) for x in vec]
+                vec = [float(x) for x in r["vec"]]
                 found_vecs.append(vec)
                 found_ids.append(r["sid"])
 
@@ -2302,9 +2297,18 @@ class RealisticAnalysis:
         
         # 1) Προετοιμασία δεδομένων & clinical feature set
         df, best_features, best_set_name, train_indices, test_indices, train_sample_pids, test_pids = self.load_and_prepare_data()
+
+        # 👉 ΝΕΟ: Φτιάξε ρητά τα IDs ΠΡΙΝ το split ώστε να περάσουν σε train/test & downstream
+        if "participant_id" not in df.columns:
+            raise RuntimeError("CRITICAL ERROR: 'participant_id' column is required in the dataset.")
+        df = df.copy()
+        # sample_index = το πρωτότυπο index του DataFrame (όπως χρησιμοποιήθηκε και στον KG builder)
+        df["sample_index"] = df.index.astype(int)
+        df["sample_id"] = "S_" + df["participant_id"].astype(str) + "_" + df["sample_index"].astype(str)
+
         train_data, test_data = self.proper_train_test_split(df, train_indices, test_indices)
         
-        # 2) Preprocess χωρίς leakage
+        # 2) Preprocess χωρίς leakage (ΔΙΑΤΗΡΕΙ sample_id / sample_index)
         train_clean, test_clean, clean_features = self.preprocess_data(train_data, test_data, best_features)
         
         # 3) Συντηρητικό feature selection (μόνο σε train)
@@ -2348,49 +2352,48 @@ class RealisticAnalysis:
             test_participants.tolist()
         )
 
-        # 7.1) Ανάκτησε/σύνθεσε sample_ids ΣΤΟΝ ΙΔΙΟ πίνακα (train/test)
-        # Προτιμάμε υπάρχουσα στήλη 'sample_id'. Εναλλακτικά 'sample_index' -> S_<pid>_<sample_index>.
+        # 7.1) Ανάκτησε ordered sample_ids από τα καθαρισμένα frames
+        if "sample_id" not in train_clean.columns and "sample_index" not in train_clean.columns:
+            raise RuntimeError(
+                "CRITICAL ERROR: Cannot align KG embeddings without 'sample_id' (or 'sample_index') in the cleaned train data."
+            )
+        if "sample_id" not in test_clean.columns and "sample_index" not in test_clean.columns:
+            raise RuntimeError(
+                "CRITICAL ERROR: Cannot align KG embeddings without 'sample_id' (or 'sample_index') in the cleaned test data."
+            )
+
         def _resolve_sample_ids(df_clean):
             if 'sample_id' in df_clean.columns:
                 return df_clean['sample_id'].astype(str).tolist()
-            if 'sample_index' in df_clean.columns:
-                # sample_id schema: S_<participant_id>_<sample_index>
-                return [f"S_{str(pid)}_{int(idx)}" for pid, idx in zip(df_clean['participant_id'], df_clean['sample_index'])]
-            # Αν δεν υπάρχει τίποτα, σταματάμε με σαφές μήνυμα: θέλουμε ρητά τα sample_ids μετά το preprocessing.
-            raise RuntimeError(
-                "CRITICAL ERROR: Cannot align KG embeddings without 'sample_id' (or 'sample_index') "
-                "in the cleaned data. Ensure preprocess_data retains a 'sample_id' column."
-            )
+            # fallback μέσω sample_index (ακολουθεί το schema του builder)
+            return ["S_" + str(pid) + "_" + str(int(idx))
+                    for pid, idx in zip(df_clean['participant_id'], df_clean['sample_index'])]
 
         train_sample_ids_ordered = _resolve_sample_ids(train_clean)
         test_sample_ids_ordered  = _resolve_sample_ids(test_clean)
 
-        # 8) Δημιουργία KG embeddings **ακριβώς** για αυτά τα sample_ids και **στην ίδια σειρά**
+        # 8) Embeddings ΓΙΑ ΑΥΤΑ τα sample_ids και ΣΤΗΝ ΙΔΙΑ σειρά
         X_train_kg, found_train_ids, miss_train_ids = _fetch_embeddings_for_ids("train", train_sample_ids_ordered)
         X_test_kg,  found_test_ids,  miss_test_ids  = _fetch_embeddings_for_ids("test",  test_sample_ids_ordered)
 
-        # 9) Έλεγχοι/στοίχιση με μάσκες ώστε X,y,pids να έχουν ίσο μήκος και ίδια σειρά
+        # 9) Ευθυγράμμιση με μάσκες (ίσα μήκη σε X, y, groups)
         if X_train_kg.shape[0] == 0 or X_test_kg.shape[0] == 0:
             raise RuntimeError(
                 "CRITICAL ERROR: No KG embeddings returned after enforcing participant-level split. "
                 "Check that Sample/Embedding nodes exist for the cleaned train/test samples."
             )
 
-        # Χτίζουμε σύνολο από found ids για γρήγορο masking
         set_found_train = set(found_train_ids)
         set_found_test  = set(found_test_ids)
 
-        # Μάσκες στη σειρά ΤΩΝ ΔΕΔΟΜΕΝΩΝ (train_clean/test_clean)
         mask_train = np.array([sid in set_found_train for sid in train_sample_ids_ordered], dtype=bool)
         mask_test  = np.array([sid in set_found_test  for sid in test_sample_ids_ordered ], dtype=bool)
 
-        # Κόβουμε y/pids και (για συνέπεια reporting) τα scaled X των raw, μόνο για το KG tier
-        y_train_k = np.asarray(y_train)[mask_train]
-        y_test_k  = np.asarray(y_test)[mask_test]
-        train_pids_k = np.asarray(train_sample_pids_clean)[mask_train]
-        test_pids_k  = np.asarray(test_sample_pids_clean)[mask_test]
+        y_train_k   = np.asarray(y_train)[mask_train]
+        y_test_k    = np.asarray(y_test)[mask_test]
+        train_pids_k= np.asarray(train_sample_pids_clean)[mask_train]
+        test_pids_k = np.asarray(test_sample_pids_clean)[mask_test]
 
-        # Διαστασιολογικοί έλεγχοι
         if not (X_train_kg.shape[0] == y_train_k.shape[0] == train_pids_k.shape[0]):
             raise RuntimeError(
                 f"CRITICAL ERROR (train KG alignment): X={X_train_kg.shape[0]}, y={y_train_k.shape[0]}, pids={train_pids_k.shape[0]}"
@@ -2400,7 +2403,6 @@ class RealisticAnalysis:
                 f"CRITICAL ERROR (test KG alignment): X={X_test_kg.shape[0]}, y={y_test_k.shape[0]}, pids={test_pids_k.shape[0]}"
             )
 
-        # Προειδοποίηση αν πετάξαμε δείγματα
         if miss_train_ids or miss_test_ids:
             print(f"⚠️ Dropped samples without KG embeddings -> train: {len(miss_train_ids)}, test: {len(miss_test_ids)}")
 
@@ -2466,7 +2468,6 @@ class RealisticAnalysis:
                 'selected_count': len(selected_features)
             }
         }
-
     def print_kg_comparison_results(self, all_results, clinical_set_name, data_summary, statistical_results):
         """Print comprehensive KG comparison results"""
         
