@@ -683,40 +683,80 @@ class SynchronizedLeakageFreeKGBuilder:
             session.run(cypher, rows=rows)
         self.logger.info("✅ Participants & Samples upserted without duplicates")
     
+    
+    # Στον neurogait_kg_builder.py, τροποποίησε την create_embeddings_in_graph():
+
     def create_embeddings_in_graph(self, df, embedding_cols):
-        """Store embeddings with leakage prevention metadata, using CONSISTENT sample_id = S_<pid>_<idx>"""
-        logger.info("💾 Storing leakage-free embeddings in graph...")
+        """Store embeddings with leakage prevention metadata, ensuring 100% coverage"""
+        logger.info("💾 Storing leakage-free embeddings with COMPLETE coverage...")
 
+        # CRITICAL: Ensure we have all required columns
+        required_cols = ['participant_id', 'data_split'] + embedding_cols
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        if missing_cols:
+            raise ValueError(f"Missing required columns: {missing_cols}")
+
+        # CRITICAL: First, ensure ALL samples have corresponding Sample nodes
+        sample_nodes_data = []
+        for idx, row in df.iterrows():
+            pid = str(row['participant_id'])
+            sid = f"S_{pid}_{idx}"  # Consistent sample ID format
+            
+            sample_nodes_data.append({
+                'sample_id': sid,
+                'participant_id': pid,
+                'data_split': row['data_split'],
+                'index': int(idx)
+            })
+
+        # Create ALL Sample nodes first
         with self.driver.session() as session:
-            batch_size = 100
-            for start in range(0, len(df), batch_size):
-                batch = df.iloc[start:start+batch_size]
-                embeddings_data = []
+            session.run("""
+                UNWIND $samples AS s
+                MERGE (participant:Participant {id: s.participant_id})
+                MERGE (sample:Sample {id: s.sample_id})
+                SET sample.participant_id = s.participant_id,
+                    sample.data_split = s.data_split,
+                    sample.index = s.index,
+                    sample.created_at = datetime()
+                MERGE (participant)-[:HAS_SAMPLE]->(sample)
+            """, samples=sample_nodes_data)
 
-                for idx, row in batch.iterrows():
-                    pid = str(row['participant_id'])
+        logger.info(f"   ✅ Created {len(sample_nodes_data)} Sample nodes")
 
-                    # Αν υπάρχει ήδη sample_id στο DF χρησιμοποίησέ το, αλλιώς S_<pid>_<idx>
-                    sid = None
-                    if 'sample_id' in row and pd.notna(row['sample_id']):
-                        sid = str(row['sample_id'])
-                    else:
-                        sid = f"S_{pid}_{idx}"
+        # Now create embeddings with 100% coverage
+        batch_size = 100
+        embeddings_created = 0
+        
+        for start in range(0, len(df), batch_size):
+            batch = df.iloc[start:start+batch_size]
+            embeddings_data = []
 
-                    vector = [float(row[col]) for col in embedding_cols]
+            for idx, row in batch.iterrows():
+                pid = str(row['participant_id'])
+                sid = f"S_{pid}_{idx}"
+                
+                # Extract embedding vector
+                vector = [float(row[col]) for col in embedding_cols]
+                
+                # Validate vector
+                if any(np.isnan(v) or np.isinf(v) for v in vector):
+                    raise ValueError(f"Invalid embedding vector for sample {sid}")
 
-                    embeddings_data.append({
-                        'sample_id': sid,
-                        'participant_id': pid,
-                        'vector': vector,
-                        'dimension': len(vector),
-                        'data_split': row['data_split'],
-                        'leakage_free': True,
-                        'preprocessing_method': 'train_only_standardization'
-                    })
+                embeddings_data.append({
+                    'sample_id': sid,
+                    'participant_id': pid,
+                    'vector': vector,
+                    'dimension': len(vector),
+                    'data_split': row['data_split'],
+                    'leakage_free': True,
+                    'preprocessing_method': 'train_only_standardization',
+                    'index': int(idx)
+                })
 
-                # ΣΚΕΜΜΕΝΑ διατηρούμε MATCH ώστε να "fail fast" αν δεν υπάρχουν Sample nodes με αυτό το id
-                session.run("""
+            # Store embeddings batch with STRICT matching
+            with self.driver.session() as session:
+                result = session.run("""
                     UNWIND $embeddings AS e
                     MATCH (s:Sample {id: e.sample_id})
                     CREATE (embedding:Embedding {
@@ -727,12 +767,34 @@ class SynchronizedLeakageFreeKGBuilder:
                         data_split: e.data_split,
                         leakage_free: e.leakage_free,
                         preprocessing_method: e.preprocessing_method,
+                        index: e.index,
                         created_at: datetime()
                     })
                     CREATE (s)-[:HAS_EMBEDDING]->(embedding)
+                    RETURN count(embedding) as created
                 """, embeddings=embeddings_data)
+                
+                batch_created = result.single()['created']
+                embeddings_created += batch_created
+                
+                if batch_created != len(embeddings_data):
+                    raise ValueError(f"Embedding creation failed: {batch_created} != {len(embeddings_data)}")
 
-        logger.info("✅ Leakage-free embeddings stored in graph with metadata")
+        # CRITICAL VALIDATION: Ensure 100% coverage
+        with self.driver.session() as session:
+            # Count total samples vs embeddings
+            sample_count = session.run("MATCH (s:Sample) RETURN count(s) as count").single()['count']
+            embedding_count = session.run("MATCH (e:Embedding) RETURN count(e) as count").single()['count']
+            
+            if sample_count != embedding_count:
+                raise ValueError(f"Coverage failed: {sample_count} samples != {embedding_count} embeddings")
+            
+            if embedding_count != len(df):
+                raise ValueError(f"Total mismatch: {embedding_count} embeddings != {len(df)} input samples")
+
+        logger.info(f"   ✅ COMPLETE COVERAGE: {embeddings_created} embeddings created")
+        logger.info(f"   ✅ Coverage validation: {embedding_count}/{len(df)} samples (100%)")
+        logger.info("   ✅ All samples guaranteed to have embeddings")
     
     def enforce_participant_level_split(self, pids_train, pids_test):
         """
