@@ -36,13 +36,33 @@ warnings.filterwarnings('ignore')
 
 
 def _build_sample_ids_from_df(self, df):
+    """
+    Return a stable list of sample_ids for df.
+    Rules (strict, no silent fallbacks):
+      - If 'sample_id' exists -> use it (as string).
+      - Else require 'participant_id'; if 'sample_index' missing, create it deterministically per participant.
+      - Else raise.
+    """
+    import pandas as pd
     if 'sample_id' in df.columns:
         return df['sample_id'].astype(str).tolist()
-    req = {'participant_id', 'sample_index'}
-    if not req.issubset(df.columns):
-        raise RuntimeError(
-            "Cannot build sample_ids: need 'sample_id' or both 'participant_id' and 'sample_index'.")
-    return ["S_"+str(pid)+"_"+str(int(idx)) for pid, idx in zip(df['participant_id'], df['sample_index'])]
+
+    if 'participant_id' not in df.columns:
+        raise RuntimeError("STRICT: Need either 'sample_id' or 'participant_id' (+ optional 'sample_index') to build IDs.")
+
+    # Ensure deterministic per-participant ordering before cumcount
+    ordering_cols = [c for c in ['timestamp', 'frame', 'trial', 'sequence'] if c in df.columns]
+    if ordering_cols:
+        df = df.sort_values(['participant_id'] + ordering_cols).copy()
+    else:
+        # Keep existing row order within each participant; cumcount will still be stable for a fixed df
+        df = df.copy()
+
+    if 'sample_index' not in df.columns:
+        df['sample_index'] = df.groupby('participant_id').cumcount().astype(int)
+
+    sid = ("S_" + df['participant_id'].astype(str) + "_" + df['sample_index'].astype(int).astype(str))
+    return sid.astype(str).tolist()
 # =====================
 # Statistical utilities
 # =====================
@@ -582,117 +602,83 @@ class RealisticAnalysis:
 
         return train_data, test_data
 
-    def preprocess_data(self, train_data, test_data, best_features):
+    def preprocess_data(self, train_df, test_df, best_features):
         """
-        Preprocess χωρίς data leakage, ΔΙΑΤΗΡΩΝΤΑΣ τα ID columns για στοίχιση με KG:
-        - Κρατάμε participant_id, sample_id (ή/και sample_index), diagnosis
-        - Αφαίρεση features με >60% missing (υπολογισμένο ΜΟΝΟ στο train)
-        - Αφαίρεση train δειγμάτων με >50% missing (στο υπόλοιπο feature set)
-        - Imputation (median) fit ΜΟΝΟ στο train
-        Επιστρέφει: train_clean_df, test_clean_df, clean_features (λίστα ονομάτων features)
+        STRICT preprocessing that preserves/creates stable IDs and returns clean frames + feature list.
+        - Requires either 'sample_id' OR 'participant_id' (and will create 'sample_index' if missing).
+        - Always returns dataframes that STILL CONTAIN: ['sample_id','participant_id','sample_index'] when available, plus 'diagnosis' and the selected features.
+        - No silent fallbacks: if neither 'sample_id' nor 'participant_id' exist, raises RuntimeError.
         """
         import numpy as np
         import pandas as pd
-        from sklearn.impute import SimpleImputer
 
-        # --- 0) Βασικός έλεγχος εισόδων
-        if not isinstance(train_data, pd.DataFrame) or not isinstance(test_data, pd.DataFrame):
-            raise TypeError(
-                "preprocess_data expects pandas DataFrames for train_data and test_data.")
+        # --- Hard requirements: labels and some ID backbone ---
+        for name, df in [('train', train_df), ('test', test_df)]:
+            if 'diagnosis' not in df.columns:
+                raise RuntimeError(f"STRICT: '{name}' set missing required column 'diagnosis'.")
+            if ('sample_id' not in df.columns) and ('participant_id' not in df.columns):
+                raise RuntimeError(
+                    "CRITICAL ERROR: The dataset lacks both 'sample_id' and 'participant_id'. "
+                    "Provide at least one so we can construct stable IDs."
+                )
 
-        # --- 1) Ορισμός/διατήρηση ID columns που ΠΡΕΠΕΙ να περάσουν στο επόμενο στάδιο
-        must_keep_cols = [c for c in ["participant_id", "sample_id", "sample_index",
-                                      "diagnosis"] if c in train_data.columns or c in test_data.columns]
+        # --- Ensure stable IDs in BOTH splits (no leakage, only uses within-split information) ---
+        def ensure_ids(df: pd.DataFrame) -> pd.DataFrame:
+            df = df.copy()
+            if 'sample_id' in df.columns:
+                df['sample_id'] = df['sample_id'].astype(str)
+                # If participant_id is present but sample_index missing, create it for convenience
+                if 'participant_id' in df.columns and 'sample_index' not in df.columns:
+                    # Derive sample_index deterministically per participant based on current order
+                    df['__order__'] = np.arange(len(df))
+                    df['sample_index'] = df.sort_values(['participant_id', '__order__']) \
+                                        .groupby('participant_id').cumcount().astype(int)
+                    df.drop(columns='__order__', errors='ignore', inplace=True)
+            else:
+                # No sample_id -> require participant_id; build sample_index if missing
+                if 'participant_id' not in df.columns:
+                    raise RuntimeError("STRICT: Need 'participant_id' to synthesize 'sample_id'.")
+                # Deterministic order within participant
+                ordering_cols = [c for c in ['timestamp', 'frame', 'trial', 'sequence'] if c in df.columns]
+                if ordering_cols:
+                    df = df.sort_values(['participant_id'] + ordering_cols).copy()
+                if 'sample_index' not in df.columns:
+                    df['sample_index'] = df.groupby('participant_id').cumcount().astype(int)
+                df['sample_id'] = ("S_" + df['participant_id'].astype(str) + "_" + df['sample_index'].astype(int).astype(str)).astype(str)
+            return df
 
-        # Αν ΔΕΝ υπάρχει καθόλου ούτε sample_id ούτε sample_index, ρίξε ΣΑΦΕΣ error (ο KG tier τα χρειάζεται)
-        if ("sample_id" not in must_keep_cols) and ("sample_index" not in must_keep_cols):
-            raise RuntimeError(
-                "CRITICAL ERROR: The dataset lacks both 'sample_id' and 'sample_index'. "
-                "Add/retain one of them so we can align KG embeddings to rows after preprocessing."
-            )
+        train_clean = ensure_ids(train_df)
+        test_clean  = ensure_ids(test_df)
 
-        # --- 2) Ορισμός candidate feature set (από best_features) που υπάρχουν και στα δύο splits
-        feature_candidates = [f for f in best_features if (
-            f in train_data.columns and f in test_data.columns)]
-        if len(feature_candidates) == 0:
-            raise RuntimeError(
-                "CRITICAL ERROR: None of the requested features exist in both train and test dataframes.")
+        # --- Select features strictly from the provided 'best_features' (intersect with available numeric columns) ---
+        # Protect ID/label columns from accidental removal
+        id_columns = [c for c in ['sample_id', 'participant_id', 'sample_index'] if c in train_clean.columns]
+        protected = id_columns + ['diagnosis']
 
-        # Φτιάξε working copies με ΜΟΝΟ τα features + IDs
-        train_df = train_data[feature_candidates +
-                              [c for c in must_keep_cols if c in train_data.columns]].copy()
-        test_df = test_data[feature_candidates +
-                            [c for c in must_keep_cols if c in test_data.columns]].copy()
+        # Intersect best_features with columns actually present
+        best_features = [f for f in best_features if f in train_clean.columns]
+        if not best_features:
+            raise RuntimeError("STRICT: No overlap between 'best_features' and train columns.")
 
-        # --- 3) Αφαίρεση features με >60% missing (υπολογισμός στο train ΜΟΝΟ)
-        train_missing_frac = train_df[feature_candidates].isna().mean()
-        keep_features = [
-            f for f in feature_candidates if train_missing_frac.get(f, 0.0) <= 0.60]
+        # Keep only numeric features from best_features
+        num_cols = train_clean[best_features].select_dtypes(include=[np.number]).columns.tolist()
+        if not num_cols:
+            raise RuntimeError("STRICT: None of the selected features are numeric after preprocessing.")
+        clean_features = num_cols
 
-        # Αν όλα έφυγαν, σταμάτα
-        if len(keep_features) == 0:
-            raise RuntimeError(
-                "CRITICAL ERROR: All features were dropped due to missing>60% (on train).")
+        # Final clean dataframes: protected (IDs + label) + features
+        cols_keep = protected + clean_features
+        train_clean = train_clean[cols_keep].reset_index(drop=True)
+        test_clean  = test_clean[cols_keep].reset_index(drop=True)
 
-        # --- 4) Αφαίρεση train samples με >50% missing στα ΥΠΟΛΟΙΠΑ features
-        if len(keep_features) > 0:
-            tr_feat = train_df[keep_features]
-            # υπολογισμός ποσοστού NaN ανά γραμμή
-            row_nan_frac = tr_feat.isna().mean(axis=1)
-            keep_rows_mask = (row_nan_frac <= 0.50)
-            removed_rows = (~keep_rows_mask).sum()
+        # Sanity checks
+        if train_clean.duplicated(subset=['sample_id']).any():
+            raise RuntimeError("STRICT: Duplicate 'sample_id' found in train set.")
+        if test_clean.duplicated(subset=['sample_id']).any():
+            raise RuntimeError("STRICT: Duplicate 'sample_id' found in test set.")
+        if set(clean_features).intersection(set(id_columns)):
+            raise RuntimeError("STRICT: ID columns leaked into feature set.")
 
-            # Εφάρμοσε το mask στο train_df
-            train_df = train_df.loc[keep_rows_mask].copy()
-
-            # Προαιρετικά μήνυμα (ταιριάζει με τα logs σου)
-            if removed_rows > 0:
-                print(
-                    f"   🗑️ Removed {removed_rows} train samples with >50% missing")
-
-        # --- 5) Imputation (median) fit ΜΟΝΟ στο train, apply σε train/test (χωρίς leakage)
-        imputer = SimpleImputer(strategy="median")
-        # Fit στο train
-        imputer.fit(train_df[keep_features])
-
-        # Transform
-        train_imputed = imputer.transform(train_df[keep_features])
-        test_imputed = imputer.transform(test_df[keep_features])
-
-        # --- 6) Συναρμολόγηση τελικών DataFrames: ΠΑΝΤΑ ξανακολλάμε τα ID columns ανέπαφα
-        train_clean = pd.DataFrame(
-            train_imputed, columns=keep_features, index=train_df.index)
-        test_clean = pd.DataFrame(
-            test_imputed,  columns=keep_features, index=test_df.index)
-
-        # Επισυνάπτουμε τα ID columns (στην ίδια σειρά)
-        for col in must_keep_cols:
-            if col in train_df.columns:
-                train_clean[col] = train_df[col].values
-            elif col not in train_clean.columns:
-                # αν λείπει, βάλε NaN για να μην κρασάρει downstream, αλλά καλύτερα να υπάρχει
-                train_clean[col] = np.nan
-
-            if col in test_df.columns:
-                test_clean[col] = test_df[col].values
-            elif col not in test_clean.columns:
-                test_clean[col] = np.nan
-
-        # Βεβαίωση τύπων για IDs
-        if "participant_id" in train_clean.columns:
-            train_clean["participant_id"] = train_clean["participant_id"].astype(
-                str)
-        if "participant_id" in test_clean.columns:
-            test_clean["participant_id"] = test_clean["participant_id"].astype(
-                str)
-
-        if "sample_id" in train_clean.columns:
-            train_clean["sample_id"] = train_clean["sample_id"].astype(str)
-        if "sample_id" in test_clean.columns:
-            test_clean["sample_id"] = test_clean["sample_id"].astype(str)
-
-        # Επιστρέφουμε το καθαρισμένο feature set και τα frames
-        clean_features = keep_features  # μόνο τα numerical/χρήσιμα features
         return train_clean, test_clean, clean_features
 
     def optimized_feature_selection(self, train_data, test_data, features):
