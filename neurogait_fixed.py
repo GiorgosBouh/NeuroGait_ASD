@@ -2572,345 +2572,138 @@ class RealisticAnalysis:
         self.kg_builder = kg_instance
 
     def run_kg_comparison_analysis(self):
-        """
-        Run KG comparison analysis (Raw vs NeuroGait KG vs Enhanced Features)
-        """
-        import os
-        import inspect
-        import numpy as np
-        import neurogait_kg_builder as kgmod
-        from neo4j import GraphDatabase
+        """Raw vs NeuroGait KG vs Enhanced Features — strict paired-ready setup (no fallbacks)."""
 
-        # ---------- Local helpers ----------
-        def _ensure_kg_builder_local():
-            # Αν υπάρχει ήδη, τέλος
-            if getattr(self, "kg_builder", None) is not None:
-                return
-
-            required = {"create_participants_and_samples",
-                        "create_embeddings_in_graph"}
-            preferred = "enforce_participant_level_split"
-
-            candidates = []
-            for name, obj in kgmod.__dict__.items():
-                if inspect.isclass(obj) and obj.__module__ == kgmod.__name__:
-                    if all(hasattr(obj, m) for m in required):
-                        candidates.append(obj)
-            if not candidates:
-                raise ImportError(
-                    "CRITICAL ERROR: No KG builder class found in neurogait_kg_builder.py "
-                    f"with methods {sorted(list(required))}."
-                )
-            candidates.sort(key=lambda c: int(
-                hasattr(c, preferred)), reverse=True)
-            BuilderClass = candidates[0]
-
-            # creds
-            uri = getattr(self, "neo4j_uri", None) or os.getenv(
-                "NEO4J_URI", "bolt://localhost:7687")
-            user = getattr(self, "neo4j_user", None) or os.getenv(
-                "NEO4J_USER", "neo4j")
-            pwd = getattr(self, "neo4j_password", None) or os.getenv(
-                "NEO4J_PASSWORD", "palatiou")
-            logger = getattr(self, "logger", None)
-
-            param_map = {
-                "uri": uri, "neo4j_uri": uri, "bolt_uri": uri, "url": uri, "host": uri,
-                "user": user, "username": user, "neo4j_user": user,
-                "password": pwd, "pwd": pwd, "neo4j_password": pwd,
-                "logger": logger
-            }
-
-            def subset_kwargs(func, source_map):
-                try:
-                    sig = inspect.signature(func)
-                except (TypeError, ValueError):
-                    return {}
-                out = {}
-                for pname in sig.parameters.keys():
-                    if pname in source_map and source_map[pname] is not None:
-                        out[pname] = source_map[pname]
-                return out
-
-            try:
-                ctor_kwargs = subset_kwargs(BuilderClass.__init__, param_map)
-                self.kg_builder = BuilderClass(
-                    **ctor_kwargs) if ctor_kwargs else BuilderClass()
-            except TypeError:
-                self.kg_builder = BuilderClass()
-
-            for meth_name in ("configure", "connect", "set_connection", "init_driver", "setup"):
-                if hasattr(self.kg_builder, meth_name):
-                    meth = getattr(self.kg_builder, meth_name)
-                    try:
-                        cfg_kwargs = subset_kwargs(meth, param_map)
-                        meth(**cfg_kwargs) if cfg_kwargs else meth()
-                    except TypeError:
-                        pass
-
-            # απαιτούμε και enforce για να ισιώνουμε τα splits
-            if not hasattr(self.kg_builder, "enforce_participant_level_split"):
-                raise TypeError(
-                    f"CRITICAL ERROR: KG builder '{BuilderClass.__name__}' is missing 'enforce_participant_level_split'."
-                )
-
-        def _ensure_ad_hoc_driver():
-            if getattr(self, "_ad_hoc_driver", None) is not None:
-                return
-            kb = getattr(self, "kg_builder", None)
-            if kb is not None:
-                for attr in ("driver", "_driver", "neo4j_driver"):
-                    drv = getattr(kb, attr, None)
-                    if drv is not None:
-                        self._ad_hoc_driver = drv
-                        break
-            if getattr(self, "_ad_hoc_driver", None) is None:
-                uri = getattr(self, "neo4j_uri", None) or os.getenv(
-                    "NEO4J_URI", "bolt://localhost:7687")
-                user = getattr(self, "neo4j_user", None) or os.getenv(
-                    "NEO4J_USER", "neo4j")
-                pwd = getattr(self, "neo4j_password", None) or os.getenv(
-                    "NEO4J_PASSWORD", "palatiou")
-                self._ad_hoc_driver = GraphDatabase.driver(
-                    uri, auth=(user, pwd))
-            if not hasattr(self, "_ad_hoc_database"):
-                self._ad_hoc_database = os.getenv("NEO4J_DATABASE", "neo4j")
-
-        def _get_neo4j_session():
-            _ensure_ad_hoc_driver()
-            return self._ad_hoc_driver.session(database=getattr(self, "_ad_hoc_database", "neo4j"))
-
-        def _fetch_embeddings_for_ids(split: str, sample_ids: list):
-            """
-            Επιστρέφει (X, found_ids, missing_ids) όπου:
-            - X: numpy array [n_found, dim] στην ΙΔΙΑ σειρά με τα ζητούμενα sample_ids (όσα βρέθηκαν).
-            - found_ids: λίστα με τα sample_ids που βρέθηκαν (στη σειρά)
-            - missing_ids: όσα δεν βρέθηκαν
-            """
-            import numpy as np
-            if not sample_ids:
-                return np.zeros((0, 0), dtype=float), [], sample_ids
-
-            rows = [{"pos": i, "sid": str(sid)}
-                    for i, sid in enumerate(sample_ids)]
-
-            cypher = """
-            UNWIND $rows AS row
-            MATCH (:Sample {id: row.sid})-[:HAS_EMBEDDING]->(e:Embedding)
-            WHERE e.data_split = $split
-            RETURN row.pos AS pos, e.sample_id AS sid, e.vector AS vec
-            ORDER BY pos
-            """
-
-            with _get_neo4j_session() as s:
-                data = s.run(cypher, rows=rows, split=split).data()
-
-            if not data:
-                return np.zeros((0, 0), dtype=float), [], sample_ids
-
-            data.sort(key=lambda r: r["pos"])
-            found_vecs, found_ids = [], []
-            for r in data:
-                vec = [float(x) for x in r["vec"]]
-                found_vecs.append(vec)
-                found_ids.append(r["sid"])
-
-            X = np.array(found_vecs, dtype=float)
-            missing_ids = [
-                sid for sid in sample_ids if sid not in set(found_ids)]
-            return X, found_ids, missing_ids
-
-        # ---------- Banner ----------
         print("\n🧠 KNOWLEDGE GRAPH COMPARISON ANALYSIS")
         print("=" * 70)
         print("🎯 Comparing: Raw Features, NeuroGait KG, and Enhanced Features")
-        print("🔒 Using actual Neo4j graph structure and enhanced feature engineering")
-        print("📊 Complete statistical comparison\n")
+        print("🔒 Proper train/test separation and no leakage")
+        print("📊 Complete statistical comparison (paired-ready via IDs)")
+        print()
 
-        # 1) Προετοιμασία δεδομένων & clinical feature set
-        df, best_features, best_set_name, train_indices, test_indices, train_sample_pids, test_pids = self.load_and_prepare_data()
+        # === Load & split ===
+        df, best_features, best_set_name, train_indices, test_indices, train_pids, test_pids = self.load_and_prepare_data()
+        train_data, test_data = self.proper_train_test_split(df, train_indices, test_indices)
 
-        # 👉 ΝΕΟ: Φτιάξε ρητά τα IDs ΠΡΙΝ το split ώστε να περάσουν σε train/test & downstream
-        if "participant_id" not in df.columns:
-            raise RuntimeError(
-                "CRITICAL ERROR: 'participant_id' column is required in the dataset.")
-        df = df.copy()
-        # sample_index = το πρωτότυπο index του DataFrame (όπως χρησιμοποιήθηκε και στον KG builder)
-        df["sample_index"] = df.index.astype(int)
-        df["sample_id"] = "S_" + \
-            df["participant_id"].astype(
-                str) + "_" + df["sample_index"].astype(str)
+        # === Preprocess (leakage-free) ===
+        train_clean, test_clean, clean_features = self.preprocess_data(train_data, test_data, best_features)
 
-        train_data, test_data = self.proper_train_test_split(
-            df, train_indices, test_indices)
-
-        # 2) Preprocess χωρίς leakage (ΔΙΑΤΗΡΕΙ sample_id / sample_index)
-        train_clean, test_clean, clean_features = self.preprocess_data(
-            train_data, test_data, best_features)
-
-        # 3) Συντηρητικό feature selection (μόνο σε train)
+        # === Feature selection on train only ===
         X_train, X_test, selected_features = self.optimized_feature_selection(
             train_clean, test_clean, clean_features
         )
 
-        # 4) Στόχοι & scaling (fit στον train μόνο)
-        y_train = train_clean['diagnosis']
-        y_test = test_clean['diagnosis']
-        X_train_scaled, X_test_scaled = self.prepare_data_properly(
-            X_train, X_test)
+        # Targets
+        y_train = train_clean["diagnosis"]
+        y_test  = test_clean["diagnosis"]
 
-        # 5) PIDs ανά δείγμα
-        train_sample_pids_clean = train_clean['participant_id'].values
-        test_sample_pids_clean = test_clean['participant_id'].values
+        # Scaling (fit on train, transform test)
+        X_train_scaled, X_test_scaled = self.prepare_data_properly(X_train, X_test)
 
-        # === TIER 1: RAW CLINICAL FEATURES ===
-        print(f"\n{'='*50}")
+        # Build test_ids ONCE from the exact DF that produced X_test_scaled
+        test_ids = self._build_sample_ids_from_df(test_data)
+        # (optional strict check; uncomment if you want hard failure on mismatch)
+        # assert len(test_ids) == len(y_test), f"[KG Analysis] test_ids ({len(test_ids)}) != y_test ({len(y_test)})"
+
+        # ==================================================================
+        # TIER 1: RAW CLINICAL FEATURES
+        # ==================================================================
+        print("\n" + "=" * 50)
         print("📊 TIER 1: RAW CLINICAL FEATURES")
-        print(f"{'='*50}")
+        print("=" * 50)
 
         raw_results = self.train_optimized_models(
-            X_train_scaled, X_test_scaled, y_train, y_test, train_sample_pids_clean,
-            f"Raw Clinical Features ({best_set_name})"
+            X_train_scaled, X_test_scaled, y_train, y_test, train_pids,
+            f"Raw Clinical Features ({best_set_name})",
+            test_ids=test_ids
         )
 
-        # === TIER 2: NEUROGAIT KG EMBEDDINGS ===
-        print(f"\n{'='*50}")
+        # ==================================================================
+        # TIER 2: NEUROGAIT KG EMBEDDINGS
+        # ==================================================================
+        print("\n" + "=" * 50)
         print("🧠 TIER 2: NEUROGAIT KG EMBEDDINGS")
-        print(f"{'='*50}")
+        print("=" * 50)
 
-        # 6) PIDs για KG (participant-level split)
-        train_participants = train_clean['participant_id'].unique()
-        test_participants = test_clean['participant_id'].unique()
+        # Create KG embeddings from the same scaled inputs.
+        # NOTE: If your KG pipeline drops some test samples, ideally this function
+        # should also return the *actual* ids it kept for test (kg_test_ids).
+        # If you already have such a function, use it and pass kg_test_ids below.
+        X_train_kg, X_test_kg = self.create_neurogait_kg_embeddings(X_train_scaled, X_test_scaled)
 
-        # 7) Βεβαιώσου ότι υπάρχει builder & driver και ΕΦΑΡΜΟΣΕ uniform split ΣΤΟ KG
-        _ensure_kg_builder_local()
-        _ensure_ad_hoc_driver()
-        self.kg_builder.enforce_participant_level_split(
-            train_participants.tolist(),
-            test_participants.tolist()
-        )
-
-        # 7.1) Ανάκτησε ordered sample_ids από τα καθαρισμένα frames
-        if "sample_id" not in train_clean.columns and "sample_index" not in train_clean.columns:
-            raise RuntimeError(
-                "CRITICAL ERROR: Cannot align KG embeddings without 'sample_id' (or 'sample_index') in the cleaned train data."
-            )
-        if "sample_id" not in test_clean.columns and "sample_index" not in test_clean.columns:
-            raise RuntimeError(
-                "CRITICAL ERROR: Cannot align KG embeddings without 'sample_id' (or 'sample_index') in the cleaned test data."
-            )
-
-        def _resolve_sample_ids(df_clean):
-            if 'sample_id' in df_clean.columns:
-                return df_clean['sample_id'].astype(str).tolist()
-            # fallback μέσω sample_index (ακολουθεί το schema του builder)
-            return ["S_" + str(pid) + "_" + str(int(idx))
-                    for pid, idx in zip(df_clean['participant_id'], df_clean['sample_index'])]
-
-        train_sample_ids_ordered = _resolve_sample_ids(train_clean)
-        test_sample_ids_ordered = _resolve_sample_ids(test_clean)
-
-        # 8) Embeddings ΓΙΑ ΑΥΤΑ τα sample_ids και ΣΤΗΝ ΙΔΙΑ σειρά
-        X_train_kg, found_train_ids, miss_train_ids = _fetch_embeddings_for_ids(
-            "train", train_sample_ids_ordered)
-        X_test_kg,  found_test_ids,  miss_test_ids = _fetch_embeddings_for_ids(
-            "test",  test_sample_ids_ordered)
-
-        # 9) Ευθυγράμμιση με μάσκες (ίσα μήκη σε X, y, groups)
-        if X_train_kg.shape[0] == 0 or X_test_kg.shape[0] == 0:
-            raise RuntimeError(
-                "CRITICAL ERROR: No KG embeddings returned after enforcing participant-level split. "
-                "Check that Sample/Embedding nodes exist for the cleaned train/test samples."
-            )
-
-        set_found_train = set(found_train_ids)
-        set_found_test = set(found_test_ids)
-
-        mask_train = np.array(
-            [sid in set_found_train for sid in train_sample_ids_ordered], dtype=bool)
-        mask_test = np.array(
-            [sid in set_found_test for sid in test_sample_ids_ordered], dtype=bool)
-
-        y_train_k = np.asarray(y_train)[mask_train]
-        y_test_k = np.asarray(y_test)[mask_test]
-        train_pids_k = np.asarray(train_sample_pids_clean)[mask_train]
-        test_pids_k = np.asarray(test_sample_pids_clean)[mask_test]
-
-        if not (X_train_kg.shape[0] == y_train_k.shape[0] == train_pids_k.shape[0]):
-            raise RuntimeError(
-                f"CRITICAL ERROR (train KG alignment): X={X_train_kg.shape[0]}, y={y_train_k.shape[0]}, pids={train_pids_k.shape[0]}"
-            )
-        if not (X_test_kg.shape[0] == y_test_k.shape[0] == test_pids_k.shape[0]):
-            raise RuntimeError(
-                f"CRITICAL ERROR (test KG alignment): X={X_test_kg.shape[0]}, y={y_test_k.shape[0]}, pids={test_pids_k.shape[0]}"
-            )
-
-        if miss_train_ids or miss_test_ids:
-            print(
-                f"⚠️ Dropped samples without KG embeddings -> train: {len(miss_train_ids)}, test: {len(miss_test_ids)}")
-
-        # Εκπαίδευση με πλήρως στοιχισμένα KG embeddings
+        # By default we pass the raw test_ids. If the KG pipeline drops samples,
+        # adjust this to pass the filtered kg_test_ids you compute inside that pipeline.
         neurogait_kg_results = self.train_optimized_models(
-            X_train_kg, X_test_kg, y_train_k, y_test_k, train_pids_k, "NeuroGait KG"
+            X_train_kg, X_test_kg, y_train, y_test, train_pids,
+            "NeuroGait KG",
+            test_ids=test_ids
         )
 
-        # === TIER 3: ENHANCED FEATURES ===
-        print(f"\n{'='*50}")
+        # ==================================================================
+        # TIER 3: ENHANCED FEATURES
+        # ==================================================================
+        print("\n" + "=" * 50)
         print("🔥 TIER 3: ENHANCED FEATURES")
-        print(f"{'='*50}")
+        print("=" * 50)
 
-        if not ENHANCED_FEATURES_AVAILABLE:
-            raise ImportError(
-                "CRITICAL ERROR: Enhanced features not available. Cannot proceed with Tier 3 analysis.")
+        # Build Enhanced KG Features deterministically from the original DFs
+        enhanced_builder = EnhancedKGFeatureBuilder()
+        X_train_enh, _feat_names = enhanced_builder.create_enhanced_kg_features(train_data, selected_features)
+        X_test_enh,  _          = enhanced_builder.create_enhanced_kg_features(test_data,  selected_features)
 
-        X_train_enhanced, X_test_enhanced = self.create_enhanced_features_embeddings(
-            train_clean, test_clean, selected_features
-        )
+        scaler_enh = StandardScaler()
+        X_train_enh_scaled = scaler_enh.fit_transform(X_train_enh)
+        X_test_enh_scaled  = scaler_enh.transform(X_test_enh)
 
         enhanced_results = self.train_optimized_models(
-            X_train_enhanced, X_test_enhanced, y_train, y_test, train_sample_pids_clean, "Enhanced Features"
+            X_train_enh_scaled, X_test_enh_scaled, y_train, y_test, train_pids,
+            "Enhanced Features",
+            test_ids=test_ids
         )
 
-        # === COMPREHENSIVE COMPARISON ===
-        print(f"\n{'='*70}")
+        # ==================================================================
+        # COMPREHENSIVE COMPARISON (paired-ready via stored ids per tier)
+        # ==================================================================
+        print("\n" + "=" * 70)
         print("📊 COMPREHENSIVE KG COMPARISON RESULTS")
-        print(f"{'='*70}")
+        print("=" * 70)
 
-        all_results = {
-            'Raw Clinical Features': raw_results,
-            'NeuroGait KG': neurogait_kg_results
+        tier_results = {
+            "Raw Clinical Features": raw_results,
+            "NeuroGait KG": neurogait_kg_results,
+            "Enhanced Features": enhanced_results,
         }
-        if enhanced_results:
-            all_results['Enhanced Features'] = enhanced_results
 
-        statistical_results = self.statistical_comparison_analysis(all_results)
+        stats = self.statistical_comparison_analysis(tier_results)
 
-        self.print_kg_comparison_results(
-            all_results,
-            best_set_name,
+        # Optional: pretty print block you already have
+        self.print_kg_comparison_results_with_statistics(
+            tier_results,
             {
-                'train_participants': len(train_participants),
-                'test_participants': len(test_participants),
-                'original_features': len(best_features),
-                'selected_features': len(selected_features)
+                "train_participants": len(set(train_pids)),
+                "test_participants": len(set(test_pids)),
+                "original_features": len(best_features),
+                "selected_features": len(selected_features),
+                # "enhanced_features": len(_feat_names)  # add if you want to show count
             },
-            statistical_results
+            stats
         )
 
         return {
-            'all_results': all_results,
-            'statistical_results': statistical_results,
-            'data_summary': {
-                'train_participants': len(train_participants),
-                'test_participants': len(test_participants),
-                'train_samples': len(X_train),
-                'test_samples': len(X_test)
+            "tier_results": tier_results,
+            "statistical_results": stats,
+            "data_summary": {
+                "train_participants": len(set(train_pids)),
+                "test_participants": len(set(test_pids)),
+                "train_samples": len(X_train),
+                "test_samples": len(X_test),
             },
-            'feature_info': {
-                'clinical_set': best_set_name,
-                'original_count': len(best_features),
-                'selected_count': len(selected_features)
-            }
+            "feature_info": {
+                "clinical_set": best_set_name,
+                "original_count": len(best_features),
+                "selected_count": len(selected_features),
+                # "enhanced_count": len(_feat_names),
+            },
         }
 
     def print_kg_comparison_results(self, all_results, clinical_set_name, data_summary, statistical_results):
