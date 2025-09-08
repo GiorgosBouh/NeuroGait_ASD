@@ -1892,10 +1892,9 @@ class RealisticAnalysis:
         print(f"\n{'='*50}")
         print("📊 TIER 1A: RAW CLINICAL FEATURES")
         print(f"{'='*50}")
-
+        test_ids = self._build_sample_ids_from_df(test_data)  # ίδιο df από το οποίο βγήκε το X_test_scaled
         # ΦΤΙΑΧΝΟΥΜΕ ΤΑ IDs ΜΙΑ ΦΟΡΑ από το test_data (πριν το scaling/embeddings)
         # Απαραίτητο για STRICT paired comparisons χωρίς skips
-        test_ids = self._build_sample_ids_from_df(test_data)
 
         raw_results = self.train_optimized_models(
             X_train_scaled, X_test_scaled, y_train, y_test, train_pids,
