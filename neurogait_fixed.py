@@ -520,8 +520,8 @@ class RealisticAnalysis:
         clinical_sets = self.get_clinical_features(converted_features)
 
         # Select best features using ONLY training data
-        best_features, best_set_name = self._select_best_clinical_set_corrected(
-            train_only_df, clinical_sets, converted_features
+        best_features, best_set_name = self.select_best_clinical_set(
+            train_only_df, clinical_sets, train_indices
         )
 
         print(
