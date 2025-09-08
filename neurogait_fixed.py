@@ -1894,7 +1894,6 @@ class RealisticAnalysis:
         X_train_scaled, X_test_scaled = self.prepare_data_properly(
             X_train, X_test)
 
-
        # === TIER 1A: RAW CLINICAL FEATURES ===
         print(f"\n{'='*50}")
         print("📊 TIER 1A: RAW CLINICAL FEATURES")
@@ -1961,7 +1960,8 @@ class RealisticAnalysis:
                 scaler_enhanced = StandardScaler()
                 X_train_enhanced_scaled = scaler_enhanced.fit_transform(
                     X_train_enhanced)
-                X_test_enhanced_scaled = scaler_enhanced.transform(X_test_enhanced)
+                X_test_enhanced_scaled = scaler_enhanced.transform(
+                    X_test_enhanced)
 
                 # Must match the same test_ids as raw (no dropping)
                 assert len(test_ids) == len(
@@ -2004,6 +2004,7 @@ class RealisticAnalysis:
             f"Tuned KG ({best_config['name']})",
             test_ids=test_ids
         )
+
 
 # === COMPREHENSIVE COMPARISON ===
 print(f"\n{'='*70}")
