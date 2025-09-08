@@ -1045,55 +1045,128 @@ class SynchronizedLeakageFreeKGBuilder:
         
         return clinical_sets
 
-    def _select_best_clinical_set_for_kg(self, df, clinical_sets):
-        """Replicate the best clinical set selection logic"""
-        best_set_name = "combined_best"  # Use the same set the analysis script typically selects
-        best_features = clinical_sets[best_set_name]
+    def preprocess_data(self, train_data, test_data, best_features):
+        """Preprocess WITHOUT data leakage - CORRECTED VERSION"""
+        print(f"\n🔧 LEAKAGE-FREE PREPROCESSING:")
         
-        # Filter to available features
-        available_features = [f for f in best_features if f in df.columns]
+        # Keep essential columns
+        must_keep_cols = ['participant_id', 'sample_id', 'original_index', 'diagnosis']
         
-        logger.info(f"🎯 Selected clinical feature set: {best_set_name} ({len(available_features)} features)")
+        # Get feature candidates
+        feature_candidates = [f for f in best_features if f in train_data.columns and f in test_data.columns]
         
-        return available_features, best_set_name
+        if len(feature_candidates) == 0:
+            raise RuntimeError("No valid features found in both train and test")
+        
+        # Create working copies
+        train_df = train_data[feature_candidates + [c for c in must_keep_cols if c in train_data.columns]].copy()
+        test_df = test_data[feature_candidates + [c for c in must_keep_cols if c in test_data.columns]].copy()
+        
+        # CRITICAL: Calculate statistics on TRAIN ONLY
+        print("   📊 Calculating feature statistics on TRAIN data only...")
+        
+        # 1. Remove features with >60% missing (based on TRAIN only)
+        train_missing_frac = train_df[feature_candidates].isna().mean()
+        keep_features = [f for f in feature_candidates if train_missing_frac[f] <= 0.60]
+        
+        print(f"   ✅ Kept {len(keep_features)}/{len(feature_candidates)} features")
+        
+        # 2. Remove train samples with >50% missing
+        if len(keep_features) > 0:
+            train_feat = train_df[keep_features]
+            row_nan_frac = train_feat.isna().mean(axis=1)
+            keep_rows_mask = (row_nan_frac <= 0.50)
+            train_df = train_df.loc[keep_rows_mask].copy()
+            print(f"   ✅ Kept {keep_rows_mask.sum()}/{len(keep_rows_mask)} train samples")
+        
+        # 3. Imputation - FIT ON TRAIN ONLY
+        from sklearn.impute import SimpleImputer
+        imputer = SimpleImputer(strategy="median")
+        
+        # Fit ONLY on train
+        print("   🔒 Fitting imputer on TRAIN data only...")
+        imputer.fit(train_df[keep_features])
+        
+        # Transform both
+        train_imputed = imputer.transform(train_df[keep_features])
+        test_imputed = imputer.transform(test_df[keep_features])
+        
+        # Create clean dataframes
+        train_clean = pd.DataFrame(train_imputed, columns=keep_features, index=train_df.index)
+        test_clean = pd.DataFrame(test_imputed, columns=keep_features, index=test_df.index)
+        
+        # Add back essential columns
+        for col in must_keep_cols:
+            if col in train_df.columns:
+                train_clean[col] = train_df[col].values
+            if col in test_df.columns:
+                test_clean[col] = test_df[col].values
+        
+        # Ensure correct types
+        if "participant_id" in train_clean.columns:
+            train_clean["participant_id"] = train_clean["participant_id"].astype(str)
+        if "participant_id" in test_clean.columns:
+            test_clean["participant_id"] = test_clean["participant_id"].astype(str)
+        
+        print(f"   ✅ Final shapes: Train {train_clean.shape}, Test {test_clean.shape}")
+        
+        # VALIDATION: Check no participant overlap
+        train_pids = set(train_clean['participant_id'].unique())
+        test_pids = set(test_clean['participant_id'].unique())
+        overlap = train_pids & test_pids
+        
+        if overlap:
+            raise ValueError(f"CRITICAL LEAKAGE: Participant overlap detected: {overlap}")
+        
+        print(f"   ✅ No participant overlap verified")
+        
+        return train_clean, test_clean, keep_features
 
-    def _apply_analysis_preprocessing(self, df, features):
-        """Apply the same preprocessing steps as the analysis script"""
-        logger.info("🧹 Applying analysis script preprocessing...")
+    def _apply_preprocessing_train_only(self, train_df):
+        """Apply preprocessing using ONLY training data statistics"""
+        logger.info("🔒 Preprocessing TRAIN data (fit and transform)...")
         
-        # Handle missing values using the same thresholds
+        features = [f for f in self.essential_movement_features if f in train_df.columns]
+        
+        # Remove high missing features (based on train)
         missing_threshold = 0.6
-        missing_per_feature = df[features].isna().sum() / len(df)
+        missing_per_feature = train_df[features].isna().sum() / len(train_df)
         good_features = missing_per_feature[missing_per_feature <= missing_threshold].index.tolist()
         
-        logger.info(f"   🗑️ Removed {len(features) - len(good_features)} features with >{missing_threshold*100}% missing")
-        
-        # Remove samples with too many missing values
-        missing_per_sample = df[good_features].isna().sum(axis=1) / len(good_features)
+        # Remove samples with too many missing
+        missing_per_sample = train_df[good_features].isna().sum(axis=1) / len(good_features)
         good_samples = missing_per_sample <= 0.5
-        df_clean = df[good_samples].copy()
+        train_clean = train_df[good_samples].copy()
         
-        logger.info(f"   🗑️ Removed {(~good_samples).sum()} samples with >50% missing")
+        # Store preprocessing statistics for test set
+        self.train_feature_means = train_clean[good_features].mean()
+        self.train_feature_stds = train_clean[good_features].std()
+        self.train_good_features = good_features
         
-        # Remove constant features
-        constant_features = []
-        for col in good_features:
-            if df_clean[col].nunique() <= 1:
-                constant_features.append(col)
+        logger.info(f"   ✅ Train preprocessing complete: {len(train_clean)} samples")
         
-        final_features = [f for f in good_features if f not in constant_features]
+        return train_clean
+
+    def _apply_preprocessing_using_train_stats(self, test_df, train_df):
+        """Apply preprocessing to test using ONLY train statistics"""
+        logger.info("🔒 Preprocessing TEST data (transform only)...")
         
-        # Remove duplicates but PRESERVE original participant_id mapping
-        original_participant_mapping = df_clean['participant_id'].copy()
-        df_final = df_clean.drop_duplicates(subset=final_features)
+        # Use same features as train
+        good_features = self.train_good_features
         
-        # DO NOT recreate participant_id - keep the preserved mapping
-        # This ensures consistency with analysis script participant numbering
+        # Don't remove test samples based on missing values
+        # Just use what we have
+        test_clean = test_df.copy()
         
-        logger.info(f"   📊 Final preprocessing: {len(df)} → {len(df_final)} samples")
-        logger.info(f"   📊 Constant features removed: {len(constant_features)}")
+        # Apply train statistics for imputation
+        for feature in good_features:
+            if feature in test_clean.columns:
+                # Fill missing with train mean
+                test_clean[feature].fillna(self.train_feature_means[feature], inplace=True)
         
-        return df_final
+        logger.info(f"   ✅ Test preprocessing complete: {len(test_clean)} samples")
+        
+        return test_clean
 
     def close(self):
         """Close database connection safely"""
