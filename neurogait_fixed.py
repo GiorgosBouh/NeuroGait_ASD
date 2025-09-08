@@ -3,7 +3,7 @@
 REALISTIC ANALYSIS - Enhanced με Clinical Features, Statistics, και GNN Support
 GOAL: Raw vs KG vs GNN comparison με καλύτερα clinical features και πλήρη στατιστική ανάλυση
 
-FIXED VERSION: 
+FIXED VERSION:
 - Eliminated all data leakage issues
 - Proper train/test separation in all preprocessing steps
 - Fixed cross-validation implementation
@@ -40,7 +40,8 @@ def _build_sample_ids_from_df(self, df):
         return df['sample_id'].astype(str).tolist()
     req = {'participant_id', 'sample_index'}
     if not req.issubset(df.columns):
-        raise RuntimeError("Cannot build sample_ids: need 'sample_id' or both 'participant_id' and 'sample_index'.")
+        raise RuntimeError(
+            "Cannot build sample_ids: need 'sample_id' or both 'participant_id' and 'sample_index'.")
     return ["S_"+str(pid)+"_"+str(int(idx)) for pid, idx in zip(df['participant_id'], df['sample_index'])]
 # =====================
 # Statistical utilities
@@ -946,9 +947,11 @@ class RealisticAnalysis:
         print(f"   📊 Data shape: {X_train.shape}")
 
         if test_ids is None:
-            raise RuntimeError(f"[{approach_name}] Missing test_ids (required for strict paired comparisons).")
+            raise RuntimeError(
+                f"[{approach_name}] Missing test_ids (required for strict paired comparisons).")
         if len(test_ids) != len(y_test):
-            raise RuntimeError(f"[{approach_name}] test_ids length ({len(test_ids)}) != y_test length ({len(y_test)}).")
+            raise RuntimeError(
+                f"[{approach_name}] test_ids length ({len(test_ids)}) != y_test length ({len(y_test)}).")
 
         models = {
             'Logistic Regression': LogisticRegression(random_state=42, max_iter=1000, C=0.001, solver='liblinear', penalty='l2'),
@@ -966,7 +969,8 @@ class RealisticAnalysis:
             cv_scores = []
             for tr_idx, va_idx in kf.split(X_train, y_train):
                 X_tr, X_va = X_train[tr_idx], X_train[va_idx]
-                y_tr, y_va = np.asarray(y_train)[tr_idx], np.asarray(y_train)[va_idx]
+                y_tr, y_va = np.asarray(
+                    y_train)[tr_idx], np.asarray(y_train)[va_idx]
                 model.fit(X_tr, y_tr)
                 proba = (model.predict_proba(X_va)[:, 1] if hasattr(model, "predict_proba")
                         else 1/(1+np.exp(-model.decision_function(X_va))))
@@ -998,8 +1002,10 @@ class RealisticAnalysis:
                 'ids': np.asarray(test_ids, dtype=str)  # ← αποθήκευση IDs
             }
 
-            status = "🎉 Excellent" if auc >= 0.9 else ("✅ Good" if auc >= 0.8 else "📋 Limited")
-            print(f"   {status}: AUC={auc:.3f}, F1={f1:.3f}, CV={np.mean(cv_scores):.3f}±{np.std(cv_scores):.3f}")
+            status = "🎉 Excellent" if auc >= 0.9 else (
+                "✅ Good" if auc >= 0.8 else "📋 Limited")
+            print(
+                f"   {status}: AUC={auc:.3f}, F1={f1:.3f}, CV={np.mean(cv_scores):.3f}±{np.std(cv_scores):.3f}")
 
         return results
 
@@ -1151,7 +1157,7 @@ class RealisticAnalysis:
         Επιστρέφει σύνολο από strings (participant ids όπως είναι αποθηκευμένα).
         """
         q = """
-        MATCH (p:Participant)-[:HAS_SAMPLE]->(s:Sample)-[:HAS_EMBEDDING]->(e:Embedding)  
+        MATCH (p:Participant)-[:HAS_SAMPLE]->(s:Sample)-[:HAS_EMBEDDING]->(e:Embedding)
         WHERE e.data_split = $split
         RETURN collect(DISTINCT toString(p.id)) AS pids
         """
@@ -1888,13 +1894,16 @@ class RealisticAnalysis:
         X_train_scaled, X_test_scaled = self.prepare_data_properly(
             X_train, X_test)
 
-        # === TIER 1A: RAW CLINICAL FEATURES ===
+
+       # === TIER 1A: RAW CLINICAL FEATURES ===
         print(f"\n{'='*50}")
         print("📊 TIER 1A: RAW CLINICAL FEATURES")
         print(f"{'='*50}")
-        test_ids = self._build_sample_ids_from_df(test_data)  # ίδιο df από το οποίο βγήκε το X_test_scaled
-        # ΦΤΙΑΧΝΟΥΜΕ ΤΑ IDs ΜΙΑ ΦΟΡΑ από το test_data (πριν το scaling/embeddings)
-        # Απαραίτητο για STRICT paired comparisons χωρίς skips
+
+        # Build test_ids strictly from the same DF that produced X_test_scaled
+        test_ids = self._build_sample_ids_from_df(test_data)
+        assert len(test_ids) == len(
+            y_test), f"[RAW] test_ids ({len(test_ids)}) != y_test ({len(y_test)})"
 
         raw_results = self.train_optimized_models(
             X_train_scaled, X_test_scaled, y_train, y_test, train_pids,
@@ -1910,10 +1919,14 @@ class RealisticAnalysis:
         X_train_kg_simple, X_test_kg_simple = self.create_conservative_kg_embeddings(
             X_train_scaled, X_test_scaled
         )
+        # Must keep 1:1 alignment with the raw test set for strict pairing
+        assert len(test_ids) == len(
+            y_test), "[Simple KG] test_ids must match y_test length"
+
         simple_kg_results = self.train_optimized_models(
             X_train_kg_simple, X_test_kg_simple, y_train, y_test, train_pids,
             "Simple KG",
-            test_ids=test_ids  # ίδια σειρά/δείγματα με το X_test_scaled
+            test_ids=test_ids
         )
 
         # === HYPERPARAMETER SEARCH ===
@@ -1948,17 +1961,20 @@ class RealisticAnalysis:
                 scaler_enhanced = StandardScaler()
                 X_train_enhanced_scaled = scaler_enhanced.fit_transform(
                     X_train_enhanced)
-                X_test_enhanced_scaled = scaler_enhanced.transform(
-                    X_test_enhanced)
+                X_test_enhanced_scaled = scaler_enhanced.transform(X_test_enhanced)
+
+                # Must match the same test_ids as raw (no dropping)
+                assert len(test_ids) == len(
+                    y_test), "[Enhanced KG] test_ids must match y_test length"
 
                 enhanced_kg_results = self.train_optimized_models(
                     X_train_enhanced_scaled, X_test_enhanced_scaled, y_train, y_test,
                     train_pids, "Enhanced KG",
-                    test_ids=test_ids  # ίδια IDs από το ίδιο test_data
+                    test_ids=test_ids
                 )
 
             except Exception as e:
-                # ΌΧΙ fallback: αν αποτύχει, το αφήνουμε None και συνεχίζουμε αυστηρά
+                # No fallback: fail this tier but keep the rest strict
                 print(f"❌ Enhanced KG features failed: {e}")
                 enhanced_kg_results = None
 
@@ -1967,7 +1983,7 @@ class RealisticAnalysis:
         print("🎯 TIER 1D: TUNED KG EMBEDDINGS (Best Config)")
         print(f"{'='*50}")
 
-        # ΌΧΙ fallbacks: απαιτούμε best_config, αλλιώς διακόπτουμε ρητά
+        # No fallback allowed
         if not best_config:
             raise RuntimeError(
                 "No best_config from hyperparameter_search — tuned KG cannot proceed without it.")
@@ -1978,11 +1994,62 @@ class RealisticAnalysis:
             best_config['smoothing'],
             best_config['nonlinearity']
         )
+
+        # Must match the same test_ids as raw (no dropping here)
+        assert len(test_ids) == len(
+            y_test), "[Tuned KG] test_ids must match y_test length"
+
         tuned_kg_results = self.train_optimized_models(
             X_train_kg_tuned, X_test_kg_tuned, y_train, y_test, train_pids,
             f"Tuned KG ({best_config['name']})",
-            test_ids=test_ids  # ίδια IDs (δεν ρίχνουμε δείγματα εδώ)
+            test_ids=test_ids
         )
+
+# === COMPREHENSIVE COMPARISON ===
+print(f"\n{'='*70}")
+print("📊 COMPREHENSIVE COMPARISON - TUNED KG ANALYSIS με STATISTICS")
+print(f"{'='*70}")
+
+tier1_results = {
+    'Raw Clinical Features': raw_results,
+    'Simple KG': simple_kg_results,
+    'Tuned KG': tuned_kg_results
+}
+if enhanced_kg_results:
+    tier1_results['Enhanced KG (Original)'] = enhanced_kg_results
+
+statistical_results = self.statistical_comparison_analysis(tier1_results)
+
+self.print_tuned_comprehensive_results_with_statistics(
+    tier1_results, tuning_results, best_config, best_set_name,
+    {
+        'train_participants': len(set(train_pids)),
+        'test_participants': len(set(test_pids)),
+        'original_features': len(best_features),
+        'selected_features': len(selected_features),
+        'enhanced_features': len(feature_names) if enhanced_kg_results else 0
+    },
+    statistical_results
+)
+
+return {
+    'tier1_clinical_ml': tier1_results,
+    'tuning_results': tuning_results,
+    'best_config': best_config,
+    'statistical_results': statistical_results,
+    'data_summary': {
+        'train_participants': len(set(train_pids)),
+        'test_participants': len(set(test_pids)),
+        'train_samples': len(X_train),
+        'test_samples': len(X_test)
+    },
+    'feature_info': {
+        'clinical_set': best_set_name,
+        'original_count': len(best_features),
+        'selected_count': len(selected_features),
+        'enhanced_count': len(feature_names) if enhanced_kg_results else 0
+    }
+}
 
         # === COMPREHENSIVE COMPARISON ===
         print(f"\n{'='*70}")
@@ -2302,7 +2369,8 @@ class RealisticAnalysis:
         print(f"\n{'='*50}")
         print("📊 TIER 1: RAW CLINICAL FEATURES")
         print(f"{'='*50}")
-
+        test_ids = self._build_sample_ids_from_df
+        assert len(test_ids) == len(y_test)
         raw_results = self.train_optimized_models(
             X_train_scaled, X_test_scaled, y_train, y_test, train_sample_pids_clean,
             f"Raw Clinical Features ({best_set_name})"
