@@ -2223,9 +2223,19 @@ class RealisticAnalysis:
         
         # Helper functions (inner scope)
         def _ensure_kg_builder_local():
-            """Ensure KG builder exists"""
+            """Ensure KG builder exists and is properly connected"""
             if getattr(self, "kg_builder", None) is not None:
-                return
+                # Check if already connected
+                if hasattr(self.kg_builder, 'driver') and self.kg_builder.driver is not None:
+                    try:
+                        # Test the connection
+                        with self.kg_builder.driver.session() as session:
+                            session.run("RETURN 1")
+                        return  # Connection is good
+                    except:
+                        pass  # Connection failed, recreate
+            
+            print("   🔧 Initializing KG builder...")
             
             import neurogait_kg_builder as kgmod
             import inspect
@@ -2245,24 +2255,23 @@ class RealisticAnalysis:
             candidates.sort(key=lambda c: int(hasattr(c, preferred)), reverse=True)
             BuilderClass = candidates[0]
             
-            # Initialize with parameters
-            uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-            user = os.getenv("NEO4J_USER", "neo4j")
-            pwd = os.getenv("NEO4J_PASSWORD", "palatiou")
+            # Initialize builder with explicit connection
+            print(f"   🔧 Creating {BuilderClass.__name__} instance...")
+            self.kg_builder = BuilderClass(samples_per_participant=8)
             
+            # CRITICAL: Ensure connection
+            print("   🔌 Connecting to Neo4j...")
+            if not self.kg_builder.connect():
+                raise RuntimeError("Failed to connect KG builder to Neo4j")
+            
+            # Verify connection works
             try:
-                self.kg_builder = BuilderClass(uri=uri, user=user, password=pwd)
-            except TypeError:
-                self.kg_builder = BuilderClass()
-                # Try to configure if methods exist
-                for method_name in ["configure", "connect", "set_connection"]:
-                    if hasattr(self.kg_builder, method_name):
-                        try:
-                            getattr(self.kg_builder, method_name)(uri=uri, user=user, password=pwd)
-                            break
-                        except TypeError:
-                            continue
-        
+                with self.kg_builder.driver.session() as session:
+                    session.run("RETURN 1")
+                print(f"   ✅ KG builder connected successfully")
+            except Exception as e:
+                raise RuntimeError(f"KG builder connection test failed: {e}")
+                
         def _ensure_ad_hoc_driver():
             """Ensure Neo4j driver for queries"""
             if getattr(self, "_ad_hoc_driver", None) is not None:
