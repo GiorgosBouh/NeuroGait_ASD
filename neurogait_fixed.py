@@ -1877,12 +1877,10 @@ class RealisticAnalysis:
 
         # Enhanced preprocessing with clinical features
         df, best_features, best_set_name, train_indices, test_indices, train_pids, test_pids = self.load_and_prepare_data()
-        train_data, test_data = self.proper_train_test_split(
-            df, train_indices, test_indices)
+        train_data, test_data = self.proper_train_test_split(df, train_indices, test_indices)
 
         # Preprocess data without leakage
-        train_clean, test_clean, clean_features = self.preprocess_data(
-            train_data, test_data, best_features)
+        train_clean, test_clean, clean_features = self.preprocess_data(train_data, test_data, best_features)
 
         # Feature selection
         X_train, X_test, selected_features = self.optimized_feature_selection(
@@ -1891,18 +1889,15 @@ class RealisticAnalysis:
 
         y_train = train_clean['diagnosis']
         y_test = test_clean['diagnosis']
-        X_train_scaled, X_test_scaled = self.prepare_data_properly(
-            X_train, X_test)
+        X_train_scaled, X_test_scaled = self.prepare_data_properly(X_train, X_test)
 
-       # === TIER 1A: RAW CLINICAL FEATURES ===
+        # === TIER 1A: RAW CLINICAL FEATURES ===
         print(f"\n{'='*50}")
         print("📊 TIER 1A: RAW CLINICAL FEATURES")
         print(f"{'='*50}")
 
-        # Build test_ids strictly from the same DF that produced X_test_scaled
         test_ids = self._build_sample_ids_from_df(test_data)
-        assert len(test_ids) == len(
-            y_test), f"[RAW] test_ids ({len(test_ids)}) != y_test ({len(y_test)})"
+        assert len(test_ids) == len(y_test), f"[RAW] test_ids ({len(test_ids)}) != y_test ({len(y_test)})"
 
         raw_results = self.train_optimized_models(
             X_train_scaled, X_test_scaled, y_train, y_test, train_pids,
@@ -1918,9 +1913,7 @@ class RealisticAnalysis:
         X_train_kg_simple, X_test_kg_simple = self.create_conservative_kg_embeddings(
             X_train_scaled, X_test_scaled
         )
-        # Must keep 1:1 alignment with the raw test set for strict pairing
-        assert len(test_ids) == len(
-            y_test), "[Simple KG] test_ids must match y_test length"
+        assert len(test_ids) == len(y_test), "[Simple KG] test_ids must match y_test length"
 
         simple_kg_results = self.train_optimized_models(
             X_train_kg_simple, X_test_kg_simple, y_train, y_test, train_pids,
@@ -1949,7 +1942,6 @@ class RealisticAnalysis:
 
             try:
                 enhanced_builder = EnhancedKGFeatureBuilder()
-
                 X_train_enhanced, feature_names = enhanced_builder.create_enhanced_kg_features(
                     train_data, selected_features
                 )
@@ -1958,14 +1950,10 @@ class RealisticAnalysis:
                 )
 
                 scaler_enhanced = StandardScaler()
-                X_train_enhanced_scaled = scaler_enhanced.fit_transform(
-                    X_train_enhanced)
-                X_test_enhanced_scaled = scaler_enhanced.transform(
-                    X_test_enhanced)
+                X_train_enhanced_scaled = scaler_enhanced.fit_transform(X_train_enhanced)
+                X_test_enhanced_scaled = scaler_enhanced.transform(X_test_enhanced)
 
-                # Must match the same test_ids as raw (no dropping)
-                assert len(test_ids) == len(
-                    y_test), "[Enhanced KG] test_ids must match y_test length"
+                assert len(test_ids) == len(y_test), "[Enhanced KG] test_ids must match y_test length"
 
                 enhanced_kg_results = self.train_optimized_models(
                     X_train_enhanced_scaled, X_test_enhanced_scaled, y_train, y_test,
@@ -1974,7 +1962,6 @@ class RealisticAnalysis:
                 )
 
             except Exception as e:
-                # No fallback: fail this tier but keep the rest strict
                 print(f"❌ Enhanced KG features failed: {e}")
                 enhanced_kg_results = None
 
@@ -1983,10 +1970,8 @@ class RealisticAnalysis:
         print("🎯 TIER 1D: TUNED KG EMBEDDINGS (Best Config)")
         print(f"{'='*50}")
 
-        # No fallback allowed
         if not best_config:
-            raise RuntimeError(
-                "No best_config from hyperparameter_search — tuned KG cannot proceed without it.")
+            raise RuntimeError("No best_config from hyperparameter_search — tuned KG cannot proceed without it.")
 
         X_train_kg_tuned, X_test_kg_tuned = self.create_tuned_kg_embeddings(
             X_train_scaled, X_test_scaled,
@@ -1995,9 +1980,7 @@ class RealisticAnalysis:
             best_config['nonlinearity']
         )
 
-        # Must match the same test_ids as raw (no dropping here)
-        assert len(test_ids) == len(
-            y_test), "[Tuned KG] test_ids must match y_test length"
+        assert len(test_ids) == len(y_test), "[Tuned KG] test_ids must match y_test length"
 
         tuned_kg_results = self.train_optimized_models(
             X_train_kg_tuned, X_test_kg_tuned, y_train, y_test, train_pids,
@@ -2005,59 +1988,11 @@ class RealisticAnalysis:
             test_ids=test_ids
         )
 
-
-# === COMPREHENSIVE COMPARISON ===
-print(f"\n{'='*70}")
-print("📊 COMPREHENSIVE COMPARISON - TUNED KG ANALYSIS με STATISTICS")
-print(f"{'='*70}")
-
-tier1_results = {
-    'Raw Clinical Features': raw_results,
-    'Simple KG': simple_kg_results,
-    'Tuned KG': tuned_kg_results
-}
-if enhanced_kg_results:
-    tier1_results['Enhanced KG (Original)'] = enhanced_kg_results
-
-statistical_results = self.statistical_comparison_analysis(tier1_results)
-
-self.print_tuned_comprehensive_results_with_statistics(
-    tier1_results, tuning_results, best_config, best_set_name,
-    {
-        'train_participants': len(set(train_pids)),
-        'test_participants': len(set(test_pids)),
-        'original_features': len(best_features),
-        'selected_features': len(selected_features),
-        'enhanced_features': len(feature_names) if enhanced_kg_results else 0
-    },
-    statistical_results
-)
-
-return {
-    'tier1_clinical_ml': tier1_results,
-    'tuning_results': tuning_results,
-    'best_config': best_config,
-    'statistical_results': statistical_results,
-    'data_summary': {
-        'train_participants': len(set(train_pids)),
-        'test_participants': len(set(test_pids)),
-        'train_samples': len(X_train),
-        'test_samples': len(X_test)
-    },
-    'feature_info': {
-        'clinical_set': best_set_name,
-        'original_count': len(best_features),
-        'selected_count': len(selected_features),
-        'enhanced_count': len(feature_names) if enhanced_kg_results else 0
-    }
-}
-
         # === COMPREHENSIVE COMPARISON ===
         print(f"\n{'='*70}")
         print("📊 COMPREHENSIVE COMPARISON - TUNED KG ANALYSIS με STATISTICS")
         print(f"{'='*70}")
 
-        # Συγκεντρώνουμε τα αποτελέσματα
         tier1_results = {
             'Raw Clinical Features': raw_results,
             'Simple KG': simple_kg_results,
@@ -2066,11 +2001,8 @@ return {
         if enhanced_kg_results:
             tier1_results['Enhanced KG (Original)'] = enhanced_kg_results
 
-        # Αυστηρή paired στατιστική (χωρίς skips, θα ευθυγραμμίσει με IDs)
-        statistical_results = self.statistical_comparison_analysis(
-            tier1_results)
+        statistical_results = self.statistical_comparison_analysis(tier1_results)
 
-        # Εκτύπωση με στατιστικά
         self.print_tuned_comprehensive_results_with_statistics(
             tier1_results, tuning_results, best_config, best_set_name,
             {
