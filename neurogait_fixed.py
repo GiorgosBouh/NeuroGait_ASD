@@ -35,34 +35,7 @@ import neurogait_kg_builder as kgmod
 warnings.filterwarnings('ignore')
 
 
-def _build_sample_ids_from_df(self, df):
-    """
-    Return a stable list of sample_ids for df.
-    Rules (strict, no silent fallbacks):
-      - If 'sample_id' exists -> use it (as string).
-      - Else require 'participant_id'; if 'sample_index' missing, create it deterministically per participant.
-      - Else raise.
-    """
-    import pandas as pd
-    if 'sample_id' in df.columns:
-        return df['sample_id'].astype(str).tolist()
 
-    if 'participant_id' not in df.columns:
-        raise RuntimeError("STRICT: Need either 'sample_id' or 'participant_id' (+ optional 'sample_index') to build IDs.")
-
-    # Ensure deterministic per-participant ordering before cumcount
-    ordering_cols = [c for c in ['timestamp', 'frame', 'trial', 'sequence'] if c in df.columns]
-    if ordering_cols:
-        df = df.sort_values(['participant_id'] + ordering_cols).copy()
-    else:
-        # Keep existing row order within each participant; cumcount will still be stable for a fixed df
-        df = df.copy()
-
-    if 'sample_index' not in df.columns:
-        df['sample_index'] = df.groupby('participant_id').cumcount().astype(int)
-
-    sid = ("S_" + df['participant_id'].astype(str) + "_" + df['sample_index'].astype(int).astype(str))
-    return sid.astype(str).tolist()
 # =====================
 # Statistical utilities
 # =====================
@@ -263,6 +236,48 @@ except Exception as e:
 
 
 class RealisticAnalysis:
+    # put this INSIDE the RealisticAnalysis class
+    def _build_sample_ids_from_df(self, df):
+        """
+        Build stable sample IDs for a DataFrame used to create X_test.
+        Strict rules (no silent fallbacks):
+        - If 'sample_id' exists -> use it (as string).
+        - Else require 'participant_id'. Create 'sample_index' deterministically
+            per participant (based on current ordering or timestamp/frame/trial/sequence if available),
+            then synthesize 'sample_id' = 'S_<participant_id>_<sample_index>'.
+        """
+        import pandas as pd
+        import numpy as np
+
+        if df is None:
+            raise RuntimeError("STRICT: _build_sample_ids_from_df received None df.")
+
+        # Work on a copy to avoid mutating caller's df
+        df = df.copy()
+
+        # Case 1: already has sample_id
+        if 'sample_id' in df.columns:
+            return df['sample_id'].astype(str).tolist()
+
+        # Case 2: synthesize from participant_id (+ optional sample_index)
+        if 'participant_id' not in df.columns:
+            raise RuntimeError(
+                "STRICT: Need either 'sample_id' or 'participant_id' to build sample IDs."
+            )
+
+        # Use any natural ordering columns if present for determinism
+        ordering_cols = [c for c in ['timestamp', 'frame', 'trial', 'sequence'] if c in df.columns]
+        if ordering_cols:
+            df = df.sort_values(['participant_id'] + ordering_cols)
+
+        # Create sample_index if missing
+        if 'sample_index' not in df.columns:
+            df['sample_index'] = df.groupby('participant_id').cumcount().astype(int)
+
+        sample_ids = (
+            "S_" + df['participant_id'].astype(str) + "_" + df['sample_index'].astype(int).astype(str)
+        )
+        return sample_ids.astype(str).tolist()
     def __init__(self):
         # ----- υπάρχουσες ρυθμίσεις σου -----
         self.random_state = 42
