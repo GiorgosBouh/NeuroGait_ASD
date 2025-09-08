@@ -34,6 +34,14 @@ import inspect
 import neurogait_kg_builder as kgmod
 warnings.filterwarnings('ignore')
 
+
+def _build_sample_ids_from_df(self, df):
+    if 'sample_id' in df.columns:
+        return df['sample_id'].astype(str).tolist()
+    req = {'participant_id', 'sample_index'}
+    if not req.issubset(df.columns):
+        raise RuntimeError("Cannot build sample_ids: need 'sample_id' or both 'participant_id' and 'sample_index'.")
+    return ["S_"+str(pid)+"_"+str(int(idx)) for pid, idx in zip(df['participant_id'], df['sample_index'])]
 # =====================
 # Statistical utilities
 # =====================
@@ -934,87 +942,64 @@ class RealisticAnalysis:
         return X_train_kg, X_test_kg
 
     def train_optimized_models(self, X_train, X_test, y_train, y_test, train_pids, approach_name, test_ids):
-        """Train models (STRICT): αποθηκεύει και test_ids για paired alignment, χωρίς fallbacks."""
         print(f"\n🚀 TRAINING OPTIMIZED MODELS: {approach_name}")
         print(f"   📊 Data shape: {X_train.shape}")
 
         if test_ids is None:
-            raise RuntimeError(
-                f"[{approach_name}] Missing test_ids (required for strict paired comparisons).")
+            raise RuntimeError(f"[{approach_name}] Missing test_ids (required for strict paired comparisons).")
         if len(test_ids) != len(y_test):
-            raise RuntimeError(
-                f"[{approach_name}] test_ids length ({len(test_ids)}) != y_test length ({len(y_test)}).")
+            raise RuntimeError(f"[{approach_name}] test_ids length ({len(test_ids)}) != y_test length ({len(y_test)}).")
 
         models = {
-            'Logistic Regression': LogisticRegression(
-                random_state=42, max_iter=1000, C=0.001, solver='liblinear', penalty='l2'
-            ),
-            'Random Forest': RandomForestClassifier(
-                n_estimators=20, max_depth=3, min_samples_split=30, min_samples_leaf=20,
-                max_features='sqrt', random_state=42, class_weight='balanced'
-            ),
-            'XGBoost': xgb.XGBClassifier(
-                random_state=42, max_depth=3, n_estimators=25, learning_rate=0.005,
-                subsample=0.5, colsample_bytree=0.5, reg_alpha=3.0, reg_lambda=3.0,
-                n_jobs=4, eval_metric='logloss', tree_method='hist'
-            ),
-            'SVM': SVC(
-                probability=True, kernel='rbf', C=1.5, gamma='scale', class_weight='balanced', random_state=42
-            )
+            'Logistic Regression': LogisticRegression(random_state=42, max_iter=1000, C=0.001, solver='liblinear', penalty='l2'),
+            'Random Forest': RandomForestClassifier(n_estimators=20, max_depth=3, min_samples_split=30, min_samples_leaf=20,
+                                                max_features='sqrt', random_state=42, class_weight='balanced'),
+            'XGBoost': xgb.XGBClassifier(random_state=42, max_depth=3, n_estimators=25, learning_rate=0.005,
+                                        subsample=0.5, colsample_bytree=0.5, reg_alpha=3.0, reg_lambda=3.0,
+                                        n_jobs=4, eval_metric='logloss', tree_method='hist'),
+            'SVM': SVC(probability=True, kernel='rbf', C=1.5, gamma='scale', class_weight='balanced', random_state=42)
         }
 
         results = {}
+        kf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
         for model_name, model in models.items():
-            # 5-fold CV μόνο στο train, χωρίς leakage
-            kf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
             cv_scores = []
             for tr_idx, va_idx in kf.split(X_train, y_train):
                 X_tr, X_va = X_train[tr_idx], X_train[va_idx]
-                y_tr, y_va = np.asarray(
-                    y_train)[tr_idx], np.asarray(y_train)[va_idx]
+                y_tr, y_va = np.asarray(y_train)[tr_idx], np.asarray(y_train)[va_idx]
                 model.fit(X_tr, y_tr)
-                if hasattr(model, "predict_proba"):
-                    proba = model.predict_proba(X_va)[:, 1]
-                else:
-                    s = model.decision_function(X_va)
-                    proba = 1 / (1 + np.exp(-s))
+                proba = (model.predict_proba(X_va)[:, 1] if hasattr(model, "predict_proba")
+                        else 1/(1+np.exp(-model.decision_function(X_va))))
                 cv_scores.append(roc_auc_score(y_va, proba))
 
-            # Train τελικό μοντέλο
             model.fit(X_train, y_train)
             y_pred = model.predict(X_test)
-            if hasattr(model, "predict_proba"):
-                y_pred_proba = model.predict_proba(X_test)[:, 1]
-            else:
-                s = model.decision_function(X_test)
-                y_pred_proba = 1 / (1 + np.exp(-s))
+            y_pred_proba = (model.predict_proba(X_test)[:, 1] if hasattr(model, "predict_proba")
+                            else 1/(1+np.exp(-model.decision_function(X_test))))
 
             auc = roc_auc_score(y_test, y_pred_proba)
-            accuracy = accuracy_score(y_test, y_pred)
-            precision = precision_score(y_test, y_pred, zero_division=0)
-            recall = recall_score(y_test, y_pred, zero_division=0)
+            acc = accuracy_score(y_test, y_pred)
+            prec = precision_score(y_test, y_pred, zero_division=0)
+            rec = recall_score(y_test, y_pred, zero_division=0)
             f1 = f1_score(y_test, y_pred, zero_division=0)
 
             results[model_name] = {
                 'cv_scores': cv_scores,
                 'cv_mean': float(np.mean(cv_scores)),
                 'cv_std': float(np.std(cv_scores)),
-                'accuracy': float(accuracy),
-                'precision': float(precision),
-                'recall': float(recall),
+                'accuracy': float(acc),
+                'precision': float(prec),
+                'recall': float(rec),
                 'f1': float(f1),
                 'auc': float(auc),
                 'y_test': np.asarray(y_test),
                 'pred_test': np.asarray(y_pred),
                 'proba_test': np.asarray(y_pred_proba),
-                # <<<<<< ΑΠΟΘΗΚΕΥΟΥΜΕ IDS
-                'ids': np.asarray(test_ids, dtype=str)
+                'ids': np.asarray(test_ids, dtype=str)  # ← αποθήκευση IDs
             }
 
-            status = "🎉 Excellent" if auc >= 0.9 else (
-                "✅ Good" if auc >= 0.8 else "📋 Limited")
-            print(
-                f"   {status}: AUC={auc:.3f}, F1={f1:.3f}, CV={np.mean(cv_scores):.3f}±{np.std(cv_scores):.3f}")
+            status = "🎉 Excellent" if auc >= 0.9 else ("✅ Good" if auc >= 0.8 else "📋 Limited")
+            print(f"   {status}: AUC={auc:.3f}, F1={f1:.3f}, CV={np.mean(cv_scores):.3f}±{np.std(cv_scores):.3f}")
 
         return results
 
