@@ -38,6 +38,96 @@ warnings.filterwarnings('ignore')
 # Statistical utilities
 # =====================
 
+def align_test_sets(
+    ids_raw_test, X_test_raw, y_test_raw,
+    ids_kg_test,  X_test_kg,  y_test_kg,
+    ids_enh_test, X_test_enh, y_test_enh,
+):
+    """
+    Ευθυγραμμίζει *αυστηρά* τα test sets των τριών προσεγγίσεων (Raw / KG / Enhanced)
+    πάνω στην ΚΟΙΝΗ τομή των sample_ids, ώστε να μπορούν να τρέξουν ΠΑΝΤΑ
+    οι paired συγκρίσεις χωρίς skips. Δεν κάνει fallbacks. Αν δεν υπάρχει
+    τομή, πετάει σφάλμα.
+
+    Τοποθέτησέ το ΜΕΤΑ το participant-level split και ΠΡΙΝ τους paired ελέγχους.
+
+    Parameters
+    ----------
+    ids_*_test : array-like of shape (n_samples,)
+        Τα sample_ids για κάθε προσέγγιση (Raw/KG/Enhanced) στο test set.
+    X_test_* : array-like of shape (n_samples, n_features)
+        Τα X του test για κάθε προσέγγιση.
+    y_test_* : array-like of shape (n_samples,)
+        Τα y του test για κάθε προσέγγιση.
+
+    Returns
+    -------
+    common_ids : np.ndarray
+        Η ταξινομημένη κοινή τομή των sample_ids (ίδια σειρά για όλα).
+    (X_raw_al, y_raw_al, ids_raw_al) :
+        Ευθυγραμμισμένα X/y/ids για RAW πάνω στα common_ids.
+    (X_kg_al, y_kg_al, ids_kg_al) :
+        Ευθυγραμμισμένα X/y/ids για KG πάνω στα common_ids.
+    (X_enh_al, y_enh_al, ids_enh_al) :
+        Ευθυγραμμισμένα X/y/ids για ENH πάνω στα common_ids.
+
+    Raises
+    ------
+    RuntimeError
+        Αν δεν υπάρχει καθόλου τομή μεταξύ των τριών συνόλων test IDs.
+    """
+
+    # Μετατρέπουμε σε numpy arrays για ασφαλή μάσκες/ταξινομήσεις
+    ids_raw_test = np.asarray(ids_raw_test)
+    ids_kg_test  = np.asarray(ids_kg_test)
+    ids_enh_test = np.asarray(ids_enh_test)
+
+    # 1) Κοινή τομή IDs
+    common_ids = sorted(set(ids_raw_test) & set(ids_kg_test) & set(ids_enh_test))
+    if len(common_ids) == 0:
+        raise RuntimeError(
+            "No common test samples across Raw/KG/Enhanced. "
+            "Εξασφάλισε συνεπές sample_id schema και πλήρη κάλυψη στον KG builder."
+        )
+    common_ids = np.asarray(common_ids)
+
+    # 2) Helper για ευθυγράμμιση (κρατάει ΜΟΝΟ ό,τι ανήκει στην τομή και με ίδια σειρά)
+    def align_by_ids(X, y, ids, target_ids):
+        ids = np.asarray(ids)
+        # Θέλουμε σειρά όπως στο target_ids (όχι απλά μια μάσκα)
+        # Φτιάχνουμε index map: sample_id -> θέση στο τρέχον array
+        pos = {sid: i for i, sid in enumerate(ids)}
+        idx = np.array([pos[sid] for sid in target_ids])  # θα KeyError αν λείπει κάτι (δεν γίνεται, είναι τομή)
+        X_al = X[idx]
+        y_al = y[idx]
+        ids_al = ids[idx]
+        # Ασφάλεια: βεβαιωνόμαστε ότι οι ids είναι ταυτόσημοι με target_ids
+        if not np.array_equal(ids_al, target_ids):
+            raise RuntimeError("ID alignment failed: η σειρά/ταυτότητα IDs δεν ταυτίζεται με target_ids.")
+        return X_al, y_al, ids_al
+
+    # 3) Ευθυγράμμιση για κάθε tier πάνω στην ίδια σειρά common_ids
+    X_raw_al, y_raw_al, ids_raw_al = align_by_ids(X_test_raw, y_test_raw, ids_raw_test, common_ids)
+    X_kg_al,  y_kg_al,  ids_kg_al  = align_by_ids(X_test_kg,  y_test_kg,  ids_kg_test,  common_ids)
+    X_enh_al, y_enh_al, ids_enh_al = align_by_ids(X_test_enh, y_test_enh, ids_enh_test, common_ids)
+
+    # 4) Έλεγχος συνεπούς y (προαιρετικά, αλλά αυστηρό)
+    if not (np.array_equal(y_raw_al, y_kg_al) and np.array_equal(y_raw_al, y_enh_al)):
+        raise RuntimeError(
+            "Label mismatch μετά την ευθυγράμμιση. "
+            "Έλεγξε αν τα y αντιστοιχούν 1:1 στα ίδια sample_ids σε όλα τα tiers."
+        )
+
+    print(f"✅ Paired-ready evaluation on {len(common_ids)} common test samples "
+          f"(Raw={len(ids_raw_test)}, KG={len(ids_kg_test)}, Enh={len(ids_enh_test)}).")
+
+    return (
+        common_ids,
+        (X_raw_al, y_raw_al, ids_raw_al),
+        (X_kg_al,  y_kg_al,  ids_kg_al),
+        (X_enh_al, y_enh_al, ids_enh_al),
+    )
+
 def paired_bootstrap_metric_diff(y, p1, p2, metric_func, n_boot=10000, seed=123, threshold=0.5):
     """
     Paired bootstrap for the difference in a metric between two methods using sample-level pairing.
@@ -1973,6 +2063,17 @@ class RealisticAnalysis:
             print("   ⚠️ GNN analysis not available")
             print("   📋 Install PyTorch Geometric and create true_gnn_analysis.py")
             # Don't use placeholder results, just skip GNN
+        # ---- ALIGN TEST SETS BEFORE STATISTICAL COMPARISONS ----
+        common_ids, raw_al, kg_al, enh_al = align_test_sets(
+            ids_raw_test, X_test_raw, y_test_raw,
+            ids_kg_test,  X_test_kg,  y_test_kg,
+            ids_enh_test, X_test_enh, y_test_enh
+        )
+
+        # αντικαθιστούμε τα test sets με τα ευθυγραμμισμένα
+        X_test_raw, y_test_raw, ids_raw_test = raw_al
+        X_test_kg,  y_test_kg,  ids_kg_test  = kg_al
+        X_test_enh, y_test_enh, ids_enh_test = enh_al
         
         # === COMPREHENSIVE COMPARISON ===
         print(f"\n{'='*70}")
