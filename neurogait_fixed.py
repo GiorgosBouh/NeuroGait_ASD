@@ -476,55 +476,54 @@ class RealisticAnalysis:
 
         return mapped.astype(int)
 
-
     def load_and_prepare_data(self):
         """
-        Φορτώνει το CSV, εντοπίζει/μετατρέπει στήλη διάγνωσης σε δυαδική (1=ASD, 0=Typical),
-        κάνει participant-level split (μηδενικό overlap), και επιστρέφει:
-        - df (reset_index(drop=True))
-        - best_features, best_set_name (από TRAIN μόνο)
-        - train_indices, test_indices (ΘΕΣΕΙΣ για iloc)
-        - train_sample_pids (participant_id ανά train sample)
-        - test_pids (λίστα μοναδικών participants στο TEST)
-        Χωρίς καμία διαρροή (ό,τι πρέπει fit γίνεται downstream μόνο στο train).
+        Φορτώνει το CSV με σωστό format (sep=';', decimal=','),
+        παράγει participant_id ανά 8 δείγματα (χωρίς overlap),
+        μετατρέπει το 'class' -> δυαδικό (1=ASD/A, 0=Typical/T),
+        κάνει participant-level split με stratify,
+        και επιλέγει clinical set ΜΟΝΟ στο TRAIN (χωρίς leakage).
+        Επιστρέφει:
+        df, best_features, best_set_name, train_indices, test_indices, train_sample_pids, test_pids
         """
         import numpy as np
         import pandas as pd
         from sklearn.model_selection import train_test_split
 
-        # --- 1) Load ---
-        df = pd.read_csv(self.input_csv)
+        # --- 1) Load με σωστό format ---
+        df = pd.read_csv(self.input_csv, sep=";", decimal=",")
 
-        # --- 2) Ensure participant_id exists (ίδιο με KG builder logic) ---
+        # --- 2) class column: απαιτείται ρητά και χαρτογράφηση σε 0/1 ---
+        if "class" not in df.columns:
+            raise ValueError("Required column 'class' not found in dataset.")
+        # Χάρτης: A (ASD) -> 1, T (Typical) -> 0
+        cls = df["class"].astype(str).str.strip().str.upper()
+        map_dict = {"A": 1, "T": 0}
+        if not set(cls.unique()).issubset(set(map_dict.keys())):
+            raise ValueError(f"Unexpected values in 'class': {sorted(cls.unique())}. Expected only 'A'/'T'.")
+        df["class"] = cls.map(map_dict).astype(int)
+        self.diagnosis_col = "class"  # ρητή και μονοσήμαντη στήλη διάγνωσης (0/1)
+
+        # --- 3) participant_id ανά 8 δείγματα (dataset λογική) ---
         spp = getattr(self, "samples_per_participant", 8)
-        if "participant_id" not in df.columns:
-            df = df.copy()
-            df["participant_id"] = (np.arange(len(df)) // spp).astype(int)
-
-        # --- 3) Reset index ώστε οι λίστες indices να είναι θέσεις 0..N-1 ---
+        if len(df) % spp != 0:
+            raise ValueError(f"Dataset length {len(df)} is not a multiple of samples_per_participant={spp}.")
         df = df.reset_index(drop=True)
+        df["participant_id"] = (np.arange(len(df)) // spp).astype(int)
 
-        # --- 4) Detect & coerce diagnosis column to binary 0/1 ---
-        # Αν δεν έχει οριστεί ρητά ή δεν υπάρχει στο df, κάνε αυτόματη ανίχνευση
-        diag_col = getattr(self, "diagnosis_col", None)
-        if (diag_col is None) or (diag_col not in df.columns):
-            diag_col = self._detect_diagnosis_column(df)
-            self.diagnosis_col = diag_col  # ενημέρωση state
+        # Έλεγχος συνέπειας: κάθε participant έχει σταθερό class (μηδενίζει leakage υποψίες)
+        by_pid = df.groupby("participant_id")["class"].nunique()
+        if int(by_pid.max()) != 1:
+            bad = by_pid[by_pid != 1].index.tolist()[:5]
+            raise AssertionError(f"Class inconsistency within participants (examples: {bad[:5]}).")
 
-        # Μετατροπή σε 0/1 (1=ASD)
-        df[self.diagnosis_col] = self._coerce_diagnosis_binary(df[self.diagnosis_col])
-
-        # --- 5) Participant-level split (stratify by participant-level label) ---
+        # --- 4) Participant-level split (stratify) ---
         participants = df["participant_id"].unique()
-
-        # Label ανά participant (πλειοψηφικό στο participant)
+        # πλειοψηφικό label ανά participant (θα είναι 0/1 σταθερό λόγω ελέγχου)
         pid_labels = (
-            df.groupby("participant_id")[self.diagnosis_col]
-            .mean()
-            .round()
-            .astype(int)
-            .reindex(participants)
-            .values
+            df.groupby("participant_id")["class"]
+            .mean().round().astype(int)
+            .reindex(participants).values
         )
 
         train_pids, test_pids = train_test_split(
@@ -534,7 +533,7 @@ class RealisticAnalysis:
             stratify=pid_labels
         )
 
-        # --- 6) Masks & integer positions for iloc ---
+        # --- 5) Θέσεις (integer) για ασφαλές iloc ---
         train_mask = df["participant_id"].isin(train_pids).values
         test_mask  = df["participant_id"].isin(test_pids).values
         train_indices = np.where(train_mask)[0].tolist()
@@ -544,18 +543,18 @@ class RealisticAnalysis:
             self._log("info", f"📦 Participants total: {len(participants)} | train: {len(train_pids)} | test: {len(test_pids)}")
             self._log("info", f"   Samples -> train: {len(train_indices)}  test: {len(test_indices)}")
             self._log("info", f"   Participant overlap: {len(set(train_pids) & set(test_pids))}")
-            self._log("info", f"🩺 Diagnosis column detected: '{self.diagnosis_col}' (converted to 0/1)")
+            self._log("info", "🩺 Diagnosis column: 'class' (A/T → 1/0)")
 
-        # --- 7) Clinical sets & selection ONLY on TRAIN ---
+        # --- 6) Clinical feature sets + επιλογή ΚΑΛΥΤΕΡΟΥ μόνο στο TRAIN ---
         candidate_sets = self.build_clinical_feature_sets(df)
         best_features, best_set_name = self.select_best_clinical_set(
             df=df,
             candidate_sets=candidate_sets,
-            diagnosis_col=self.diagnosis_col,
+            diagnosis_col="class",
             train_indices=train_indices
         )
 
-        # --- 8) Return payload ---
+        # --- 7) Επιστροφές ---
         train_sample_pids = df.loc[train_indices, "participant_id"].tolist()
 
         return (
@@ -567,8 +566,6 @@ class RealisticAnalysis:
             train_sample_pids,
             list(test_pids)
         )
-        
-
 
     def create_preprocessing_pipeline(self, features):
         """Create a preprocessing pipeline to prevent data leakage"""
@@ -3498,100 +3495,47 @@ def main():
     print("🧠 Knowledge Graph και Enhanced Features για advanced analysis")
     print()
 
-    # Resolve absolute path for the dataset (env override -> same folder as script)
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    default_csv = os.path.join(script_dir, "Final dataset.csv")
-    input_csv = os.environ.get("NEUROGAIT_CSV", default_csv)
-
-    # Show available analysis options
-    available_options = [
-        "1. Basic Analysis (Raw vs KG με clinical features και statistics)",
-        "2. Enhanced Analysis (All tiers με comprehensive statistics)",
-        "3. Tuned Analysis (Enhanced + Hyperparameter tuning)",
-        "4. KG Analysis (Raw vs NeuroGait KG vs Enhanced Features)"
-    ]
-
-    # Check availability flags
-    enhanced_status = "✅" if ENHANCED_FEATURES_AVAILABLE else "⚠️"
-    kg_status = "✅" if NEUROGAIT_KG_AVAILABLE else "⚠️"
-
-    print("Available analysis types:")
-    for i, option in enumerate(available_options, 1):
-        if i in (2, 3):
-            print(f"   {enhanced_status} {option}")
-        elif i == 4:
-            print(f"   {kg_status} {option}")
-        else:
-            print(f"   ✅ {option}")
-
-    if not NEUROGAIT_KG_AVAILABLE:
-        print("\n📋 For NeuroGait KG analysis:")
-        print("   Ensure neurogait_kg_builder.py is available")
-        print("   Run the KG builder first to populate Neo4j")
-
-    if not ENHANCED_FEATURES_AVAILABLE:
-        print("\n📋 For enhanced features, ensure enhanced_kg_features.py exists")
+    input_csv = os.path.join(script_dir, "Final dataset.csv")
+    if not os.path.isfile(input_csv):
+        raise FileNotFoundError(f"Dataset not found at {input_csv}")
 
     print("\n" + "="*70)
+    print(f"✅ Using dataset: {input_csv}")
 
-    # Assert dataset exists (absolute path)
-    if not os.path.isfile(input_csv):
-        raise FileNotFoundError(
-            f"❌ Dataset not found at: {input_csv}\n"
-            "💡 Set NEUROGAIT_CSV env var or place 'Final dataset.csv' next to this script."
-        )
-    else:
-        print(f"✅ Using dataset: {input_csv}")
-
-    # Initialize analyzer with explicit CSV + config
     analyzer = RealisticAnalysis(
         input_csv=input_csv,
-        diagnosis_col="Class_ASD_Traits",
+        diagnosis_col="class",          # <-- ΡΗΤΑ 'class'
         test_size=0.25,
         random_state=42,
         samples_per_participant=8,
         logger=None
     )
 
-    try:
-        # Get user choice
-        print("\nChoose analysis type (1-4): ", end="")
-        choice = input().strip()
+    # (τα υπόλοιπα του main όπως τα έχεις: menu, input επιλογής κ.λπ.)
+    print("\nChoose analysis type (1-4): ", end="")
+    choice = input().strip()
 
-        if choice == "1":
-            print("\n🚀 Running Basic Analysis...")
-            results = analyzer.run_realistic_analysis()
+    if choice == "1":
+        print("\n🚀 Running Basic Analysis...")
+        results = analyzer.run_realistic_analysis()
+    elif choice == "2":
+        print("\n🚀 Running Enhanced Analysis...")
+        results = analyzer.run_enhanced_analysis_with_tuning()
+    elif choice == "3":
+        print("\n🚀 Running Tuned Analysis...")
+        results = analyzer.run_enhanced_analysis_with_tuning()
+    elif choice == "4":
+        print("\n🚀 Running KG Analysis...")
+        results = analyzer.run_kg_comparison_analysis()
+    else:
+        print("❌ Invalid choice. Running default basic analysis...")
+        results = analyzer.run_realistic_analysis()
 
-        elif choice == "2":
-            print("\n🚀 Running Enhanced Analysis...")
-            results = analyzer.run_enhanced_analysis_with_tuning()
-
-        elif choice == "3":
-            print("\n🚀 Running Tuned Analysis...")
-            results = analyzer.run_enhanced_analysis_with_tuning()
-
-        elif choice == "4":
-            print("\n🚀 Running KG Analysis...")
-            results = analyzer.run_kg_comparison_analysis()
-
-        else:
-            print("❌ Invalid choice. Running default basic analysis...")
-            results = analyzer.run_realistic_analysis()
-
-        print("\n" + "="*80)
-        print("🎉 ANALYSIS COMPLETED SUCCESSFULLY!")
-        print("="*80)
-        return results
-
-    except KeyboardInterrupt:
-        print("\n\n⚠️ Analysis interrupted by user")
-        return None
-
-    except Exception as e:
-        print(f"\n\n❌ Analysis failed with error: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return None
+    print("\n" + "="*80)
+    print("🎉 ANALYSIS COMPLETED SUCCESSFULLY!")
+    print("="*80)
+    return results
 
 
 def run_demo_analysis():
