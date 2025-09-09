@@ -987,6 +987,65 @@ class RealisticAnalysis:
         print("   🔖 Identifier present: sample_index for alignment")
         return train_clean, test_clean, clean_features
 
+
+    def optimized_feature_selection(self, train_data, test_data, feature_candidates, k_target: int = 20):
+        """
+        Leakage-free επιλογή χαρακτηριστικών ΜΟΝΟ από το TRAIN.
+        - Δεν αγγίζει labels στο TEST
+        - Χρησιμοποιεί το self.diagnosis_col (default 'class') αντί για 'diagnosis'
+        - Αν τα features είναι ήδη <= k_target, επιστρέφει as-is
+        Επιστρέφει: X_train, X_test, selected_features
+        """
+        import numpy as np
+        import pandas as pd
+        from sklearn.feature_selection import SelectKBest, mutual_info_classif
+
+        # Label column (στο δικό σου dataset είναι 'class' με 0/1)
+        label_col = getattr(self, "diagnosis_col", "class")
+
+        # Βασικοί έλεγχοι
+        if label_col not in train_data.columns:
+            raise KeyError(f"Label column '{label_col}' not found in train_data")
+        if not isinstance(feature_candidates, (list, tuple)) or len(feature_candidates) == 0:
+            raise ValueError("feature_candidates must be a non-empty list of column names")
+
+        # Κρατάμε μόνο όσα features υπάρχουν πραγματικά (μετά το preprocess)
+        features = [f for f in feature_candidates if f in train_data.columns]
+        if len(features) == 0:
+            raise RuntimeError("No valid features left after intersection with train_data columns")
+
+        # Στόχος: πολύ συντηρητικά μέχρι k_target
+        if len(features) <= k_target:
+            selected_features = features
+            X_train = train_data[selected_features].to_numpy(dtype=float)
+            X_test  = test_data[selected_features].to_numpy(dtype=float)
+            print("\n🧠 CONSERVATIVE FEATURE SELECTION (Training Data Only)")
+            print(f"   📊 Input: {train_data.shape[0]} samples × {len(features)} features")
+            print(f"   🎯 Target features: {k_target} (very conservative for small dataset)")
+            print(f"   ✅ No selection needed (already {len(features)} ≤ {k_target})")
+            return X_train, X_test, selected_features
+
+        # --- Επιλογή με SelectKBest (mutual information), fit ΜΟΝΟ στο TRAIN ---
+        X_train_full = train_data[features].to_numpy(dtype=float)
+        y_train = train_data[label_col].to_numpy().astype(int)
+
+        selector = SelectKBest(score_func=mutual_info_classif, k=min(k_target, len(features)))
+        selector.fit(X_train_full, y_train)
+
+        mask = selector.get_support()
+        selected_features = [f for f, m in zip(features, mask) if m]
+
+        X_train = train_data[selected_features].to_numpy(dtype=float)
+        X_test  = test_data[selected_features].to_numpy(dtype=float)
+
+        print("\n🧠 CONSERVATIVE FEATURE SELECTION (Training Data Only)")
+        print(f"   📊 Input: {train_data.shape[0]} samples × {len(features)} features")
+        print(f"   🎯 Target features: {k_target}")
+        print(f"   ✅ Selected {len(selected_features)} features: {', '.join(selected_features[:8])}{'...' if len(selected_features)>8 else ''}")
+
+        return X_train, X_test, selected_features
+
+
     def proper_train_test_split(self, df, train_indices, test_indices):
         """
         Κάνει split σε επίπεδο ΔΕΙΓΜΑΤΟΣ με βάση τις ήδη υπολογισμένες λίστες ΘΕΣΕΩΝ
@@ -1141,7 +1200,6 @@ class RealisticAnalysis:
         clean_features = keep_features  # μόνο τα numerical/χρήσιμα features
         return train_clean, test_clean, clean_features
 
-    def optimized_feature_selection(self, train_data, test_data, features):
         """More conservative feature selection to prevent overfitting"""
         print(f"\n🧠 CONSERVATIVE FEATURE SELECTION (Training Data Only)")
 
