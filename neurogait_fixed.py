@@ -226,59 +226,75 @@ def validate_no_data_leakage(
     label_col: str = "class"
 ):
     """
-    Αυστηρός έλεγχος μη-διαρροής δεδομένων σε επίπεδο δειγμάτων & συμμετεχόντων.
+    Αυστηρός έλεγχος μη-διαρροής δεδομένων.
+    - df: pandas DataFrame
+    - train_indices/test_indices: ΘΕΣΕΙΣ (iloc) δειγμάτων
+    - pid_col: όνομα στήλης participant_id (string)
+    - label_col: όνομα στήλης ετικέτας (string, π.χ. 'class' με 0/1)
 
-    Απαιτεί:
-      - train_indices / test_indices: ΘΕΣΕΙΣ (iloc-safe) χωρίς overlap
-      - df[pid_col]: integer participant ids
-      - df[label_col]: δυαδική ετικέτα 0/1 (1=ASD, 0=Typical)
-
-    Σηκώνει AssertionError με σαφές μήνυμα αν βρεθεί παραβίαση.
+    Ελέγχει:
+      1) Καμία επικάλυψη δειγμάτων (indices)
+      2) Μηδενικό overlap participants
+      3) Σταθερή ετικέτα ανά participant σε train & test
     """
     import numpy as np
     import pandas as pd
 
-    # 0) Βασικοί έλεγχοι ύπαρξης/τύπων
-    assert isinstance(df, pd.DataFrame), "df must be a pandas DataFrame"
-    assert pid_col in df.columns, f"Column '{pid_col}' not found in df"
-    assert label_col in df.columns, f"Column '{label_col}' not found in df"
+    # --- Βασικοί έλεγχοι τύπων/υπάρξης ---
+    if not isinstance(df, pd.DataFrame):
+        raise TypeError("df must be a pandas DataFrame")
 
+    if not isinstance(pid_col, str):
+        raise TypeError("pid_col must be a column name (str)")
+    if not isinstance(label_col, str):
+        raise TypeError("label_col must be a column name (str)")
+
+    if pid_col not in df.columns:
+        raise KeyError(f"Column '{pid_col}' not found in df")
+    if label_col not in df.columns:
+        raise KeyError(f"Column '{label_col}' not found in df")
+
+    # --- Κανονικοποίηση indices σε 1-D int64 ---
+    ti = np.asarray(train_indices, dtype=np.int64).ravel()
+    vi = np.asarray(test_indices, dtype=np.int64).ravel()
     n = len(df)
-    ti = np.asarray(train_indices)
-    vi = np.asarray(test_indices)
-    assert ti.ndim == 1 and vi.ndim == 1, "Indices must be 1-D arrays/lists of positions"
-    assert ti.size > 0 and vi.size > 0, "Empty train/test indices"
-    assert ti.min() >= 0 and ti.max() < n, "Train indices out of bounds"
-    assert vi.min() >= 0 and vi.max() < n, "Test indices out of bounds"
+    if ti.size == 0 or vi.size == 0:
+        raise ValueError("Empty train/test indices")
+    if ti.min() < 0 or ti.max() >= n:
+        raise IndexError("Train indices out of bounds")
+    if vi.min() < 0 or vi.max() >= n:
+        raise IndexError("Test indices out of bounds")
 
-    # 1) Καμία επικάλυψη δειγμάτων
+    # --- 1) Καμία επικάλυψη δειγμάτων ---
     overlap_idx = np.intersect1d(ti, vi)
-    assert overlap_idx.size == 0, f"Sample overlap between train/test indices: {overlap_idx[:10]}..."
+    if overlap_idx.size > 0:
+        raise AssertionError(f"Sample overlap between train/test indices: {overlap_idx[:10]}...")
 
-    # 2) Συμμετέχοντες train/test (πρέπει να είναι ασυμβίβαστοι)
+    # --- 2) Μηδενικό overlap συμμετεχόντων ---
     train_pids = set(df.iloc[ti][pid_col].tolist())
     test_pids  = set(df.iloc[vi][pid_col].tolist())
     pid_overlap = train_pids & test_pids
-    assert len(pid_overlap) == 0, f"Participant overlap between train/test: {sorted(list(pid_overlap))[:10]}..."
+    if len(pid_overlap) > 0:
+        raise AssertionError(f"Participant overlap between train/test: {sorted(list(pid_overlap))[:10]}...")
 
-    # 3) Συνέπεια ετικετών ανά participant (train)
+    # --- 3) Συνέπεια ετικετών ανά participant ---
     g_train = df.iloc[ti].groupby(pid_col)[label_col].nunique()
     bad_train = g_train[g_train > 1]
-    assert bad_train.empty, (
-        "Inconsistent labels within participants in TRAIN. Examples: "
-        f"{bad_train.index.tolist()[:10]}"
-    )
+    if not bad_train.empty:
+        raise AssertionError(
+            "Inconsistent labels within participants in TRAIN. Examples: "
+            f"{bad_train.index.tolist()[:10]}"
+        )
 
-    # 4) Συνέπεια ετικετών ανά participant (test)
     g_test = df.iloc[vi].groupby(pid_col)[label_col].nunique()
     bad_test = g_test[g_test > 1]
-    assert bad_test.empty, (
-        "Inconsistent labels within participants in TEST. Examples: "
-        f"{bad_test.index.tolist()[:10]}"
-    )
+    if not bad_test.empty:
+        raise AssertionError(
+            "Inconsistent labels within participants in TEST. Examples: "
+            f"{bad_test.index.tolist()[:10]}"
+        )
 
-    # 5) (Προαιρετικά) Ενημερωτικό summary
-    # Δεν επιστρέφουμε τίποτα — αν όλα καλά, συνεχίζει αθόρυβα.
+    # Αν όλα καλά, δεν επιστρέφει τίποτα (silent success)
 
 class RealisticAnalysis:
     def __init__(
