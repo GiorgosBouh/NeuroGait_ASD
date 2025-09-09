@@ -240,15 +240,24 @@ def validate_no_data_leakage(
     import numpy as np
     import pandas as pd
 
-    # --- Βασικοί έλεγχοι τύπων/υπάρξης ---
+    # --- Ομαλοποίηση ορισμάτων pid_col/label_col αν περάστηκαν Series/arrays κατά λάθος ---
+    def _as_col_name(arg, argname: str):
+        if isinstance(arg, str):
+            return arg
+        # pandas Series με όνομα
+        if isinstance(arg, pd.Series) and arg.name is not None:
+            return str(arg.name)
+        # μονό-στοιχείο λίστα/ndarray/Index με string
+        if isinstance(arg, (list, tuple, np.ndarray, pd.Index)) and len(arg) == 1 and isinstance(arg[0], str):
+            return arg[0]
+        raise TypeError(f"{argname} must be a column name (str). Got: {type(arg).__name__}")
+
+    pid_col = _as_col_name(pid_col, "pid_col")
+    label_col = _as_col_name(label_col, "label_col")
+
+    # --- Βασικοί έλεγχοι ύπαρξης ---
     if not isinstance(df, pd.DataFrame):
         raise TypeError("df must be a pandas DataFrame")
-
-    if not isinstance(pid_col, str):
-        raise TypeError("pid_col must be a column name (str)")
-    if not isinstance(label_col, str):
-        raise TypeError("label_col must be a column name (str)")
-
     if pid_col not in df.columns:
         raise KeyError(f"Column '{pid_col}' not found in df")
     if label_col not in df.columns:
@@ -293,8 +302,7 @@ def validate_no_data_leakage(
             "Inconsistent labels within participants in TEST. Examples: "
             f"{bad_test.index.tolist()[:10]}"
         )
-
-    # Αν όλα καλά, δεν επιστρέφει τίποτα (silent success)
+    # silent success
 
 class RealisticAnalysis:
     def __init__(
@@ -2841,7 +2849,12 @@ class RealisticAnalysis:
 
         # 4) CRITICAL: Validate no data leakage
         validate_no_data_leakage(
-            train_clean, test_clean, train_participants, test_participants)
+            df,
+            train_indices,
+            test_indices,
+            pid_col="participant_id",
+            label_col="class"  # ή label_col=self.diagnosis_col αν είναι ήδη "class"
+        )
 
         # Store test sample information for alignment
         test_sample_info = {
