@@ -3382,15 +3382,14 @@ class RealisticAnalysis:
             print("   → Simple approaches may be sufficient")
 
 
-    def print_kg_comparison_results(self, results_raw, results_kg, results_enh, context):
+    def print_kg_comparison_results(self, results_raw, results_kg, results_enh, **context):
         """
         Safe printer για τα tier αποτελέσματα χωρίς παραδοχές για τα κλειδιά.
-        Δέχεται dicts από τις train_* συναρτήσεις και προσπαθεί να εξάγει:
-        - best AUC, best F1, περιγραφή CV
-        Πηγή τιμών (σειρά προτεραιότητας):
-        'auc' → 'test_auc' → 'cv_mean_auc' → max over 'by_model'['cv_mean_auc']
-        Αν δεν βρεθεί τίποτα, το tier παραλείπεται.
-        Επιστρέφει ένα consolidated dict με ό,τι βρέθηκε.
+        Δέχεται dicts από τις train_* συναρτήσεις και εξάγει:
+        - καλύτερο AUC/F1 ανά προσέγγιση (Raw / KG / Enhanced)
+        Δέχεται επίσης οποιαδήποτε keywords (π.χ. clinical_set_name, train_participants, ...)
+        χωρίς να σκάει αν λείπουν.
+        Επιστρέφει consolidated dict.
         """
         import numpy as np
 
@@ -3412,7 +3411,6 @@ class RealisticAnalysis:
             # Αν δεν υπάρχουν, δοκίμασε ανά μοντέλο (by_model)
             if auc is None and isinstance(metrics.get('by_model', None), dict):
                 bm = metrics['by_model']
-                # Βρες το καλύτερο μοντέλο με βάση cv_mean_auc ➜ έπειτα test_auc
                 best_name, best_val, best_f1 = None, None, None
                 for mname, md in bm.items():
                     cand = md.get('cv_mean_auc', None)
@@ -3425,23 +3423,20 @@ class RealisticAnalysis:
                         best_name = mname
                         best_f1 = md.get('f1', md.get('test_f1', md.get('cv_mean_f1', None)))
                 if best_val is not None:
-                    auc = best_val
-                    if f1 is None:
-                        f1 = best_f1
-                    # Αν υπάρχει block "best", ενημέρωσε από εκεί
-                    if isinstance(metrics.get('best', None), dict):
-                        best_block = metrics['best']
-                        f1 = best_block.get('f1', f1)
-                    label = f"{best_name}"
-                    return (float(auc), float(f1) if f1 is not None else None, label, metrics)
+                    try:
+                        best_val = float(best_val)
+                    except Exception:
+                        best_val = None
+                    if best_val is not None:
+                        if f1 is None and best_f1 is not None:
+                            try:
+                                best_f1 = float(best_f1)
+                            except Exception:
+                                best_f1 = None
+                        return (best_val, best_f1 if f1 is None else f1, f"{best_name}", metrics)
 
-            # Αν βρέθηκε auc από πάνω, όρισε label
+            # Αν βρέθηκε auc από πάνω
             if auc is not None:
-                label = metrics.get('best_model', None)
-                if label is None and isinstance(metrics.get('best', None), dict):
-                    label = metrics['best'].get('model', None)
-                if label is None:
-                    label = "Best"
                 try:
                     auc = float(auc)
                 except Exception:
@@ -3451,9 +3446,13 @@ class RealisticAnalysis:
                         f1 = float(f1)
                     except Exception:
                         f1 = None
+                label = metrics.get('best_model', None)
+                if label is None and isinstance(metrics.get('best', None), dict):
+                    label = metrics['best'].get('model', None)
+                if label is None:
+                    label = "Best"
                 return (auc, f1, label, metrics)
 
-            # Τίποτα χρήσιμο
             return None
 
         tiers = [
@@ -3472,19 +3471,23 @@ class RealisticAnalysis:
                 print(f"{name}: (no valid metrics)")
                 continue
             auc, f1, label, raw = info
+            auc_txt = f"{auc:.3f}" if isinstance(auc, (int, float)) and np.isfinite(auc) else "—"
+            f1_txt  = f"{f1:.3f}"  if isinstance(f1,  (int, float)) and np.isfinite(f1)  else "—"
 
-            # formatted γραμμή
-            auc_txt = f"{auc:.3f}" if auc is not None else "—"
-            f1_txt  = f"{(f1 if f1 is not None else float('nan')):.3f}" if f1 is not None else "—"
-            cv_txt  = None
-
-            # Προσπάθησε να βρεις περίληψη CV (αν έχει)
+            # Προσπάθησε να βρεις περίληψη CV
+            cv_txt = None
             if isinstance(raw.get('by_model', None), dict) and label in raw['by_model']:
                 md = raw['by_model'][label]
                 if 'cv_mean_auc' in md and 'cv_std_auc' in md:
-                    cv_txt = f"{md['cv_mean_auc']:.3f}±{md['cv_std_auc']:.3f}"
+                    try:
+                        cv_txt = f"{float(md['cv_mean_auc']):.3f}±{float(md['cv_std_auc']):.3f}"
+                    except Exception:
+                        pass
             if cv_txt is None and 'cv_mean_auc' in raw and 'cv_std_auc' in raw:
-                cv_txt = f"{raw['cv_mean_auc']:.3f}±{raw['cv_std_auc']:.3f}"
+                try:
+                    cv_txt = f"{float(raw['cv_mean_auc']):.3f}±{float(raw['cv_std_auc']):.3f}"
+                except Exception:
+                    cv_txt = None
 
             if cv_txt:
                 print(f"{name}: {label:>18s} : AUC={auc_txt}, F1={f1_txt}, CV={cv_txt}")
@@ -3499,24 +3502,29 @@ class RealisticAnalysis:
                 "raw": res,
             }
 
-        # Προαιρετικό overall winner (αν τουλάχιστον ένα tier έχει AUC)
-        valid = [(k, v["auc"]) for k, v in consolidated.items() if v.get("auc") is not None]
+        # Overall winner αν υπάρχει τουλάχιστον ένα AUC
+        valid = [(k, v["auc"]) for k, v in consolidated.items() if isinstance(v.get("auc"), (int, float))]
         if valid:
             winner_name, winner_auc = max(valid, key=lambda kv: kv[1])
             print("\n🏆 OVERALL WINNER:")
             print(f"   Approach: {winner_name}")
             print(f"   AUC: {winner_auc:.3f}")
 
-        # Εκτύπωσε context αν δίνεται
-        if isinstance(context, dict):
-            feat = context.get('original_features', len(context.get('selected_features', []) or []))
+        # Εκτύπωσε context (ό,τι υπάρχει) με ασφάλεια
+        if context:
             print("\n🏥 ANALYSIS CONTEXT:")
-            print(f"   Feature Set: {context.get('best_set_name','N/A')}")
-            print(f"   Train/Test: {context.get('train_participants','?')} / {context.get('test_participants','?')} participants")
-            print(f"   Features: {feat} → {context.get('selected_features', feat)} selected")
+            if 'clinical_set_name' in context:
+                print(f"   Feature Set: {context.get('clinical_set_name')}")
+            tp = context.get('train_participants')
+            vp = context.get('test_participants')
+            if tp is not None or vp is not None:
+                print(f"   Train/Test: {tp if tp is not None else '?'} / {vp if vp is not None else '?'} participants")
+            orig = context.get('original_features')
+            selected = context.get('selected_features')
+            if orig is not None or selected is not None:
+                print(f"   Features: {orig if orig is not None else '?'} → {selected if selected is not None else '?'} selected")
 
         return consolidated
-
 
 
     def _create_placeholder_gnn_results(self):
