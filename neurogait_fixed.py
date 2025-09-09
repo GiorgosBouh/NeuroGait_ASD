@@ -909,7 +909,6 @@ class RealisticAnalysis:
         train_clean : pd.DataFrame
         test_clean  : pd.DataFrame
         clean_features : List[str]
-            Η τελική σειρά features που θα ταΐσουμε στα μοντέλα (χωρίς id/labels)
         """
         import numpy as np
         import pandas as pd
@@ -927,30 +926,25 @@ class RealisticAnalysis:
                 raise KeyError(f"{name} is missing diagnosis column '{diag_col}'")
 
         # --- 1) Δημιουργία σταθερού sample_index από το αρχικό index
-        # Κρατάμε το ΠΡΙΝ κάνουμε οποιοδήποτε reset.
         def _ensure_sample_index(df_):
             if "sample_index" in df_.columns:
                 return df_.copy()
             out = df_.copy()
-            # χρησιμοποιούμε το τρέχον index που κουβαλάει τις iloc θέσεις από το αρχικό df
             try:
                 idx = out.index.to_numpy().astype(int)
             except Exception:
-                # ασφαλές fallback
                 idx = np.arange(len(out), dtype=int)
-            out.insert(0, "sample_index", idx)  # στην πρώτη στήλη
+            out.insert(0, "sample_index", idx)
             return out
 
         train = _ensure_sample_index(train_data)
         test = _ensure_sample_index(test_data)
 
         # --- 2) Επιλογή διαθέσιμων clinical features
-        # κρατάμε μόνο όσα υπάρχουν πραγματικά στα δεδομένα
         available = [f for f in best_features if f in train.columns]
         missing = sorted(set(best_features) - set(available))
         if missing:
             print(f"   ⚠️ Missing {len(missing)} features in TRAIN will be skipped: {', '.join(missing[:6])}{'...' if len(missing)>6 else ''}")
-
         if len(available) == 0:
             raise RuntimeError("No clinical features available after intersection with dataframe columns.")
 
@@ -959,7 +953,7 @@ class RealisticAnalysis:
             train[col] = pd.to_numeric(train[col], errors="coerce")
             test[col]  = pd.to_numeric(test[col], errors="coerce")
 
-        # --- 3) Υπολογισμός στατιστικών ΜΟΝΟ στο train (impute + capping)
+        # --- 3) Στατιστικά ΜΟΝΟ στο train (impute + capping)
         train_means = train[available].mean(axis=0)
         q1 = train[available].quantile(0.25, axis=0)
         q3 = train[available].quantile(0.75, axis=0)
@@ -967,37 +961,31 @@ class RealisticAnalysis:
         lower = (q1 - 1.5 * iqr).fillna(train[available].min(axis=0))
         upper = (q3 + 1.5 * iqr).fillna(train[available].max(axis=0))
 
-        # --- 4) Εφαρμογή στα train/test (LEAKAGE-FREE: ίδια train-fitted στατιστικά)
+        # --- 4) Εφαρμογή στα train/test (LEAKAGE-FREE: train-fitted στατιστικά)
         def _clean(df_):
             df_out = df_.copy()
 
             # impute με train_means
             df_out[available] = df_out[available].fillna(train_means)
 
-            # outlier capping με train bounds
-            df_out[available] = np.minimum(df_out[available], upper)
-            df_out[available] = np.maximum(df_out[available], lower)
+            # ✅ outlier capping με column-wise clip (ευθυγραμμίζεται ανά στήλη)
+            #    Προσοχή: axis=1 → χρησιμοποιεί Series bounds per-column
+            df_out[available] = df_out[available].clip(lower=lower, upper=upper, axis=1)
 
-            # τελική επιλογή στηλών (id, label, features)
+            # τελική επιλογή στηλών
             keep_cols = [pid_col, "sample_index", diag_col] + available
-            # κρατάμε τη σειρά: sample_index, participant_id, label, features...
             df_out = df_out[keep_cols]
-            df_out = df_out.rename(columns={pid_col: "participant_id"})  # explicit
-            # δεν κάνουμε reset_index: κρατάμε το αρχικό index για ιχνηλασιμότητα
+            df_out = df_out.rename(columns={pid_col: "participant_id"})
             return df_out
 
         train_clean = _clean(train)
         test_clean  = _clean(test)
 
-        # --- 5) Επιστρέφουμε χωρίς scaling (θα γίνει μέσα στο CV pipeline)
         clean_features = available
         print("   ✅ Preprocessing complete (train-only stats; no scaling here)")
         print(f"   📊 Train shape: {train_clean.shape}, Test shape: {test_clean.shape}")
-        if "sample_id" in train_clean.columns or "sample_index" in train_clean.columns:
-            print("   🔖 Identifier present: sample_index for alignment")
-
+        print("   🔖 Identifier present: sample_index for alignment")
         return train_clean, test_clean, clean_features
-
 
     def proper_train_test_split(self, df, train_indices, test_indices):
         """
