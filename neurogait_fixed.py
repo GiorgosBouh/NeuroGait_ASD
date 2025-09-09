@@ -643,11 +643,9 @@ class RealisticAnalysis:
 
     def load_and_prepare_data(self):
         """
-        Φορτώνει το CSV με σωστό format (sep=';', decimal=','),
-        παράγει participant_id ανά 8 δείγματα (χωρίς overlap),
-        μετατρέπει το 'class' -> δυαδικό (1=ASD/A, 0=Typical/T),
-        κάνει participant-level split με stratify,
-        και επιλέγει clinical set ΜΟΝΟ στο TRAIN (χωρίς leakage).
+        Φορτώνει το CSV (sep=';', decimal=','), χαρτογραφεί class A/T -> 1/0,
+        παράγει participant_id **1-based** (ΣΥΜΦΩΝΑ με τον KG builder),
+        κάνει participant-level stratified split, και επιλέγει clinical set ΜΟΝΟ στο TRAIN.
         Επιστρέφει:
         df, best_features, best_set_name, train_indices, test_indices, train_sample_pids, test_pids
         """
@@ -655,28 +653,28 @@ class RealisticAnalysis:
         import pandas as pd
         from sklearn.model_selection import train_test_split
 
-        # --- 1) Load με σωστό format ---
+        # --- 1) Load ---
         df = pd.read_csv(self.input_csv, sep=";", decimal=",")
 
-        # --- 2) class column: απαιτείται ρητά και χαρτογράφηση σε 0/1 ---
+        # --- 2) class A/T -> 1/0 ---
         if "class" not in df.columns:
             raise ValueError("Required column 'class' not found in dataset.")
-        # Χάρτης: A (ASD) -> 1, T (Typical) -> 0
         cls = df["class"].astype(str).str.strip().str.upper()
         map_dict = {"A": 1, "T": 0}
-        if not set(cls.unique()).issubset(set(map_dict.keys())):
-            raise ValueError(f"Unexpected values in 'class': {sorted(cls.unique())}. Expected only 'A'/'T'.")
+        unexpected = set(cls.unique()) - set(map_dict.keys())
+        if unexpected:
+            raise ValueError(f"Unexpected values in 'class': {sorted(unexpected)}. Expected only 'A'/'T'.")
         df["class"] = cls.map(map_dict).astype(int)
-        self.diagnosis_col = "class"  # ρητή και μονοσήμαντη στήλη διάγνωσης (0/1)
+        self.diagnosis_col = "class"
 
-        # --- 3) participant_id ανά 8 δείγματα (dataset λογική) ---
+        # --- 3) participant_id **1-based** (όπως στον KG builder) ---
         spp = getattr(self, "samples_per_participant", 8)
         if len(df) % spp != 0:
             raise ValueError(f"Dataset length {len(df)} is not a multiple of samples_per_participant={spp}.")
         df = df.reset_index(drop=True)
-        df["participant_id"] = (np.arange(len(df)) // spp).astype(int)
+        df["participant_id"] = (np.arange(len(df)) // spp).astype(int) + 1  # <-- 1-based
 
-        # Έλεγχος συνέπειας: κάθε participant έχει σταθερό class (μηδενίζει leakage υποψίες)
+        # συνέπεια label μέσα σε participant
         by_pid = df.groupby("participant_id")["class"].nunique()
         if int(by_pid.max()) != 1:
             bad = by_pid[by_pid != 1].index.tolist()[:5]
@@ -684,7 +682,6 @@ class RealisticAnalysis:
 
         # --- 4) Participant-level split (stratify) ---
         participants = df["participant_id"].unique()
-        # πλειοψηφικό label ανά participant (θα είναι 0/1 σταθερό λόγω ελέγχου)
         pid_labels = (
             df.groupby("participant_id")["class"]
             .mean().round().astype(int)
@@ -693,12 +690,12 @@ class RealisticAnalysis:
 
         train_pids, test_pids = train_test_split(
             participants,
-            test_size=self.test_size if hasattr(self, "test_size") else 0.25,
-            random_state=self.random_state if hasattr(self, "random_state") else 42,
+            test_size=getattr(self, "test_size", 0.25),
+            random_state=getattr(self, "random_state", 42),
             stratify=pid_labels
         )
 
-        # --- 5) Θέσεις (integer) για ασφαλές iloc ---
+        # --- 5) Θέσεις (iloc) ---
         train_mask = df["participant_id"].isin(train_pids).values
         test_mask  = df["participant_id"].isin(test_pids).values
         train_indices = np.where(train_mask)[0].tolist()
@@ -710,7 +707,7 @@ class RealisticAnalysis:
             self._log("info", f"   Participant overlap: {len(set(train_pids) & set(test_pids))}")
             self._log("info", "🩺 Diagnosis column: 'class' (A/T → 1/0)")
 
-        # --- 6) Clinical feature sets + επιλογή ΚΑΛΥΤΕΡΟΥ μόνο στο TRAIN ---
+        # --- 6) Clinical sets & επιλογή ΜΟΝΟ στο TRAIN ---
         candidate_sets = self.build_clinical_feature_sets(df)
         best_features, best_set_name = self.select_best_clinical_set(
             df=df,
@@ -3531,8 +3528,8 @@ class RealisticAnalysis:
 
     def create_neurogait_kg_embeddings_adaptive(self, train_participants, test_participants, train_clean, test_clean):
         """
-        ADAPTIVE VERSION: Προσαρμόζεται στα διαθέσιμα embeddings χωρίς να χρειάζεται rebuild
-        Returns: X_train_kg, X_test_kg, y_train_aligned, y_test_aligned, train_pids_aligned
+        ADAPTIVE VERSION: προσαρμόζεται στα διαθέσιμα embeddings.
+        Επιστρέφει: X_train_kg, X_test_kg, y_train_aligned, y_test_aligned, train_pids_aligned
         """
         def _pick_vec(e_props):
             for key in ("vector", "values", "embedding"):
@@ -3546,127 +3543,61 @@ class RealisticAnalysis:
         WHERE e.data_split = $split
         RETURN s.id as sample_id, e.vector as vector
         """
-
         available_train_embeddings = {}
         available_test_embeddings = {}
-
         try:
             with self._get_neo4j_session() as session:
-                # Train embeddings
                 train_records = session.run(cypher, split="train").data()
-                available_train_embeddings = {
-                    rec['sample_id']: rec['vector'] for rec in train_records}
-
-                # Test embeddings
+                available_train_embeddings = {rec['sample_id']: rec['vector'] for rec in train_records}
                 test_records = session.run(cypher, split="test").data()
-                available_test_embeddings = {
-                    rec['sample_id']: rec['vector'] for rec in test_records}
-
+                available_test_embeddings = {rec['sample_id']: rec['vector'] for rec in test_records}
         except Exception as e:
-            raise RuntimeError(
-                f"CRITICAL ERROR: Cannot fetch available embeddings: {e}")
+            raise RuntimeError(f"CRITICAL ERROR: Cannot fetch available embeddings: {e}")
 
-        print(
-            f"   📊 Available embeddings: Train={len(available_train_embeddings)}, Test={len(available_test_embeddings)}")
+        print(f"   📊 Available embeddings: Train={len(available_train_embeddings)}, Test={len(available_test_embeddings)}")
 
-        # Δημιουργία sample IDs από cleaned data
+        # Δημιουργία SIDs ακριβώς όπως στον KG builder: "S_{pid}_{idx}" με pid **1-based**
         def create_sample_ids_and_mapping(df_clean):
             sample_ids = []
             idx_to_sid = {}
+            pid_min = int(df_clean["participant_id"].min()) if "participant_id" in df_clean.columns else 1
             for idx in df_clean.index:
-                pid = str(df_clean.loc[idx, 'participant_id'])
-                sid = f"S_{pid}_{idx}"
+                pid_val = int(df_clean.loc[idx, 'participant_id'])
+                # Αν για οποιονδήποτε λόγο είναι 0-based, το κάνουμε 1-based
+                if pid_min == 0:
+                    pid_val += 1
+                sid = f"S_{pid_val}_{idx}"
                 sample_ids.append(sid)
                 idx_to_sid[idx] = sid
             return sample_ids, idx_to_sid
 
-        train_requested_ids, train_idx_map = create_sample_ids_and_mapping(
-            train_clean)
-        test_requested_ids, test_idx_map = create_sample_ids_and_mapping(
-            test_clean)
+        train_requested_ids, train_idx_map = create_sample_ids_and_mapping(train_clean)
+        test_requested_ids, test_idx_map = create_sample_ids_and_mapping(test_clean)
 
-        # Εύρεση intersection - μόνο samples που υπάρχουν και στα δύο
-        train_available_ids = [
-            sid for sid in train_requested_ids if sid in available_train_embeddings]
-        test_available_ids = [
-            sid for sid in test_requested_ids if sid in available_test_embeddings]
+        # Διαθεσιμότητα
+        train_available_ids = [sid for sid in train_requested_ids if sid in available_train_embeddings]
+        test_available_ids  = [sid for sid in test_requested_ids  if sid in available_test_embeddings]
 
-        print(f"   🔍 Sample matching:")
-        print(
-            f"      Train: {len(train_available_ids)}/{len(train_requested_ids)} available")
-        print(
-            f"      Test: {len(test_available_ids)}/{len(test_requested_ids)} available")
+        print("   🔍 Sample matching:")
+        print(f"      Train: {len(train_available_ids)}/{len(train_requested_ids)} available")
+        print(f"      Test: {len(test_available_ids)}/{len(test_requested_ids)} available")
 
         if len(train_available_ids) < 50:
-            raise ValueError(
-                f"Insufficient training embeddings: {len(train_available_ids)}")
-
+            raise ValueError(f"Insufficient training embeddings: {len(train_available_ids)}")
         if len(test_available_ids) < 10:
-            raise ValueError(
-                f"Insufficient test embeddings: {len(test_available_ids)}")
+            raise ValueError(f"Insufficient test embeddings: {len(test_available_ids)}")
 
-        # Στοίχιση των clean data με τα διαθέσιμα embeddings
-        def align_data_to_available_ids(df_clean, available_ids, idx_map):
-            # Βρες τους indexes που αντιστοιχούν στα διαθέσιμα sample IDs
-            available_indexes = []
-            sid_to_idx = {v: k for k, v in idx_map.items()}
+        # Συναρμολόγηση X/y με την ίδια σειρά των διαθέσιμων IDs
+        import numpy as np
+        y_train_aligned = train_clean.loc[[i for i in train_idx_map if train_idx_map[i] in train_available_ids], self.diagnosis_col].to_numpy()
+        y_test_aligned  = test_clean.loc[[i for i in test_idx_map  if test_idx_map[i]  in test_available_ids],  self.diagnosis_col].to_numpy()
 
-            for sid in available_ids:
-                if sid in sid_to_idx:
-                    idx = sid_to_idx[sid]
-                    if idx in df_clean.index:
-                        available_indexes.append(idx)
+        X_train_kg = np.vstack([_pick_vec({"vector": available_train_embeddings[sid]}) for sid in train_available_ids])
+        X_test_kg  = np.vstack([_pick_vec({"vector": available_test_embeddings[sid]})  for sid in test_available_ids])
 
-            # Επιστρέφω τα αντιστοιχα rows με τη σειρά των available_ids
-            return df_clean.loc[available_indexes]
-
-        train_clean_aligned = align_data_to_available_ids(
-            train_clean, train_available_ids, train_idx_map)
-        test_clean_aligned = align_data_to_available_ids(
-            test_clean, test_available_ids, test_idx_map)
-
-        # Εξαγωγή embeddings με τη σωστή σειρά
-        X_train_vecs = []
-        X_test_vecs = []
-
-        for sid in train_available_ids:
-            vector = available_train_embeddings[sid]
-            X_train_vecs.append(np.asarray(vector, dtype=float))
-
-        for sid in test_available_ids:
-            vector = available_test_embeddings[sid]
-            X_test_vecs.append(np.asarray(vector, dtype=float))
-
-        # Στοίχιση labels και participant IDs
-        y_train_aligned = train_clean_aligned['diagnosis'].values
-        y_test_aligned = test_clean_aligned['diagnosis'].values
-        train_pids_aligned = train_clean_aligned['participant_id'].values
-
-        # Validation
-        if len(X_train_vecs) != len(y_train_aligned):
-            raise ValueError(
-                f"Train alignment failed: {len(X_train_vecs)} != {len(y_train_aligned)}")
-
-        if len(X_test_vecs) != len(y_test_aligned):
-            raise ValueError(
-                f"Test alignment failed: {len(X_test_vecs)} != {len(y_test_aligned)}")
-
-        # Stack arrays
-        X_train_kg = np.vstack(X_train_vecs)
-        X_test_kg = np.vstack(X_test_vecs)
-
-        # Final validation
-        if np.isnan(X_train_kg).any() or np.isnan(X_test_kg).any():
-            raise ValueError(
-                "CRITICAL ERROR: KG embeddings contain NaN values")
-
-        print(
-            f"   ✅ KG embeddings aligned: Train {X_train_kg.shape}, Test {X_test_kg.shape}")
-        print(
-            f"   📊 Coverage: {len(train_available_ids)}/{len(train_requested_ids)} train, {len(test_available_ids)}/{len(test_requested_ids)} test")
+        train_pids_aligned = [int(sid.split("_")[1]) for sid in train_available_ids]
 
         return X_train_kg, X_test_kg, y_train_aligned, y_test_aligned, train_pids_aligned
-
 
 def main():
     """Main execution with KG comparison analysis"""
