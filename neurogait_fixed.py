@@ -2030,7 +2030,6 @@ class RealisticAnalysis:
 
         return statistical_results
 
-    def statistical_comparison_analysis(self, approaches):
         """
         Robust paired statistical comparison across approaches (Raw/KG/Enhanced).
         Expects: approaches = { name: {"y_true": ..., "y_prob": ..., "ids": optional} }
@@ -2194,7 +2193,141 @@ class RealisticAnalysis:
             "pairwise": pairwise,
             "names": names,
         }
+    def statistical_comparison_analysis(self, approaches):
+        """
+        Paired stats με σωστή ευθυγράμμιση δειγμάτων.
+        Input: approaches = { name: {"y_true": ..., "y_prob": ..., "ids": optional} }
+        - Κρατάμε ΜΙΑ φορά τη στήλη y από την 1η προσέγγιση
+        - Για τις υπόλοιπες κρατάμε μόνο τις πιθανότητες, ώστε να μην υπάρχει overlap στη 'y'
+        - Υπολογίζουμε AUC ανά προσέγγιση, bootstrap ΔAUC και Wilcoxon σε CE διαφορές
+        """
+        import numpy as np
+        import pandas as pd
+        from sklearn.metrics import roc_auc_score
+        from scipy.stats import wilcoxon
 
+        print("\n📊 DETAILED STATISTICAL ANALYSIS (sample-level, paired):")
+        print("="*70)
+
+        # ---- 1) Φτιάχνουμε DF βάσης (με y) από την 1η έγκυρη προσέγγιση ----
+        base_df = None
+        order = []
+        for name, payload in (approaches or {}).items():
+            if payload is None:
+                continue
+            y_true = np.asarray(payload.get("y_true", []), dtype=float)
+            y_prob = np.asarray(payload.get("y_prob", []), dtype=float)
+            ids    = payload.get("ids", None)
+            if y_true.size == 0 or y_prob.size == 0 or y_true.size != y_prob.size:
+                continue
+            if ids is not None:
+                ids = np.asarray(ids)
+                if ids.size != y_true.size:
+                    ids = None
+            index = ids if ids is not None else np.arange(y_true.size)
+
+            if base_df is None:
+                # Βάση: Κρατάμε y + prob της πρώτης προσέγγισης
+                base_df = pd.DataFrame({"y": y_true, f"{name}_prob": y_prob}, index=index)
+                order.append(name)
+            else:
+                # Επόμενες: μόνο prob για να αποφύγουμε διπλή 'y'
+                df_p = pd.DataFrame({f"{name}_prob": y_prob}, index=index)
+                base_df = pd.concat([base_df, df_p], axis=1, join="inner")
+                order.append(name)
+
+        if base_df is None or base_df.shape[0] == 0:
+            print("⚠️ Not enough approaches supplied (need ≥2).")
+            return {"status": "insufficient", "reason": "less_than_two_approaches"}
+
+        # Πετάμε τυχόν NaN rows (ασφάλεια)
+        base_df = base_df.dropna(axis=0, how="any")
+
+        # Χρειαζόμαστε τουλάχιστον 2 σειρές πιθανότητας
+        prob_cols = [c for c in base_df.columns if c.endswith("_prob")]
+        if len(prob_cols) < 2:
+            print("⚠️ Less than two probability series remain after alignment.")
+            return {"status": "insufficient", "reason": "less_than_two_probs"}
+
+        y = base_df["y"].to_numpy()
+
+        # ---- 2) AUC ανά προσέγγιση ----
+        aucs = {}
+        for c in prob_cols:
+            nm = c[:-5]  # strip "_prob"
+            try:
+                aucs[nm] = float(roc_auc_score(y, base_df[c].to_numpy()))
+            except Exception:
+                aucs[nm] = float("nan")
+
+        # ---- 3) Paired Bootstrap ΔAUC + Wilcoxon σε διαφορά CE ----
+        def paired_bootstrap_auc(y_true, p1, p2, B=2000, rs=1337):
+            rng = np.random.default_rng(rs)
+            n = y_true.shape[0]
+            diffs = []
+            for _ in range(B):
+                idx = rng.integers(0, n, size=n)
+                # σε rare resamples με μονοκλασικό y, roc_auc_score θα σκάσει — skip
+                try:
+                    a1 = roc_auc_score(y_true[idx], p1[idx])
+                    a2 = roc_auc_score(y_true[idx], p2[idx])
+                    diffs.append(a2 - a1)
+                except Exception:
+                    continue
+            if len(diffs) == 0:
+                return {"diff": np.nan, "p": np.nan, "ci_low": np.nan, "ci_high": np.nan}
+            diffs = np.asarray(diffs, dtype=float)
+            diff_hat = float(np.mean(diffs))
+            p_two = 2.0 * min(np.mean(diffs <= 0), np.mean(diffs >= 0))
+            ci_low, ci_high = np.percentile(diffs, [2.5, 97.5]).tolist()
+            return {"diff": diff_hat, "p": float(p_two), "ci_low": float(ci_low), "ci_high": float(ci_high)}
+
+        def cross_entropy(y_true, p):
+            p = np.clip(p, 1e-12, 1-1e-12)
+            return -(y_true*np.log(p) + (1-y_true)*np.log(1-p))
+
+        pairwise = {}
+        names = [c[:-5] for c in prob_cols]
+        for i in range(len(names)):
+            for j in range(i+1, len(names)):
+                n1, n2 = names[i], names[j]
+                p1 = base_df[f"{n1}_prob"].to_numpy()
+                p2 = base_df[f"{n2}_prob"].to_numpy()
+
+                boot = paired_bootstrap_auc(y, p1, p2)
+                try:
+                    d_ce = cross_entropy(y, p2) - cross_entropy(y, p1)
+                    stat, p_w = wilcoxon(d_ce, zero_method="wilcox", alternative="two-sided", method="approx")
+                    p_w = float(p_w)
+                except Exception:
+                    p_w = float("nan")
+
+                pairwise[f"{n1}_vs_{n2}"] = {
+                    "auc1": aucs.get(n1, np.nan),
+                    "auc2": aucs.get(n2, np.nan),
+                    "delta_auc": boot["diff"],
+                    "delta_auc_ci95": [boot["ci_low"], boot["ci_high"]],
+                    "p_bootstrap_auc": boot["p"],
+                    "p_wilcoxon_logloss": p_w,
+                    "n_common": int(base_df.shape[0]),
+                }
+
+        # ---- 4) Εκτύπωση ----
+        if len(pairwise) == 0:
+            print("⚠️ Insufficient valid pairs after alignment.")
+            return {"status": "insufficient", "reason": "no_pairs_after_alignment"}
+
+        print(f"✅ Paired comparisons on common samples: n={base_df.shape[0]}")
+        print("-"*70)
+        for k, v in pairwise.items():
+            a, b = k.split("_vs_")
+            print(f"{a} vs {b}:")
+            print(f"  AUC({a})={v['auc1']:.3f} | AUC({b})={v['auc2']:.3f} | ΔAUC={v['delta_auc']:.3f} "
+                f"[95% CI {v['delta_auc_ci95'][0]:.3f}, {v['delta_auc_ci95'][1]:.3f}]")
+            print(f"  p_bootstrap_auc={v['p_bootstrap_auc']:.4f} | p_wilcoxon_logloss={v['p_wilcoxon_logloss']:.4f} | n={v['n_common']}")
+            print("-"*70)
+
+        return {"status": "ok", "n_common": int(base_df.shape[0]), "aucs": aucs, "pairwise": pairwise, "names": names}
 
     def print_basic_comparison_results_with_stats(self, raw_results, kg_results, statistical_results,
                                                   selected_count, original_count, clinical_set):
@@ -3484,7 +3617,38 @@ class RealisticAnalysis:
                 "y_true": enhanced_results["test"]["labels"],
                 "y_prob": enhanced_results["test"]["probs"],
             }
+        # -- IDs για ευθυγράμμιση (ίδια για όλα τα test sets)
+        if "sample_index" in test_clean.columns:
+            test_ids = test_clean["sample_index"].to_numpy()
+        else:
+            # ασφαλές fallback
+            test_ids = np.arange(len(y_test_raw))
 
+        # Βάλε τα ids στα results dicts
+        raw_results["ids"] = test_ids.tolist()
+        kg_results["ids"] = test_ids.tolist()
+        if enhanced_results is not None:
+            enhanced_results["ids"] = test_ids.tolist()
+
+        # ...και εδώ φτιάχνεις τα stat_inputs:
+        stat_inputs = {
+            "Raw": {
+                "y_true": raw_results["y_true"],
+                "y_prob": raw_results["y_prob"],
+                "ids":    raw_results["ids"],
+            },
+            "KG": {
+                "y_true": kg_results["y_true"],
+                "y_prob": kg_results["y_prob"],
+                "ids":    kg_results["ids"],
+            },
+        }
+        if enhanced_results is not None:
+            stat_inputs["Enhanced"] = {
+                "y_true": enhanced_results["y_true"],
+                "y_prob": enhanced_results["y_prob"],
+                "ids":    enhanced_results["ids"],
+            }
         statistical_results = self.statistical_comparison_analysis(stat_inputs)
 
         # (B) ADAPTER για print_kg_comparison_results: δίνουμε το BEST μοντέλο κάθε προσέγγισης
