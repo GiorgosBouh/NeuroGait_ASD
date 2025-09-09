@@ -378,8 +378,28 @@ class SynchronizedLeakageFreeKGBuilder:
             best_features, best_set_name = self._select_best_clinical_set_for_kg(df, clinical_sets)
             
             # Apply the same preprocessing pipeline as analysis script
-            df_preprocessed = self._apply_analysis_preprocessing(df, best_features)
-            
+            # ΠΡΩΤΑ κάνε split
+            participant_info = df.groupby('participant_id')['diagnosis_binary'].first().reset_index()
+            train_pids, test_pids = train_test_split(
+                participant_info['participant_id'].values,
+                test_size=self.config['test_size'],
+                stratify=participant_info['diagnosis_binary'].values,
+                random_state=self.config['random_state']
+            )
+
+            # ΜΕΤΑ split το data
+            train_mask = df['participant_id'].isin(train_pids)
+            test_mask = df['participant_id'].isin(test_pids)
+
+            train_df = df[train_mask].copy()
+            test_df = df[test_mask].copy()
+
+            # ΤΩΡΑ κάνε preprocessing ΞΕΧΩΡΙΣΤΑ
+            train_processed = self._apply_preprocessing_train_only(train_df)
+            test_processed = self._apply_preprocessing_using_train_stats(test_df)
+
+            # Συνδύασε τα αποτελέσματα
+            df_preprocessed = pd.concat([train_processed, test_processed])            
             # NOW create participant-level split on preprocessed data
             participant_info = df_preprocessed.groupby('participant_id')['diagnosis_binary'].first().reset_index()
             
@@ -424,6 +444,16 @@ class SynchronizedLeakageFreeKGBuilder:
                 raise ValueError("❌ LEAKAGE DETECTED: Participants in both train and test sets!")
             
             logger.info("✅ LEAKAGE-FREE split validation passed")
+            # CRITICAL VALIDATION: No participant overlap
+            overlap = self.train_pids & self.test_pids
+            if overlap:
+                raise ValueError(f"CRITICAL ERROR: Participant overlap detected: {overlap}")
+
+            # Verify preprocessing was done correctly
+            if not hasattr(self, 'train_feature_means'):
+                raise ValueError("CRITICAL ERROR: Train statistics not stored")
+
+            logger.info("✅ LEAKAGE-FREE preprocessing completed successfully")
             
             return df_preprocessed, train_pids, test_pids
             
@@ -431,6 +461,56 @@ class SynchronizedLeakageFreeKGBuilder:
             logger.error(f"❌ Error loading/splitting data: {e}")
             raise
     
+
+    def _apply_preprocessing_train_only(self, train_df):
+        """Apply preprocessing using ONLY training data"""
+        logger.info("🔒 Preprocessing TRAIN data (fit and transform)...")
+        
+        # Get available features
+        features = [f for f in self.essential_movement_features if f in train_df.columns]
+        
+        # Remove high missing features (based on train)
+        missing_threshold = 0.6
+        missing_per_feature = train_df[features].isna().sum() / len(train_df)
+        good_features = missing_per_feature[missing_per_feature <= missing_threshold].index.tolist()
+        
+        logger.info(f"   Kept {len(good_features)}/{len(features)} features")
+        
+        # Remove samples with too many missing
+        missing_per_sample = train_df[good_features].isna().sum(axis=1) / len(good_features)
+        good_samples = missing_per_sample <= 0.5
+        train_clean = train_df[good_samples].copy()
+        
+        logger.info(f"   Kept {good_samples.sum()}/{len(train_df)} samples")
+        
+        # Store preprocessing statistics for test set
+        self.train_feature_means = train_clean[good_features].mean()
+        self.train_feature_stds = train_clean[good_features].std()
+        self.train_good_features = good_features
+        
+        # Impute missing values with mean
+        for feature in good_features:
+            if feature in train_clean.columns:
+                train_clean[feature].fillna(self.train_feature_means[feature], inplace=True)
+        
+        return train_clean
+
+    def _apply_preprocessing_using_train_stats(self, test_df):
+        """Apply preprocessing to test using ONLY train statistics"""
+        logger.info("🔒 Preprocessing TEST data (transform only)...")
+        
+        test_clean = test_df.copy()
+        
+        # Use SAME features as train
+        for feature in self.train_good_features:
+            if feature in test_clean.columns:
+                # Fill missing with TRAIN mean (not test mean!)
+                test_clean[feature].fillna(self.train_feature_means[feature], inplace=True)
+        
+        logger.info(f"   Applied train statistics to {len(test_clean)} test samples")
+        
+        return test_clean
+
     def create_leakage_free_embeddings(self, df):
         """Create STRICTLY leakage-free embeddings using ONLY training data for preprocessing"""
         logger.info("🔒 Creating STRICTLY LEAKAGE-FREE embeddings (NO PCA)...")
