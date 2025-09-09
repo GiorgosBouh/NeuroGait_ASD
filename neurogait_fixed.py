@@ -220,36 +220,58 @@ except Exception as e:
 
 
 class RealisticAnalysis:
-    def __init__(self):
-        # ----- υπάρχουσες ρυθμίσεις σου -----
-        self.random_state = 42
-        self.samples_per_participant = 8
-
-        # ----- ΝΕΑ: Neo4j / logging πεδία για τα KG embeddings -----
+    def __init__(
+        self,
+        input_csv: str | None = None,
+        diagnosis_col: str = "Class_ASD_Traits",
+        test_size: float = 0.25,
+        random_state: int = 42,
+        samples_per_participant: int = 8,
+        logger=None
+    ):
+        """
+        Βασικός constructor με ρητά ορισμένο input_csv (ή αυτόματο fallback στο 'Final dataset.csv'
+        δίπλα στο script). Θέτουμε επίσης όλα τα attributes που χρειάζονται downstream.
+        """
         import os
-        self.database = os.getenv("NEO4J_DATABASE", "neo4j")
 
-        # Αν έχεις ήδη driver αλλού, άστο None κι ενεργοποιείται με τα helpers
-        self.driver = None
+        self.logger = logger
+        self._log = getattr(self, "_log", lambda level, msg: print(msg))  # fallback logger
 
-        # Ad-hoc driver fallback (δημιουργείται lazy από τα helpers)
-        self._ad_hoc_driver = None
-        self._ad_hoc_database = self.database
+        # --- Dataset path ---
+        if input_csv is None:
+            # Default: 'Final dataset.csv' στον ίδιο φάκελο με το τρέχον αρχείο
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            default_csv = os.path.join(base_dir, "Final dataset.csv")
+            if not os.path.isfile(default_csv):
+                raise FileNotFoundError(
+                    "Could not find 'Final dataset.csv' next to neurogait_fixed.py. "
+                    "Pass input_csv=... when creating RealisticAnalysis."
+                )
+            self.input_csv = default_csv
+        else:
+            if not os.path.isfile(input_csv):
+                raise FileNotFoundError(f"Input CSV not found: {input_csv}")
+            self.input_csv = input_csv
 
-        # Προαιρετικό: απλό logger αν δεν έχεις ήδη
+        # --- Core config ---
+        self.diagnosis_col = diagnosis_col
+        self.test_size = test_size
+        self.random_state = random_state
+        self.samples_per_participant = samples_per_participant
+
+        # Οτιδήποτε άλλο ήδη υπήρχε σαν state (π.χ. flags, options) διατήρησέ το εδώ:
+        self.enable_leakage_checks = True
+        self.analysis_mode = "kg_comparison"
+    def _log(self, level: str, msg: str):
         try:
-            import logging
-            self.logger = logging.getLogger("RealisticAnalysis")
-            if not self.logger.handlers:
-                h = logging.StreamHandler()
-                fmt = logging.Formatter(
-                    "%(asctime)s - %(levelname)s - %(message)s")
-                h.setFormatter(fmt)
-                self.logger.addHandler(h)
-                self.logger.setLevel(logging.INFO)
+            if self.logger is not None and hasattr(self.logger, level):
+                getattr(self.logger, level)(msg)
+            else:
+                print(msg)
         except Exception:
-            self.logger = None
-
+            print(msg)
+        
     def get_clinical_features(self, all_features):
         """Get clinical feature sets from domain expert analysis"""
         print(f"\n🧠 CLINICAL FEATURE SELECTION (from Domain Expert Analysis)")
@@ -3388,6 +3410,8 @@ class RealisticAnalysis:
 
 def main():
     """Main execution with KG comparison analysis"""
+    import os
+
     print("🏥 ENHANCED NEUROGAIT ANALYSIS με Clinical Features, Statistics, και KG")
     print("🎯 Raw vs NeuroGait KG vs Enhanced Features comparison με καλύτερα clinical features")
     print("🔒 No data leakage ensured")
@@ -3395,6 +3419,11 @@ def main():
     print("🎛️ Hyperparameter tuning για optimal performance")
     print("🧠 Knowledge Graph και Enhanced Features για advanced analysis")
     print()
+
+    # Resolve absolute path for the dataset (env override -> same folder as script)
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    default_csv = os.path.join(script_dir, "Final dataset.csv")
+    input_csv = os.environ.get("NEUROGAIT_CSV", default_csv)
 
     # Show available analysis options
     available_options = [
@@ -3404,20 +3433,13 @@ def main():
         "4. KG Analysis (Raw vs NeuroGait KG vs Enhanced Features)"
     ]
 
-    # Check availability
-    if ENHANCED_FEATURES_AVAILABLE:
-        enhanced_status = "✅"
-    else:
-        enhanced_status = "⚠️"
-
-    if NEUROGAIT_KG_AVAILABLE:
-        kg_status = "✅"
-    else:
-        kg_status = "⚠️"
+    # Check availability flags
+    enhanced_status = "✅" if ENHANCED_FEATURES_AVAILABLE else "⚠️"
+    kg_status = "✅" if NEUROGAIT_KG_AVAILABLE else "⚠️"
 
     print("Available analysis types:")
     for i, option in enumerate(available_options, 1):
-        if i == 2 or i == 3:
+        if i in (2, 3):
             print(f"   {enhanced_status} {option}")
         elif i == 4:
             print(f"   {kg_status} {option}")
@@ -3434,8 +3456,24 @@ def main():
 
     print("\n" + "="*70)
 
-    # Initialize analyzer
-    analyzer = RealisticAnalysis()
+    # Assert dataset exists (absolute path)
+    if not os.path.isfile(input_csv):
+        raise FileNotFoundError(
+            f"❌ Dataset not found at: {input_csv}\n"
+            "💡 Set NEUROGAIT_CSV env var or place 'Final dataset.csv' next to this script."
+        )
+    else:
+        print(f"✅ Using dataset: {input_csv}")
+
+    # Initialize analyzer with explicit CSV + config
+    analyzer = RealisticAnalysis(
+        input_csv=input_csv,
+        diagnosis_col="Class_ASD_Traits",
+        test_size=0.25,
+        random_state=42,
+        samples_per_participant=8,
+        logger=None
+    )
 
     try:
         # Get user choice
@@ -3465,7 +3503,6 @@ def main():
         print("\n" + "="*80)
         print("🎉 ANALYSIS COMPLETED SUCCESSFULLY!")
         print("="*80)
-
         return results
 
     except KeyboardInterrupt:
@@ -3576,18 +3613,20 @@ def run_demo_analysis():
 
 
 if __name__ == "__main__":
+    import os
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    default_csv = os.path.join(script_dir, "Final dataset.csv")
+    csv_path = os.environ.get("NEUROGAIT_CSV", default_csv)
+
     print("🏥 NEUROGAIT ANALYSIS SYSTEM")
     print("="*50)
 
-    # Check if real dataset exists
-    import os
-    if os.path.exists('Final dataset.csv'):
+    if os.path.isfile(csv_path):
         print("✅ Real dataset found - running full analysis")
         results = main()
     else:
-        print("⚠️ 'Final dataset.csv' not found")
-        print("🔬 Running demonstration with synthetic data")
-        print()
+        print(f"⚠️ Dataset not found at: {csv_path}")
+        print("🔬 Running demonstration with synthetic data\n")
         results = run_demo_analysis()
 
     if results:
