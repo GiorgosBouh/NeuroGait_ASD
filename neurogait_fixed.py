@@ -3289,95 +3289,107 @@ class RealisticAnalysis:
             enhanced_results = None
 
         # --------------------- 5) Statistics & Reporting --------------------------
-       # (A) Inputs για στατιστική σύγκριση — ομαλοποιημένα κλειδιά και μόνο y_true/y_prob
-        stat_inputs = {
-            "Raw": {
-                "y_true": raw_results["y_true"],
-                "y_prob": raw_results["y_prob"],
-            },
-            "KG": {
-                "y_true": kg_results["y_true"],
-                "y_prob": kg_results["y_prob"],
-            },
-        }
-        if enhanced_results is not None:
-            stat_inputs["Enhanced"] = {
-                "y_true": enhanced_results["y_true"],
-                "y_prob": enhanced_results["y_prob"],
+            # Προσθέτουμε ρητά y_true / y_prob σε κάθε results για στατιστική σύγκριση
+            raw_results["y_true"] = y_test_raw
+            raw_results["y_prob"] = y_prob_raw
+
+            kg_results["y_true"] = y_test_kg
+            kg_results["y_prob"] = y_prob_kg
+
+            if enhanced_results is not None:
+                enhanced_results["y_true"] = y_test_enh
+                enhanced_results["y_prob"] = y_prob_enh
+
+            # (A) ΕΙΣΟΔΟΣ για statistical_comparison_analysis: απλό dict με y_true/y_prob
+            stat_inputs = {
+                "Raw": {
+                    "y_true": raw_results["y_true"],
+                    "y_prob": raw_results["y_prob"],
+                },
+                "KG": {
+                    "y_true": kg_results["y_true"],
+                    "y_prob": kg_results["y_prob"],
+                },
             }
+            if enhanced_results is not None:
+                stat_inputs["Enhanced"] = {
+                    "y_true": enhanced_results["y_true"],
+                    "y_prob": enhanced_results["y_prob"],
+                }
 
-        statistical_results = self.statistical_comparison_analysis(stat_inputs)
+            statistical_results = self.statistical_comparison_analysis(stat_inputs)
 
-        # (B) Adapters για την print_kg_comparison_results:
-        # Παίρνουμε το BEST model name από τα test results
-        best_raw_name = raw_results["test"]["best_model"]
-        best_kg_name  = kg_results["test"]["best_model"]
-        best_enh_name = enhanced_results["test"]["best_model"] if enhanced_results is not None else None
+            # (B) ADAPTER για print_kg_comparison_results: flat dicts με το BEST μοντέλο κάθε προσέγγισης
+            def _cv_stats(cv_dict, model_name):
+                d = (cv_dict or {}).get(model_name, {})
+                return (
+                    d.get("cv_mean", 0.0),
+                    d.get("cv_std", 0.0),
+                    d.get("cv_scores", []),
+                )
 
-        # Από τα CV dicts βρίσκουμε cv_mean/cv_std για το best μοντέλο
-        def _cv_stats(cv_dict, model_name):
-            d = cv_dict.get(model_name, {})
-            return d.get("cv_mean", None), d.get("cv_std", None), d.get("cv_scores", None)
+            best_raw_name = raw_results["test"]["best_model"]
+            best_kg_name  = kg_results["test"]["best_model"]
+            best_enh_name = enhanced_results["test"]["best_model"] if enhanced_results is not None else None
 
-        raw_cv_mean, raw_cv_std, raw_cv_scores = _cv_stats(raw_results["cv"], best_raw_name)
-        kg_cv_mean,  kg_cv_std,  kg_cv_scores  = _cv_stats(kg_results["cv"],  best_kg_name)
-        if enhanced_results is not None:
-            enh_cv_mean, enh_cv_std, enh_cv_scores = _cv_stats(enhanced_results["cv"], best_enh_name)
+            raw_cv_mean, raw_cv_std, raw_cv_scores = _cv_stats(raw_results.get("cv", {}), best_raw_name)
+            kg_cv_mean,  kg_cv_std,  kg_cv_scores  = _cv_stats(kg_results.get("cv",  {}), best_kg_name)
+            enh_cv_mean, enh_cv_std, enh_cv_scores = (0.0, 0.0, [])
+            if enhanced_results is not None:
+                enh_cv_mean, enh_cv_std, enh_cv_scores = _cv_stats(enhanced_results.get("cv", {}), best_enh_name)
 
-        # Φτιάχνουμε “flat” dicts ανά προσέγγιση, όπως τα θέλει η print_kg_comparison_results
-        results_raw_for_print = {
-            best_raw_name: {
-                "auc": raw_results["test"]["auc"],
-                "f1":  raw_results["test"]["f1"],
-                "cv_mean": raw_cv_mean if raw_cv_mean is not None else 0.0,
-                "cv_std":  raw_cv_std  if raw_cv_std  is not None else 0.0,
-                "cv_scores": raw_cv_scores if raw_cv_scores is not None else [],
-            }
-        }
-        results_kg_for_print = {
-            best_kg_name: {
-                "auc": kg_results["test"]["auc"],
-                "f1":  kg_results["test"]["f1"],
-                "cv_mean": kg_cv_mean if kg_cv_mean is not None else 0.0,
-                "cv_std":  kg_cv_std  if kg_cv_std  is not None else 0.0,
-                "cv_scores": kg_cv_scores if kg_cv_scores is not None else [],
-            }
-        }
-        results_enh_for_print = {}
-        if enhanced_results is not None:
-            results_enh_for_print = {
-                best_enh_name: {
-                    "auc": enhanced_results["test"]["auc"],
-                    "f1":  enhanced_results["test"]["f1"],
-                    "cv_mean": enh_cv_mean if enh_cv_mean is not None else 0.0,
-                    "cv_std":  enh_cv_std  if enh_cv_std  is not None else 0.0,
-                    "cv_scores": enh_cv_scores if enh_cv_scores is not None else [],
+            results_raw_for_print = {
+                best_raw_name: {
+                    "auc": raw_results["test"]["auc"],
+                    "f1":  raw_results["test"]["f1"],
+                    "cv_mean": float(raw_cv_mean),
+                    "cv_std":  float(raw_cv_std),
+                    "cv_scores": list(raw_cv_scores),
                 }
             }
+            results_kg_for_print = {
+                best_kg_name: {
+                    "auc": kg_results["test"]["auc"],
+                    "f1":  kg_results["test"]["f1"],
+                    "cv_mean": float(kg_cv_mean),
+                    "cv_std":  float(kg_cv_std),
+                    "cv_scores": list(kg_cv_scores),
+                }
+            }
+            results_enh_for_print = {}
+            if enhanced_results is not None:
+                results_enh_for_print = {
+                    best_enh_name: {
+                        "auc": enhanced_results["test"]["auc"],
+                        "f1":  enhanced_results["test"]["f1"],
+                        "cv_mean": float(enh_cv_mean),
+                        "cv_std":  float(enh_cv_std),
+                        "cv_scores": list(enh_cv_scores),
+                    }
+                }
 
-        # (C) Τελική εκτύπωση
-        self.print_kg_comparison_results(
-            results_raw_for_print or {},
-            results_kg_for_print or {},
-            results_enh_for_print or {},
-            clinical_set_name=best_set_name,
-            train_participants=len(set(train_pids)),
-            test_participants=len(set(test_pids)),
-            original_features=len(best_features),
-            selected_features=len(selected_features),
-            statistical_results=statistical_results
-        )
+            # (C) Εκτύπωση με το σωστό format
+            self.print_kg_comparison_results(
+                results_raw_for_print or {},
+                results_kg_for_print or {},
+                results_enh_for_print or {},
+                clinical_set_name=best_set_name,
+                train_participants=len(set(train_pids)),
+                test_participants=len(set(test_pids)),
+                original_features=len(best_features),
+                selected_features=len(selected_features),
+                statistical_results=statistical_results
+            )
 
-        # (D) Επιστρέφουμε συγκεντρωτικά — ΚΡΑΤΑ το format με y_true/y_prob για downstream
-        all_results = {
-            "Raw Clinical Features": raw_results,
-            "NeuroGait KG": kg_results
-        }
-        if enhanced_results is not None:
-            all_results["Enhanced Features"] = enhanced_results
+            # (D) Τελική επιστροφή (κρατάμε το πλούσιο dict για downstream χρήσεις)
+            all_results = {
+                "Raw Clinical Features": raw_results,
+                "NeuroGait KG": kg_results,
+            }
+            if enhanced_results is not None:
+                all_results["Enhanced Features"] = enhanced_results
 
-        return all_results
-
+            return all_results
 
     def print_kg_comparison_results(self, results_raw, results_kg, results_enh, **context):
         """
