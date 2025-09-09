@@ -3225,9 +3225,9 @@ class RealisticAnalysis:
         statistical_results = self.statistical_comparison_analysis(all_results)
 
         self.print_kg_comparison_results(
-            results_raw or {},
-            results_kg or {},
-            results_enh or {},
+            cv_results_raw or {},
+            cv_results_kg or {},
+            cv_results_enh or {},
             clinical_set_name=best_set_name,
             train_participants=len(set(train_pids)),
             test_participants=len(set(test_pids)),
