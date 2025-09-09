@@ -2836,31 +2836,27 @@ class RealisticAnalysis:
 
     def run_kg_comparison_analysis(self):
         """
-        Run KG comparison analysis with proper alignment and leakage validation
-        Addresses: 1) Sample alignment 2) Data leakage detection 3) Realistic performance validation
+        Run KG comparison analysis with proper alignment and leakage validation.
+        Uses Grouped CV (per participant) and scaling inside the CV pipeline.
         """
 
-        # Helper functions (inner scope)
+        # --------------------- Helper closures (όπως τα έχεις) ---------------------
         def _ensure_kg_builder_local():
             """Ensure KG builder exists and is properly connected"""
             if getattr(self, "kg_builder", None) is not None:
-                # Check if already connected
                 if hasattr(self.kg_builder, 'driver') and self.kg_builder.driver is not None:
                     try:
-                        # Test the connection
                         with self.kg_builder.driver.session() as session:
                             session.run("RETURN 1")
-                        return  # Connection is good
+                        return
                     except:
-                        pass  # Connection failed, recreate
+                        pass
 
             print("   🔧 Initializing KG builder...")
-
             import neurogait_kg_builder as kgmod
             import inspect
 
-            required = {"create_participants_and_samples",
-                        "create_embeddings_in_graph"}
+            required = {"create_participants_and_samples", "create_embeddings_in_graph"}
             preferred = "enforce_participant_level_split"
 
             candidates = []
@@ -2870,35 +2866,26 @@ class RealisticAnalysis:
                         candidates.append(obj)
 
             if not candidates:
-                raise ImportError(
-                    "No KG builder class found with required methods")
+                raise ImportError("No KG builder class found with required methods")
 
-            candidates.sort(key=lambda c: int(
-                hasattr(c, preferred)), reverse=True)
+            candidates.sort(key=lambda c: int(hasattr(c, preferred)), reverse=True)
             BuilderClass = candidates[0]
 
-            # Initialize builder with explicit connection
             print(f"   🔧 Creating {BuilderClass.__name__} instance...")
             self.kg_builder = BuilderClass(samples_per_participant=8)
 
-            # CRITICAL: Ensure connection
             print("   🔌 Connecting to Neo4j...")
             if not self.kg_builder.connect():
                 raise RuntimeError("Failed to connect KG builder to Neo4j")
 
-            # Verify connection works
-            try:
-                with self.kg_builder.driver.session() as session:
-                    session.run("RETURN 1")
-                print(f"   ✅ KG builder connected successfully")
-            except Exception as e:
-                raise RuntimeError(f"KG builder connection test failed: {e}")
+            with self.kg_builder.driver.session() as session:
+                session.run("RETURN 1")
+            print("   ✅ KG builder connected successfully")
 
         def _ensure_ad_hoc_driver():
             """Ensure Neo4j driver for queries"""
             if getattr(self, "_ad_hoc_driver", None) is not None:
                 return
-
             uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
             user = os.getenv("NEO4J_USER", "neo4j")
             pwd = os.getenv("NEO4J_PASSWORD", "palatiou")
@@ -2913,31 +2900,28 @@ class RealisticAnalysis:
         def validate_no_data_leakage_comprehensive(train_data, test_data, train_pids, test_pids):
             """Comprehensive validation to ensure no data leakage"""
             print("\n🔍 COMPREHENSIVE DATA LEAKAGE VALIDATION:")
-
             errors = []
 
-            # 1. Participant overlap
+            # 1) Participant overlap
             pid_overlap = set(train_pids) & set(test_pids)
             print(f"   1. Participant overlap: {len(pid_overlap)}")
             if pid_overlap:
                 errors.append(f"Participant overlap: {pid_overlap}")
 
-            # 2. Sample ID overlap
+            # 2) Sample ID overlap
             if 'sample_id' in train_data.columns and 'sample_id' in test_data.columns:
-                sid_overlap = set(train_data['sample_id']) & set(
-                    test_data['sample_id'])
+                sid_overlap = set(train_data['sample_id']) & set(test_data['sample_id'])
                 print(f"   2. Sample ID overlap: {len(sid_overlap)}")
                 if sid_overlap:
-                    errors.append(
-                        f"Sample ID overlap: {list(sid_overlap)[:5]}...")
+                    errors.append(f"Sample ID overlap: {list(sid_overlap)[:5]}...")
 
-            # 3. Index overlap
+            # 3) Index overlap
             idx_overlap = set(train_data.index) & set(test_data.index)
             print(f"   3. Index overlap: {len(idx_overlap)}")
             if idx_overlap:
                 errors.append(f"Index overlap: {list(idx_overlap)[:5]}...")
 
-            # 4. Check for identical rows
+            # 4) (προσεγγιστικό) identical rows
             if len(train_data.columns) == len(test_data.columns):
                 train_hash = pd.util.hash_pandas_object(train_data)
                 test_hash = pd.util.hash_pandas_object(test_data)
@@ -2948,315 +2932,165 @@ class RealisticAnalysis:
 
             if errors:
                 print("\n❌ DATA LEAKAGE DETECTED:")
-                for error in errors:
-                    print(f"   - {error}")
+                for e in errors:
+                    print(f"   - {e}")
                 raise ValueError("Critical data leakage detected!")
             else:
                 print("   ✅ NO DATA LEAKAGE DETECTED")
-
             return True
 
-        def fetch_available_embeddings(split):
-            """Fetch all available embeddings for a split"""
-            cypher = """
-            MATCH (s:Sample)-[:HAS_EMBEDDING]->(e:Embedding)
-            WHERE e.data_split = $split
-            RETURN s.id as sample_id, e.vector as vector
-            """
+        # --------------------- 0) Load & split (participant-level) -----------------
+        df, best_features, best_set_name, train_indices, test_indices, train_pids, test_pids = self.load_and_prepare_data()
+        train_data, test_data = self.proper_train_test_split(df, train_indices, test_indices)
 
-            embeddings = {}
-            try:
-                with _get_neo4j_session() as session:
-                    records = session.run(cypher, split=split).data()
-                    embeddings = {rec['sample_id']: rec['vector']
-                                  for rec in records}
-            except Exception as e:
-                print(f"   ❌ Error fetching {split} embeddings: {e}")
+        # Safety: keep a reference for later
+        self._df_source = df
 
-            return embeddings
+        # --------------------- 1) Preprocess (fit on train ONLY) -------------------
+        train_clean, test_clean, clean_features = self.preprocess_data(train_data, test_data, best_features)
 
-        def align_to_common_samples(raw_data, kg_data, enhanced_data, kg_sample_map):
-            """Align all approaches to common available samples"""
-            # Find common sample indexes
-            raw_indexes = set(raw_data['test_indexes'])
-            kg_indexes = set(kg_sample_map.keys())
-            enhanced_indexes = set(raw_data['test_indexes'])  # Same as raw
+        # Labels από το σωστό column (π.χ. 'class' → 1/0)
+        diag_col = getattr(self, "diagnosis_col", "class")
+        y_train_raw = train_clean[diag_col].to_numpy().astype(int)
+        y_test_raw  = test_clean[diag_col].to_numpy().astype(int)
 
-            common_indexes = sorted(
-                raw_indexes & kg_indexes & enhanced_indexes)
-
-            print(f"   Sample alignment:")
-            print(f"      Raw: {len(raw_indexes)} samples")
-            print(f"      KG: {len(kg_indexes)} samples")
-            print(f"      Enhanced: {len(enhanced_indexes)} samples")
-            print(f"      Common: {len(common_indexes)} samples")
-
-            if len(common_indexes) < 50:
-                raise ValueError(
-                    f"Insufficient common samples: {len(common_indexes)}")
-
-            # Create alignment mappings
-            raw_positions = [raw_data['test_indexes'].index(
-                idx) for idx in common_indexes]
-            kg_positions = [list(kg_sample_map.keys()).index(idx)
-                            for idx in common_indexes]
-            enhanced_positions = raw_positions  # Same as raw
-
-            return {
-                'common_indexes': common_indexes,
-                'raw_positions': raw_positions,
-                'kg_positions': kg_positions,
-                'enhanced_positions': enhanced_positions
-            }
-
-        # Main analysis starts here
-        print("\n🧠 KNOWLEDGE GRAPH COMPARISON ANALYSIS")
-        print("=" * 70)
-        print("🎯 Comparing: Raw Features, NeuroGait KG, and Enhanced Features")
-        print("🔒 Using actual Neo4j graph structure with strict validation")
-        print("📊 Complete statistical comparison with leakage detection\n")
-
-        # 1) Load and prepare data
-        df, best_features, best_set_name, train_indices, test_indices, train_sample_pids, test_pids = self.load_and_prepare_data()
-
-        # Ensure sample IDs exist
-        df = df.copy()
-        df["sample_index"] = df.index.astype(int)
-        df["sample_id"] = "S_" + \
-            df["participant_id"].astype(
-                str) + "_" + df["sample_index"].astype(str)
-
-        train_data, test_data = self.proper_train_test_split(
-            df, train_indices, test_indices)
-        train_clean, test_clean, clean_features = self.preprocess_data(
-            train_data, test_data, best_features)
-
-        # 2) Feature selection and preparation
-        X_train, X_test, selected_features = self.optimized_feature_selection(
+        # Συντηρητική επιλογή χαρακτηριστικών (TRAIN only)
+        X_train_raw, X_test_raw, selected_features = self.optimized_feature_selection(
             train_clean, test_clean, clean_features
         )
 
-        y_train = train_clean['diagnosis']
-        y_test = test_clean['diagnosis']
-        X_train_scaled, X_test_scaled = self.prepare_data_properly(
-            X_train, X_test)
-        train_sample_pids_clean = train_clean['participant_id'].values
+        # Report split
+        print(f"\n📦 Participants total: {len(set(df['participant_id']))} | train: {len(set(train_pids))} | test: {len(set(test_pids))}")
+        print(f"   Samples -> train: {X_train_raw.shape[0]}  test: {X_test_raw.shape[0]}")
+        print(f"   Participant overlap: {len(set(train_pids)&set(test_pids))}")
+        print(f"🩺 Diagnosis column: '{diag_col}' (A/T → 1/0)")
 
-        # 3) Participant lists for validation
-        train_participants = train_clean['participant_id'].unique()
-        test_participants = test_clean['participant_id'].unique()
+        # Leakage sanity check σε επίπεδο split
+        validate_no_data_leakage_comprehensive(train_clean, test_clean, train_pids, test_pids)
 
-        # 4) CRITICAL: Validate no data leakage
-        validate_no_data_leakage(
-            df,
-            train_indices,
-            test_indices,
-            pid_col="participant_id",
-            label_col="class"  # ή label_col=self.diagnosis_col αν είναι ήδη "class"
-        )
-
-        # Store test sample information for alignment
-        test_sample_info = {
-            'test_indexes': test_clean.index.tolist(),
-            'test_sample_ids': test_clean['sample_id'].tolist() if 'sample_id' in test_clean.columns else None,
-            'y_test': y_test,
-            'sample_count': len(test_clean)
-        }
-
-        # === TIER 1: RAW CLINICAL FEATURES ===
+        # --------------------- 2) TIER 1: RAW (Grouped CV) ------------------------
         print(f"\n{'='*50}")
-        print("📊 TIER 1: RAW CLINICAL FEATURES")
+        print("📊 TIER 1: RAW CLINICAL FEATURES (Grouped CV)")
         print(f"{'='*50}")
 
-        raw_results = self.train_optimized_models(
-            X_train_scaled, X_test_scaled, y_train, y_test, train_sample_pids_clean,
-            f"Raw Clinical Features ({best_set_name})"
+        # Permutation sanity-check (AUC ~ 0.5 αναμενόμενο)
+        self.permutation_sanity_check(X_train_raw, y_train_raw, train_indices, df)
+
+        cv_results_raw, best_name_raw, best_est_raw = self.train_and_evaluate_models_grouped(
+            X_train_raw, y_train_raw, train_indices, df,
+            approach_name=f": Raw Clinical Features ({best_set_name})"
         )
 
-        # Check for unrealistic performance
-        raw_best_auc = max([m['auc'] for m in raw_results.values()])
-        if raw_best_auc > 0.95:
-            print(
-                f"   ⚠️ WARNING: Suspiciously high AUC ({raw_best_auc:.3f}) - possible data leakage")
-
-        # === TIER 2: NEUROGAIT KG EMBEDDINGS ===
-        print(f"\n{'='*50}")
-        print("🧠 TIER 2: NEUROGAIT KG EMBEDDINGS (VALIDATED)")
-        print(f"{'='*50}")
-
-        # Initialize KG components
-        _ensure_kg_builder_local()
-        _ensure_ad_hoc_driver()
-
-        # Enforce participant splits in KG
-        self.kg_builder.enforce_participant_level_split(
-            train_participants.tolist(),
-            test_participants.tolist()
-        )
-
-        # Fetch available embeddings
-        print("   📊 Fetching available KG embeddings...")
-        train_embeddings = fetch_available_embeddings("train")
-        test_embeddings = fetch_available_embeddings("test")
-
-        print(f"      Available train embeddings: {len(train_embeddings)}")
-        print(f"      Available test embeddings: {len(test_embeddings)}")
-
-        if not train_embeddings or not test_embeddings:
-            raise RuntimeError("No KG embeddings available. Rebuild KG first.")
-
-        # Use adaptive alignment
-        try:
-            X_train_kg, X_test_kg, y_train_kg, y_test_kg, train_pids_kg = self.create_neurogait_kg_embeddings_adaptive(
-                train_participants, test_participants, train_clean, test_clean
-            )
-
-            print(
-                f"   ✅ KG embeddings retrieved: Train {X_train_kg.shape}, Test {X_test_kg.shape}")
-
-            neurogait_kg_results = self.train_optimized_models(
-                X_train_kg, X_test_kg, y_train_kg, y_test_kg, train_pids_kg, "NeuroGait KG"
-            )
-
-            # Store KG sample mapping for alignment
-            kg_sample_mapping = {
-                test_clean.index[i]: i for i in range(len(y_test_kg))
+        from sklearn.metrics import roc_auc_score, f1_score, accuracy_score
+        if hasattr(best_est_raw.named_steps["clf"], "predict_proba"):
+            y_prob_raw = best_est_raw.predict_proba(X_test_raw)[:, 1]
+        else:
+            scores = best_est_raw.decision_function(X_test_raw)
+            y_prob_raw = (scores - scores.min()) / (scores.max() - scores.min() + 1e-12)
+        y_pred_raw = (y_prob_raw >= 0.5).astype(int)
+        raw_results = {
+            "cv": cv_results_raw,
+            "test": {
+                "auc": float(roc_auc_score(y_test_raw, y_prob_raw)),
+                "f1":  float(f1_score(y_test_raw, y_pred_raw)),
+                "acc": float(accuracy_score(y_test_raw, y_pred_raw)),
+                "best_model": best_name_raw
             }
-
-            # Check KG performance
-            kg_best_auc = max([m['auc']
-                              for m in neurogait_kg_results.values()])
-            if kg_best_auc > 0.95:
-                print(
-                    f"   ⚠️ WARNING: Suspiciously high KG AUC ({kg_best_auc:.3f}) - investigate data leakage")
-
-        except Exception as e:
-            print(f"   ❌ KG embeddings failed: {e}")
-            print("   🔧 SOLUTION: Rebuild KG with python neurogait_kg_builder.py")
-            raise
-
-        # === TIER 3: ENHANCED FEATURES ===
-        print(f"\n{'='*50}")
-        print("🔥 TIER 3: ENHANCED FEATURES")
-        print(f"{'='*50}")
-
-        if not ENHANCED_FEATURES_AVAILABLE:
-            raise ImportError("Enhanced features not available")
-
-        X_train_enhanced, X_test_enhanced = self.create_enhanced_features_embeddings(
-            train_clean, test_clean, selected_features
-        )
-
-        enhanced_results = self.train_optimized_models(
-            X_train_enhanced, X_test_enhanced, y_train, y_test, train_sample_pids_clean, "Enhanced Features"
-        )
-
-        # Check enhanced performance
-        enhanced_best_auc = max([m['auc'] for m in enhanced_results.values()])
-        if enhanced_best_auc > 0.95:
-            print(
-                f"   ⚠️ WARNING: Suspiciously high Enhanced AUC ({enhanced_best_auc:.3f})")
-
-        # === CRITICAL: ALIGN ALL RESULTS FOR STATISTICAL COMPARISON ===
-        print(f"\n{'='*70}")
-        print("🔧 ALIGNING RESULTS FOR STATISTICAL COMPARISON")
-        print(f"{'='*70}")
-
-        # For now, use only samples that have KG embeddings (intersection approach)
-        common_sample_count = len(y_test_kg)  # KG has the limiting factor
-
-        # Align raw and enhanced results to KG sample count
-        def align_results_to_kg_samples(results, original_predictions, kg_sample_count):
-            """Align predictions to match KG sample count"""
-            aligned_results = {}
-
-            for model_name, metrics in results.items():
-                if 'proba_test' in metrics:
-                    # Take first kg_sample_count predictions (assuming same ordering)
-                    aligned_proba = metrics['proba_test'][:kg_sample_count]
-                    aligned_y = y_test_kg  # Use KG labels as reference
-
-                    aligned_results[model_name] = {
-                        **metrics,
-                        'proba_test': aligned_proba,
-                        'y_test': aligned_y,
-                        'aligned_samples': len(aligned_proba)
-                    }
-
-            return aligned_results
-
-        # Align all results (this is a simplification - in production you'd want exact sample matching)
-        raw_results_aligned = align_results_to_kg_samples(
-            raw_results, X_test_scaled, common_sample_count)
-        kg_results_aligned = neurogait_kg_results  # Already aligned
-        enhanced_results_aligned = align_results_to_kg_samples(
-            enhanced_results, X_test_enhanced, common_sample_count)
-
-        print(
-            f"   ✅ All results aligned to {common_sample_count} common samples")
-
-        # === COMPREHENSIVE COMPARISON ===
-        all_results = {
-            'Raw Clinical Features': raw_results_aligned,
-            'NeuroGait KG': kg_results_aligned,
-            'Enhanced Features': enhanced_results_aligned
         }
 
-        # Performance warnings
-        print(f"\n⚠️ PERFORMANCE VALIDATION:")
-        print(f"   Raw Clinical Features best AUC: {raw_best_auc:.3f}")
-        print(f"   NeuroGait KG best AUC: {kg_best_auc:.3f}")
-        print(f"   Enhanced Features best AUC: {enhanced_best_auc:.3f}")
+        # --------------------- 3) TIER 2: KG (Neo4j) ------------------------------
+        print(f"\n{'='*50}")
+        print("🧠 TIER 2: NEUROGAIT KG EMBEDDINGS (VALIDATED, Grouped CV)")
+        print(f"{'='*50}")
 
-        if any(auc > 0.90 for auc in [raw_best_auc, kg_best_auc, enhanced_best_auc]):
-            print(f"   🚨 CRITICAL: AUC > 0.90 is unrealistic for ASD gait analysis")
-            print(f"   🔍 INVESTIGATE: Possible data leakage or overfitting")
-            print(f"   📝 EXPECTED: AUC range 0.65-0.85 for this domain")
+        _ensure_kg_builder_local()
 
-        # Statistical comparison
+        # Φέρε τα KG embeddings (ευθυγραμμισμένα με train/test)
+        X_train_kg, X_test_kg, y_train_kg, y_test_kg, train_pids_kg = self.create_neurogait_kg_embeddings_adaptive(
+            train_pids, test_pids, train_clean, test_clean
+        )
+
+        cv_results_kg, best_name_kg, best_est_kg = self.train_and_evaluate_models_grouped(
+            X_train_kg, y_train_kg, train_indices, df,
+            approach_name=": NeuroGait KG (grouped by participant)"
+        )
+        if hasattr(best_est_kg.named_steps["clf"], "predict_proba"):
+            y_prob_kg = best_est_kg.predict_proba(X_test_kg)[:, 1]
+        else:
+            scores = best_est_kg.decision_function(X_test_kg)
+            y_prob_kg = (scores - scores.min()) / (scores.max() - scores.min() + 1e-12)
+        y_pred_kg = (y_prob_kg >= 0.5).astype(int)
+        kg_results = {
+            "cv": cv_results_kg,
+            "test": {
+                "auc": float(roc_auc_score(y_test_kg, y_prob_kg)),
+                "f1":  float(f1_score(y_test_kg, y_pred_kg)),
+                "acc": float(accuracy_score(y_test_kg, y_pred_kg)),
+                "best_model": best_name_kg
+            }
+        }
+
+        # --------------------- 4) TIER 3: Enhanced Features -----------------------
+        print(f"\n{'='*50}")
+        print("🔥 TIER 3: ENHANCED FEATURES (Grouped CV)")
+        print(f"{'='*50}")
+
+        try:
+            X_train_enh, X_test_enh = self.create_enhanced_features_embeddings(
+                train_data, test_data, selected_features
+            )
+            # labels ίδιοι με raw
+            y_train_enh, y_test_enh = y_train_raw, y_test_raw
+
+            cv_results_enh, best_name_enh, best_est_enh = self.train_and_evaluate_models_grouped(
+                X_train_enh, y_train_enh, train_indices, df,
+                approach_name=": Enhanced Features (grouped by participant)"
+            )
+            if hasattr(best_est_enh.named_steps["clf"], "predict_proba"):
+                y_prob_enh = best_est_enh.predict_proba(X_test_enh)[:, 1]
+            else:
+                scores = best_est_enh.decision_function(X_test_enh)
+                y_prob_enh = (scores - scores.min()) / (scores.max() - scores.min() + 1e-12)
+            y_pred_enh = (y_prob_enh >= 0.5).astype(int)
+            enhanced_results = {
+                "cv": cv_results_enh,
+                "test": {
+                    "auc": float(roc_auc_score(y_test_enh, y_prob_enh)),
+                    "f1":  float(f1_score(y_test_enh, y_pred_enh)),
+                    "acc": float(accuracy_score(y_test_enh, y_pred_enh)),
+                    "best_model": best_name_enh
+                }
+            }
+        except Exception as e:
+            print(f"❌ Enhanced features creation failed: {e}")
+            enhanced_results = None
+
+        # --------------------- 5) Statistics & Reporting --------------------------
+        all_results = {
+            "Raw Clinical Features": raw_results,
+            "NeuroGait KG": kg_results
+        }
+        if enhanced_results is not None:
+            all_results["Enhanced Features"] = enhanced_results
+
+        # Ευθυγράμμιση και στατιστική σύγκριση (όπως ήδη κάνεις)
         statistical_results = self.statistical_comparison_analysis(all_results)
 
-        # Results summary
         self.print_kg_comparison_results(
             all_results,
-            best_set_name,
-            {
-                'train_participants': len(train_participants),
-                'test_participants': len(test_participants),
-                'original_features': len(best_features),
-                'selected_features': len(selected_features)
+            clinical_set_name=best_set_name,
+            data_summary={
+                "train_participants": len(set(train_pids)),
+                "test_participants": len(set(test_pids)),
+                "train_samples": int(X_train_raw.shape[0]),
+                "test_samples": int(X_test_raw.shape[0]),
+                "original_features": len(best_features),
+                "selected_features": len(selected_features)
             },
-            statistical_results
+            statistical_results=statistical_results
         )
 
-        print(f"\n✅ ANALYSIS COMPLETED:")
-        print(f"   Common test samples: {common_sample_count}")
-        print(
-            f"   Statistical comparisons: {'COMPLETE' if statistical_results else 'FAILED'}")
-
-        # Final warning about performance
-        if any(auc > 0.90 for auc in [raw_best_auc, kg_best_auc, enhanced_best_auc]):
-            print(f"\n🚨 CRITICAL RECOMMENDATION:")
-            print(f"   The performance is unrealistically high for this domain")
-            print(f"   Investigate data leakage sources:")
-            print(f"   1. Participant overlap between train/test")
-            print(f"   2. Temporal information leakage")
-            print(f"   3. Feature preprocessing on full dataset")
-            print(f"   4. KG builder data leakage")
-            print(f"   5. Cross-validation implementation errors")
-
-        return {
-            'all_results': all_results,
-            'statistical_results': statistical_results,
-            'performance_warnings': {
-                'raw_auc': raw_best_auc,
-                'kg_auc': kg_best_auc,
-                'enhanced_auc': enhanced_best_auc,
-                'suspicious_performance': any(auc > 0.90 for auc in [raw_best_auc, kg_best_auc, enhanced_best_auc])
-            },
-            'alignment_achieved': True,
-            'common_samples': common_sample_count
-        }
+        return all_results
 
     def print_kg_comparison_results(self, all_results, clinical_set_name, data_summary, statistical_results):
         """Print comprehensive KG comparison results"""
