@@ -2195,11 +2195,11 @@ class RealisticAnalysis:
         }
     def statistical_comparison_analysis(self, approaches):
         """
-        Paired stats με σωστή ευθυγράμμιση δειγμάτων.
-        Input: approaches = { name: {"y_true": ..., "y_prob": ..., "ids": optional} }
-        - Κρατάμε ΜΙΑ φορά τη στήλη y από την 1η προσέγγιση
-        - Για τις υπόλοιπες κρατάμε μόνο τις πιθανότητες, ώστε να μην υπάρχει overlap στη 'y'
-        - Υπολογίζουμε AUC ανά προσέγγιση, bootstrap ΔAUC και Wilcoxon σε CE διαφορές
+        Paired statistics σε κοινά δείγματα.
+        Input: approaches = {
+            name: {"y_true": list/np.array, "y_prob": list/np.array, "ids": optional list/np.array}
+        }
+        Επιστρέφει AUC ανά προσέγγιση + pairwise ΔAUC (bootstrap) + Wilcoxon σε Δ cross-entropy.
         """
         import numpy as np
         import pandas as pd
@@ -2209,15 +2209,15 @@ class RealisticAnalysis:
         print("\n📊 DETAILED STATISTICAL ANALYSIS (sample-level, paired):")
         print("="*70)
 
-        # ---- 1) Φτιάχνουμε DF βάσης (με y) από την 1η έγκυρη προσέγγιση ----
+        # 1) Φτιάξε base_df με y από την 1η έγκυρη προσέγγιση και *_prob για όλες
         base_df = None
-        order = []
         for name, payload in (approaches or {}).items():
-            if payload is None:
+            if not payload:
                 continue
             y_true = np.asarray(payload.get("y_true", []), dtype=float)
             y_prob = np.asarray(payload.get("y_prob", []), dtype=float)
             ids    = payload.get("ids", None)
+
             if y_true.size == 0 or y_prob.size == 0 or y_true.size != y_prob.size:
                 continue
             if ids is not None:
@@ -2227,23 +2227,16 @@ class RealisticAnalysis:
             index = ids if ids is not None else np.arange(y_true.size)
 
             if base_df is None:
-                # Βάση: Κρατάμε y + prob της πρώτης προσέγγισης
                 base_df = pd.DataFrame({"y": y_true, f"{name}_prob": y_prob}, index=index)
-                order.append(name)
             else:
-                # Επόμενες: μόνο prob για να αποφύγουμε διπλή 'y'
                 df_p = pd.DataFrame({f"{name}_prob": y_prob}, index=index)
                 base_df = pd.concat([base_df, df_p], axis=1, join="inner")
-                order.append(name)
 
         if base_df is None or base_df.shape[0] == 0:
             print("⚠️ Not enough approaches supplied (need ≥2).")
             return {"status": "insufficient", "reason": "less_than_two_approaches"}
 
-        # Πετάμε τυχόν NaN rows (ασφάλεια)
         base_df = base_df.dropna(axis=0, how="any")
-
-        # Χρειαζόμαστε τουλάχιστον 2 σειρές πιθανότητας
         prob_cols = [c for c in base_df.columns if c.endswith("_prob")]
         if len(prob_cols) < 2:
             print("⚠️ Less than two probability series remain after alignment.")
@@ -2251,7 +2244,7 @@ class RealisticAnalysis:
 
         y = base_df["y"].to_numpy()
 
-        # ---- 2) AUC ανά προσέγγιση ----
+        # 2) AUC ανά προσέγγιση
         aucs = {}
         for c in prob_cols:
             nm = c[:-5]  # strip "_prob"
@@ -2260,14 +2253,13 @@ class RealisticAnalysis:
             except Exception:
                 aucs[nm] = float("nan")
 
-        # ---- 3) Paired Bootstrap ΔAUC + Wilcoxon σε διαφορά CE ----
+        # helpers
         def paired_bootstrap_auc(y_true, p1, p2, B=2000, rs=1337):
             rng = np.random.default_rng(rs)
             n = y_true.shape[0]
             diffs = []
             for _ in range(B):
                 idx = rng.integers(0, n, size=n)
-                # σε rare resamples με μονοκλασικό y, roc_auc_score θα σκάσει — skip
                 try:
                     a1 = roc_auc_score(y_true[idx], p1[idx])
                     a2 = roc_auc_score(y_true[idx], p2[idx])
@@ -2286,6 +2278,7 @@ class RealisticAnalysis:
             p = np.clip(p, 1e-12, 1-1e-12)
             return -(y_true*np.log(p) + (1-y_true)*np.log(1-p))
 
+        # 3) Pairwise συγκρίσεις
         pairwise = {}
         names = [c[:-5] for c in prob_cols]
         for i in range(len(names)):
@@ -2312,7 +2305,6 @@ class RealisticAnalysis:
                     "n_common": int(base_df.shape[0]),
                 }
 
-        # ---- 4) Εκτύπωση ----
         if len(pairwise) == 0:
             print("⚠️ Insufficient valid pairs after alignment.")
             return {"status": "insufficient", "reason": "no_pairs_after_alignment"}
@@ -3602,46 +3594,32 @@ class RealisticAnalysis:
 
         # --------------------- 5) Statistics & Reporting --------------------------
         # (A) ΕΙΣΟΔΟΣ για statistical_comparison_analysis: απλό dict με y_true/y_prob
-        stat_inputs = {
-            "Raw": {
-                "y_true": raw_results["test"]["labels"],
-                "y_prob": raw_results["test"]["probs"],
-            },
-            "KG": {
-                "y_true": kg_results["test"]["labels"],
-                "y_prob": kg_results["test"]["probs"],
-            },
-        }
-        if enhanced_results is not None:
-            stat_inputs["Enhanced"] = {
-                "y_true": enhanced_results["test"]["labels"],
-                "y_prob": enhanced_results["test"]["probs"],
-            }
-        # -- IDs για ευθυγράμμιση (ίδια για όλα τα test sets)
+       # --------------------- 5) Statistics & Reporting --------------------------
+        # IDs για ευθυγράμμιση (ίδια σειρά για όλα τα test predictions)
         if "sample_index" in test_clean.columns:
             test_ids = test_clean["sample_index"].to_numpy()
         else:
-            # ασφαλές fallback
             test_ids = np.arange(len(y_test_raw))
 
-        # Βάλε τα ids στα results dicts
-        raw_results["ids"] = test_ids.tolist()
-        kg_results["ids"] = test_ids.tolist()
-        if enhanced_results is not None:
-            enhanced_results["ids"] = test_ids.tolist()
+        # Σιγουρέψου ότι υπάρχουν y_true/y_prob/ids σε όλα τα results
+        def _ensure_keys(res_dict, y_true_fallback, y_prob_fallback, ids_fallback):
+            if res_dict is None:
+                return None
+            out = dict(res_dict)  # shallow copy
+            out["y_true"] = list(out.get("y_true", y_true_fallback))
+            out["y_prob"] = list(out.get("y_prob", y_prob_fallback))
+            out["ids"]    = list(out.get("ids",    ids_fallback))
+            return out
 
-        # ...και εδώ φτιάχνεις τα stat_inputs:
+        raw_results = _ensure_keys(raw_results, y_test_raw.tolist(), y_prob_raw.tolist(), test_ids.tolist())
+        kg_results  = _ensure_keys(kg_results,  y_test_kg.tolist(),  y_prob_kg.tolist(),  test_ids.tolist())
+        if enhanced_results is not None:
+            enhanced_results = _ensure_keys(enhanced_results, y_test_raw.tolist(), y_prob_enh.tolist(), test_ids.tolist())
+
+        # (A) Inputs για statistical_comparison_analysis
         stat_inputs = {
-            "Raw": {
-                "y_true": raw_results["y_true"],
-                "y_prob": raw_results["y_prob"],
-                "ids":    raw_results["ids"],
-            },
-            "KG": {
-                "y_true": kg_results["y_true"],
-                "y_prob": kg_results["y_prob"],
-                "ids":    kg_results["ids"],
-            },
+            "Raw": {"y_true": raw_results["y_true"], "y_prob": raw_results["y_prob"], "ids": raw_results["ids"]},
+            "KG":  {"y_true": kg_results["y_true"],  "y_prob": kg_results["y_prob"],  "ids": kg_results["ids"]},
         }
         if enhanced_results is not None:
             stat_inputs["Enhanced"] = {
@@ -3649,9 +3627,10 @@ class RealisticAnalysis:
                 "y_prob": enhanced_results["y_prob"],
                 "ids":    enhanced_results["ids"],
             }
+
         statistical_results = self.statistical_comparison_analysis(stat_inputs)
 
-        # (B) ADAPTER για print_kg_comparison_results: δίνουμε το BEST μοντέλο κάθε προσέγγισης
+        # (B) ADAPTER για print_kg_comparison_results: πάρε τα BEST μοντέλα
         def _cv_stats(cv_dict, model_name):
             d = (cv_dict or {}).get(model_name, {})
             return (
@@ -3700,7 +3679,6 @@ class RealisticAnalysis:
                 }
             }
 
-        # (C) Εκτύπωση με το σωστό format (ΠΡΟΣΟΧΗ: ΔΕΝ περνάμε cv_* εδώ)
         self.print_kg_comparison_results(
             results_raw_for_print or {},
             results_kg_for_print or {},
@@ -3713,7 +3691,7 @@ class RealisticAnalysis:
             statistical_results=statistical_results
         )
 
-        # (D) Τελική επιστροφή (κρατάμε το πλούσιο dict για downstream χρήσεις)
+        # Τελική επιστροφή για downstream χρήσεις
         all_results = {
             "Raw Clinical Features": raw_results,
             "NeuroGait KG": kg_results,
