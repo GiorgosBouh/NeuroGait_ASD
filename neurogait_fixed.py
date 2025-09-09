@@ -476,6 +476,86 @@ class RealisticAnalysis:
 
         return mapped.astype(int)
 
+    def build_clinical_feature_sets(self, df):
+        """
+        Ορίζει 4 κλινικά σετ χαρακτηριστικών με βάση τις πραγματικές στήλες του CSV.
+        Επιστρέφει dict: {set_name: [feature1, feature2, ...]} μόνο με features που υπάρχουν στο df.
+        Αν κανένα σετ δεν έχει διαθέσιμα features, σηκώνει ValueError με ανάλυση.
+        """
+
+        # --- Υποψήφια features όπως συγχρονίστηκαν και από τον KG builder ---
+        # (Τα βάζουμε ονομαστικά και θα κρατήσουμε μόνο όσα υπάρχουν στο df)
+        combined_best_candidates = [
+            # Χρονικά χαρακτηριστικά βηματισμού
+            "GaCT", "StaT", "SwiT",
+            # Ταχύτητα
+            "Velocity",
+            # Γωνίες/μετρικά από log του KG builder
+            "mean HESHL", "mean SPELR", "mean SHWRL", "mean SHWRR",
+            "mean ELHAL", "mean THHAR", "mean SPKNL", "mean SPKNR", "mean HIANR",
+            # Σημεία αναφοράς κορμού/βάσης (υπάρχουν στο CSV σου)
+            "mean-x-Midspain", "mean-y-Midspain", "mean-z-Midspain",
+            "mean-x-SpineBase", "mean-y-SpineBase", "mean-z-SpineBase",
+        ]
+
+        gait_focused_candidates = [
+            "GaCT", "StaT", "SwiT", "Velocity",
+            # Αν υπάρχουν στο dataset σου πιο «κλασικά» (θα φιλτραριστούν αν λείπουν)
+            "step_length", "stride_width", "walking_speed"
+        ]
+
+        balance_stability_candidates = [
+            "mean-x-Midspain", "mean-y-Midspain", "mean-z-Midspain",
+            "mean-x-SpineBase", "mean-y-SpineBase", "mean-z-SpineBase",
+            # Σταθεροποίηση/ώμοι/αγκώνας αν υπάρχουν
+            "mean SHWRL", "mean SHWRR", "mean ELHAL"
+        ]
+
+        asd_specific_candidates = [
+            # Από το log: αυχενικά/ισχία/ωμοπλάτες-κλειδώσεις που διαφοροποιούνται σε ASD
+            "mean HESHL", "mean THHAR", "mean SPKNL", "mean SPKNR", "mean HIANR",
+            # Κρατάμε και ρυθμό κίνησης αν υπάρχει
+            "Velocity"
+        ]
+
+        # --- Κρατάμε μόνο όσα υπάρχουν όντως στο df ---
+        def keep_existing(cands):
+            return [c for c in cands if c in df.columns]
+
+        sets = {
+            "combined_best": keep_existing(combined_best_candidates),
+            "gait_focused": keep_existing(gait_focused_candidates),
+            "balance_stability": keep_existing(balance_stability_candidates),
+            "asd_specific": keep_existing(asd_specific_candidates),
+        }
+
+        # Πετάμε όσα σετ είναι άδεια
+        sets = {k: v for k, v in sets.items() if len(v) > 0}
+
+        if not sets:
+            # Δώσε αναλυτικό μήνυμα για debugging
+            missing_summary = {
+                "combined_best_missing": [c for c in combined_best_candidates if c not in df.columns],
+                "gait_focused_missing": [c for c in gait_focused_candidates if c not in df.columns],
+                "balance_stability_missing": [c for c in balance_stability_candidates if c not in df.columns],
+                "asd_specific_missing": [c for c in asd_specific_candidates if c not in df.columns],
+            }
+            raise ValueError(
+                "No clinical feature set has columns present in the dataset. "
+                f"Check column names. Missing summary: {missing_summary}"
+            )
+
+        # Προαιρετικό logging
+        if hasattr(self, "_log"):
+            for name, feats in sets.items():
+                self._log("info", f"🧩 Clinical set '{name}': {len(feats)} features found.")
+                if len(feats) > 0:
+                    self._log("info", "   " + ", ".join(feats[:12]) + ("" if len(feats) <= 12 else ", ..."))
+
+        return sets
+
+
+
     def load_and_prepare_data(self):
         """
         Φορτώνει το CSV με σωστό format (sep=';', decimal=','),
