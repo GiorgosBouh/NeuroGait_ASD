@@ -318,219 +318,157 @@ class RealisticAnalysis:
 
         return clinical_sets
 
-    def select_best_clinical_set(self, df, clinical_sets, train_indices):
-        """Quick evaluation to select best clinical feature set using only training data"""
-        print(f"\n🔍 EVALUATING CLINICAL FEATURE SETS (Training Data Only)")
+    def select_best_clinical_set(self, df, candidate_sets, diagnosis_col, train_indices):
+        """
+        Επιλογή του καλύτερου clinical feature set ΜΟΝΟ από τα train samples (χωρίς leakage).
+        Υποθέτουμε ότι το df έχει reset_index(drop=True) και ότι τα train_indices είναι
+        ΑΚΕΡΑΙΕΣ ΘΕΣΕΙΣ (0..N-1), όχι labels.
 
-        best_set_name = None
-        best_auc = 0
-        best_features = None
+        Επιστρέφει:
+        best_features (List[str]), best_set_name (str)
+        """
+        import numpy as np
+        from sklearn.model_selection import cross_val_score
+        from sklearn.ensemble import RandomForestClassifier
 
-        # Use only training data for feature set selection
-        train_df = df.iloc[train_indices]
+        # Επιλογή μόνο των training γραμμών ΜΕ iloc (ασφαλές γιατί train_indices είναι θέσεις)
+        train_df = df.iloc[train_indices].copy()
 
-        # CRITICAL FIX: Check if we have diagnosis variation in the full training data
-        train_diagnosis_counts = train_df['diagnosis'].value_counts()
-        print(
-            f"   📊 Training data diagnosis distribution: {dict(train_diagnosis_counts)}")
+        # Φτιάχνουμε X/y για κάθε υποψήφιο clinical set και μετράμε απόδοση με CV στο TRAIN
+        best_name, best_feats, best_score = None, None, -np.inf
 
-        if len(train_diagnosis_counts) < 2:
-            print(
-                f"   ⚠️ No diagnosis variation in training data. Using all available features.")
-            # Emergency fallback: use all available features from any set
-            all_available_features = []
-            for feature_set in clinical_sets.values():
-                all_available_features.extend(
-                    [f for f in feature_set if f in df.columns])
-
-            # Remove duplicates and take first 25 features
-            unique_features = list(dict.fromkeys(all_available_features))[:25]
-
-            if len(unique_features) < 5:
-                raise ValueError(
-                    "Insufficient features available in dataset. Check column names and data.")
-
-            return unique_features, "emergency_all_features"
-
-        for set_name, feature_set in clinical_sets.items():
-            available_features = [f for f in feature_set if f in df.columns]
-
-            if len(available_features) < 5:
-                print(
-                    f"   {set_name.replace('_', ' '):<18}: Too few features ({len(available_features)})")
+        for set_name, feat_list in candidate_sets.items():
+            # Κρατάμε μόνο τα features που όντως υπάρχουν
+            use_feats = [f for f in feat_list if f in train_df.columns]
+            if len(use_feats) == 0:
                 continue
 
-            # Use more training data and ensure we have both classes
-            test_df = train_df[available_features +
-                               ['participant_id', 'diagnosis']].dropna()
+            X = train_df[use_feats].values
+            y = train_df[diagnosis_col].values
 
-            # CRITICAL FIX: Ensure we have both classes in our test subset
-            if len(test_df) > 100:
-                # Take balanced sample if we have enough data
-                asd_samples = test_df[test_df['diagnosis'] == 1].head(100)
-                typical_samples = test_df[test_df['diagnosis'] == 0].head(100)
-                test_df = pd.concat([asd_samples, typical_samples]).sample(
-                    frac=1, random_state=42)
+            # Γρήγορος, σταθερός κριτής μόνο στο TRAIN για ranking των σετ (χωρίς tuning)
+            # (Μπορείς να αλλάξεις σε AUC κ.λπ. εφόσον είναι συνεπές και μόνο-train)
+            clf = RandomForestClassifier(
+                n_estimators=200,
+                max_depth=None,
+                random_state=self.random_state
+            )
 
-            if len(test_df) < 50:
-                print(
-                    f"   {set_name.replace('_', ' '):<18}: Insufficient data after cleaning ({len(test_df)} samples)")
-                continue
+            # Χρησιμοποιούμε 5-fold CV μόνο στο training
+            scores = cross_val_score(clf, X, y, cv=5, scoring="roc_auc")
+            score = float(np.mean(scores))
 
-            # Quick model test
-            X = test_df[available_features]
-            y = test_df['diagnosis']
+            if score > best_score:
+                best_score = score
+                best_feats = use_feats
+                best_name = set_name
 
-            # CRITICAL FIX: Check for class variation in this subset
-            unique_classes = np.unique(y)
-            if len(unique_classes) < 2:
-                print(
-                    f"   {set_name.replace('_', ' '):<18}: No class variation in subset")
-                continue
+        if best_feats is None:
+            raise RuntimeError("No valid clinical feature set could be evaluated on training data.")
 
-            print(
-                f"   {set_name.replace('_', ' '):<18}: Classes {dict(pd.Series(y).value_counts())}")
+        # Logging προαιρετικά
+        if hasattr(self, "_log"):
+            self._log("info", f"🧪 Best clinical set on TRAIN: {best_name} (mean CV AUC={best_score:.3f})")
+            self._log("info", f"   Selected {len(best_feats)} features.")
 
-            # Quick train-test split
-            try:
-                X_train, X_test, y_train, y_test = train_test_split(
-                    X, y, test_size=0.3, random_state=42, stratify=y
-                )
-            except ValueError as e:
-                print(
-                    f"   {set_name.replace('_', ' '):<18}: Split failed - {str(e)[:30]}")
-                continue
-
-            # Quick standardization and model
-            scaler = StandardScaler()
-            X_train_scaled = scaler.fit_transform(X_train)
-            X_test_scaled = scaler.transform(X_test)
-
-            lr = LogisticRegression(random_state=42, max_iter=1000, C=1.0)
-            lr.fit(X_train_scaled, y_train)
-            y_pred = lr.predict_proba(X_test_scaled)[:, 1]
-            auc = roc_auc_score(y_test, y_pred)
-
-            print(
-                f"   {set_name.replace('_', ' '):<18}: {len(available_features):2d} features, Quick AUC={auc:.3f}")
-
-            if auc > best_auc:
-                best_auc = auc
-                best_set_name = set_name
-                best_features = available_features
-
-        if best_features is None:
-            # EMERGENCY FALLBACK: Use any available features
-            print("   🚨 No feature set passed evaluation - using emergency fallback")
-            all_features = []
-            for feature_set in clinical_sets.values():
-                all_features.extend(
-                    [f for f in feature_set if f in df.columns])
-
-            unique_features = list(dict.fromkeys(all_features))
-
-            if len(unique_features) < 5:
-                raise ValueError(
-                    "Critical error: No usable features found. Check dataset columns and feature definitions.")
-
-            # Take first 20 unique features as emergency set
-            best_features = unique_features[:20]
-            best_set_name = "emergency_fallback"
-            best_auc = 0.5
-            print(
-                f"   🔧 Emergency fallback: {len(best_features)} features selected")
-
-        print(f"\n✅ SELECTED CLINICAL FEATURE SET:")
-        print(f"   Set: {best_set_name.replace('_', ' ').title()}")
-        print(f"   Features: {len(best_features)}")
-        print(f"   Estimated AUC: {best_auc:.3f}")
-
-        return best_features, best_set_name
+        return best_feats, best_name
 
     def load_and_prepare_data(self):
-        """Load data with proper clinical feature selection - CORRECTED VERSION"""
-        print("🔬 CORRECTED DATA LOADING - No Leakage Version")
-        print("="*80)
+        """
+        Φορτώνει το CSV, φτιάχνει/ελέγχει participant_id, κάνει participant-level split
+        με σταθερό random_state, και επιστρέφει ΟΜΟΡΦΟΠΟΙΗΜΕΝΑ:
+        - df (reset_index(drop=True))
+        - best_features, best_set_name (επιλογή μόνο από TRAIN)
+        - train_indices, test_indices (ΑΚΕΡΑΙΕΣ ΘΕΣΕΙΣ για iloc)
+        - train_sample_pids (λίστα participant_id των train δειγμάτων, με επαναλήψεις)
+        - test_pids (σύνολο/λίστα participant_id του TEST)
+        Όλες οι αποφάσεις που μπορεί να προκαλέσουν leakage (scalers, επιλογές κ.λπ.)
+        γίνονται ΜΟΝΟ στο train downstream.
+        """
+        import numpy as np
+        import pandas as pd
+        from sklearn.model_selection import train_test_split
 
-        # Load data
-        try:
-            df = pd.read_csv('Final dataset.csv', sep=';',
-                             decimal=',', encoding='utf-8')
-        except UnicodeDecodeError:
-            df = pd.read_csv('Final dataset.csv', sep=';',
-                             decimal=',', encoding='latin-1')
+        # --- 1) Φόρτωση δεδομένων ---
+        df = pd.read_csv(self.input_csv)
+        # Εξασφάλιση ότι η στήλη διάγνωσης υπάρχει
+        diagnosis_col = self.diagnosis_col if hasattr(self, "diagnosis_col") else "Class_ASD_Traits"
+        if diagnosis_col not in df.columns:
+            raise ValueError(f"Diagnosis column '{diagnosis_col}' not found in CSV.")
 
-        print(f"📊 Original dataset: {df.shape}")
+        # --- 2) Δημιουργία participant_id αν λείπει (ίδια λογική με KG builder) ---
+        samples_per_participant = getattr(self, "samples_per_participant", 8)
+        if "participant_id" not in df.columns:
+            # Στα 800 δείγματα με 8 δείγματα / συμμετέχοντα -> 100 participants
+            # Το κάνουμε deterministic όπως στο KG builder
+            df = df.copy()
+            df["participant_id"] = (np.arange(len(df)) // samples_per_participant).astype(int)
 
-        # Convert numeric columns
-        numeric_cols = [col for col in df.columns if col != 'class']
-        converted_features = []
+        # --- 3) Reset index ώστε ΟΛΕΣ οι επόμενες λίστες indices να είναι θέσεις (0..N-1) ---
+        df = df.reset_index(drop=True)
 
-        for col in numeric_cols:
-            try:
-                if df[col].dtype == 'object':
-                    converted_col = pd.to_numeric(df[col].astype(
-                        str).str.replace(',', '.'), errors='coerce')
-                    if not converted_col.isna().all() and converted_col.var() > 1e-10:
-                        df[col] = converted_col
-                        converted_features.append(col)
-                else:
-                    if df[col].var() > 1e-10:
-                        converted_features.append(col)
-            except:
-                continue
-
-        # CRITICAL FIX: Check if participant_id exists, DON'T overwrite
-        if 'participant_id' not in df.columns:
-            # Only create if missing
-            df['participant_id'] = (
-                df.index // self.samples_per_participant) + 1
-            print("⚠️ Created participant_id from scratch (not found in data)")
-        else:
-            print("✅ Using existing participant_id from dataset")
-
-        # Create stable sample IDs based on participant and row index
-        df['original_index'] = df.index
-        df['sample_id'] = df.apply(
-            lambda row: f"S_{row['participant_id']}_{row['original_index']}", axis=1)
-
-        # Map diagnosis
-        df['diagnosis'] = df['class'].map({'A': 1, 'T': 0})
-
-        # CRITICAL: Split BEFORE any feature selection or preprocessing
-        participant_info = df.groupby('participant_id')[
-            'diagnosis'].first().reset_index()
+        # --- 4) Participant-level split (χωρίς overlap) ---
+        # Παίρνουμε μοναδικούς participants και (προαιρετικά) stratify στο επίπεδο participant
+        participants = df["participant_id"].unique()
+        # Για πιθανό stratify, υπολογίζουμε label ανά participant από το πλειοψηφικό label στα samples του
+        pid_labels = (
+            df.groupby("participant_id")[diagnosis_col]
+            .mean()
+            .round()
+            .astype(int)
+            .reindex(participants)
+            .values
+        )
 
         train_pids, test_pids = train_test_split(
-            participant_info['participant_id'].values,
-            test_size=0.25,
-            stratify=participant_info['diagnosis'].values,
-            random_state=self.random_state
+            participants,
+            test_size=self.test_size if hasattr(self, "test_size") else 0.25,
+            random_state=self.random_state if hasattr(self, "random_state") else 42,
+            stratify=pid_labels
         )
 
-        # Store original indices for each split
-        train_mask = df['participant_id'].isin(train_pids)
-        test_mask = df['participant_id'].isin(test_pids)
+        # --- 5) Φτιάχνουμε boolean masks σε επίπεδο δειγμάτων ---
+        train_mask = df["participant_id"].isin(train_pids).values
+        test_mask  = df["participant_id"].isin(test_pids).values
 
-        train_indices = df[train_mask].index.tolist()
-        test_indices = df[test_mask].index.tolist()
+        # --- 6) Μετατρέπουμε σε ΑΚΕΡΑΙΕΣ ΘΕΣΕΙΣ για χρήση με iloc ΠΑΝΤΟΥ ---
+        train_indices = np.where(train_mask)[0].tolist()
+        test_indices  = np.where(test_mask)[0].tolist()
 
-        # CRITICAL: Get clinical features using ONLY training data
-        train_only_df = df[train_mask].copy()
-        clinical_sets = self.get_clinical_features(converted_features)
+        # Προαιρετικό logging
+        if hasattr(self, "_log"):
+            n_part = len(participants)
+            n_train_p = len(train_pids)
+            n_test_p = len(test_pids)
+            self._log("info", f"📦 Participants total: {n_part} | train: {n_train_p} | test: {n_test_p}")
+            self._log("info", f"   Samples -> train: {len(train_indices)}  test: {len(test_indices)}")
+            self._log("info", f"   Participant overlap: {len(set(train_pids) & set(test_pids))}")
 
-        # Select best features using ONLY training data
+        # --- 7) Ορισμός των clinical candidate sets (όπως ήδη κάνεις upstream) ---
+        candidate_sets = self.build_clinical_feature_sets(df)
+
+        # --- 8) Επιλογή ΚΑΛΥΤΕΡΟΥ clinical set ΜΟΝΟ από TRAIN (χωρίς leakage) ---
         best_features, best_set_name = self.select_best_clinical_set(
-            train_only_df, clinical_sets, train_indices
+            df=df,
+            candidate_sets=candidate_sets,
+            diagnosis_col=diagnosis_col,
+            train_indices=train_indices  # ΘΕΣΕΙΣ: ασφαλές για iloc
         )
 
-        print(
-            f"✅ Using {len(best_features)} clinical features from {best_set_name}")
+        # --- 9) Επιστροφές για downstream pipelines ---
+        # train_sample_pids: participant_ids των train δειγμάτων (με επαναλήψεις κατά δείγμα)
+        train_sample_pids = df.loc[train_indices, "participant_id"].tolist()
 
-        # Get sample-level participant IDs for training data
-        train_sample_pids = df.loc[train_indices, 'participant_id'].values
+        return (
+            df,
+            best_features,
+            best_set_name,
+            train_indices,
+            test_indices,
+            train_sample_pids,
+            list(test_pids)
+        )
 
-        return df, best_features, best_set_name, train_indices, test_indices, train_sample_pids, test_pids
 
     def create_preprocessing_pipeline(self, features):
         """Create a preprocessing pipeline to prevent data leakage"""
