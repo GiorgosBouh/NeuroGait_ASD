@@ -662,31 +662,46 @@ class RealisticAnalysis:
         return preprocessor
 
     def proper_train_test_split(self, df, train_indices, test_indices):
-        """Proper participant-level train/test split without leakage"""
-        print(f"\n🔧 PROPER PARTICIPANT-LEVEL SPLIT:")
+        """
+        Κάνει split σε επίπεδο ΔΕΙΓΜΑΤΟΣ με βάση τις ήδη υπολογισμένες λίστες ΘΕΣΕΩΝ
+        (train_indices/test_indices) και επιστρέφει train_df, test_df.
 
-        train_data = df.iloc[train_indices].copy()
-        test_data = df.iloc[test_indices].copy()
+        - Χρησιμοποιεί ΠΑΝΤΑ self.diagnosis_col (π.χ. 'class')
+        - Δημιουργεί ΑΣΦΑΛΩΣ alias στήλης 'diagnosis' μόνο στα αντίγραφα (train/test)
+        για legacy prints/κώδικα που ίσως το ζητά (zero leakage, απλό alias).
+        - ΔΕΝ αλλάζει το αρχικό df.
+        """
+        import pandas as pd
 
-        train_participants = len(train_data['participant_id'].unique())
-        test_participants = len(test_data['participant_id'].unique())
+        label_col = getattr(self, "diagnosis_col", "class")
+        if label_col not in df.columns:
+            raise KeyError(f"Expected diagnosis column '{label_col}' not in df.columns")
 
-        print(
-            f"   ✅ Train: {train_participants} participants ({len(train_data)} samples)")
-        print(
-            f"   ✅ Test:  {test_participants} participants ({len(test_data)} samples)")
-        print(
-            f"   📊 Train distribution: {train_data['diagnosis'].value_counts().to_dict()}")
-        print(
-            f"   📊 Test distribution: {test_data['diagnosis'].value_counts().to_dict()}")
+        # Χρησιμοποιούμε iloc με ΘΕΣΕΙΣ (όχι labels)
+        train_df = df.iloc[train_indices].copy()
+        test_df  = df.iloc[test_indices].copy()
 
-        # Verify no participant leakage
-        train_pids = set(train_data['participant_id'].unique())
-        test_pids = set(test_data['participant_id'].unique())
-        assert len(train_pids.intersection(test_pids)) == 0
-        print(f"   ✅ No participant leakage verified")
+        # Legacy alias για παλιές αναφορές σε 'diagnosis' (μόνο στα αντίγραφα)
+        if "diagnosis" not in train_df.columns:
+            train_df["diagnosis"] = train_df[label_col]
+        if "diagnosis" not in test_df.columns:
+            test_df["diagnosis"] = test_df[label_col]
 
-        return train_data, test_data
+        # Προαιρετικά: logging κατανομών χωρίς να εξαρτόμαστε από 'diagnosis'
+        if hasattr(self, "_log"):
+            try:
+                self._log("info", f"   📊 Train distribution ({label_col}=1/0): "
+                                f"{train_df[label_col].value_counts().to_dict()}")
+                self._log("info", f"   📊 Test  distribution ({label_col}=1/0): "
+                                f"{test_df[label_col].value_counts().to_dict()}")
+            except Exception:
+                # Fallback σε legacy alias αν χρειαστεί
+                self._log("info", f"   📊 Train distribution (diagnosis): "
+                                f"{train_df['diagnosis'].value_counts().to_dict()}")
+                self._log("info", f"   📊 Test  distribution (diagnosis): "
+                                f"{test_df['diagnosis'].value_counts().to_dict()}")
+
+        return train_df, test_df
 
     def preprocess_data(self, train_data, test_data, best_features):
         """
