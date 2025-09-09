@@ -3232,7 +3232,7 @@ class RealisticAnalysis:
             train_participants=len(set(train_pids)),
             test_participants=len(set(test_pids)),
             original_features=len(best_features),
-            selected_features=len(selected_features)
+            selected_features=len(selected_features),
             statistical_results=statistical_results
         )
 
