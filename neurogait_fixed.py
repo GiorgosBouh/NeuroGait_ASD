@@ -882,6 +882,77 @@ class RealisticAnalysis:
             list(test_pids)
         )
 
+    def _fit_best_and_eval_on_holdout(
+        self, best_name, 
+        X_train, y_train, 
+        X_test, y_test
+    ):
+        """
+        Εκπαιδεύει από την αρχή το καλύτερο μοντέλο (με default params όπως στα CV runs)
+        πάνω σε ΟΛΟ το train και αξιολογεί στο σταθερό test set.
+        Επιστρέφει dict με auc,f1,acc,y_true,y_prob,y_pred που χρειάζονται downstream.
+        """
+        from sklearn.metrics import roc_auc_score, f1_score, accuracy_score
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.ensemble import RandomForestClassifier
+        from sklearn.svm import SVC
+        try:
+            from xgboost import XGBClassifier
+            _has_xgb = True
+        except Exception:
+            _has_xgb = False
+
+        # Διάλεξε μοντέλο από το όνομα
+        name = (best_name or "").lower()
+        if "logistic" in name:
+            clf = LogisticRegression(max_iter=1000, class_weight="balanced")
+        elif "random" in name or "forest" in name:
+            clf = RandomForestClassifier(n_estimators=400, random_state=42, n_jobs=-1, class_weight=None)
+        elif "xgb" in name or "xgboost" in name:
+            if not _has_xgb:
+                # fallback αν δεν υπάρχει xgboost
+                clf = RandomForestClassifier(n_estimators=400, random_state=42, n_jobs=-1)
+            else:
+                clf = XGBClassifier(
+                    n_estimators=400, max_depth=4, learning_rate=0.05,
+                    subsample=0.9, colsample_bytree=0.9, reg_lambda=1.0,
+                    random_state=42, n_jobs=-1, eval_metric="logloss"
+                )
+        else:
+            # default σε SVM (probability για AUC)
+            clf = SVC(kernel="rbf", probability=True, class_weight="balanced", random_state=42)
+
+        # Fit στο full train
+        clf.fit(X_train, y_train)
+
+        # Probabilities (ή decision function) για AUC
+        if hasattr(clf, "predict_proba"):
+            y_prob = clf.predict_proba(X_test)[:, 1]
+        elif hasattr(clf, "decision_function"):
+            from sklearn.preprocessing import MinMaxScaler
+            y_dec = clf.decision_function(X_test)
+            # scale σε [0,1] για να συμπεριφερθεί σαν prob (για AUC δεν είναι απαραίτητο, αλλά βολεύει downstream)
+            y_prob = MinMaxScaler().fit_transform(y_dec.reshape(-1,1)).ravel()
+        else:
+            # Τελευταίο fallback: predict -> {0,1}
+            y_prob = clf.predict(X_test).astype(float)
+
+        y_pred = (y_prob >= 0.5).astype(int)
+        auc = roc_auc_score(y_test, y_prob)
+        f1 = f1_score(y_test, y_pred)
+        acc = accuracy_score(y_test, y_pred)
+
+        return {
+            "auc": float(auc),
+            "f1": float(f1),
+            "acc": float(acc),
+            "y_true": y_test.astype(int),
+            "y_prob": y_prob.astype(float),
+            "y_pred": y_pred.astype(int),
+            "best_model_name": best_name
+        }
+
+
     def create_preprocessing_pipeline(self, features):
         """Create a preprocessing pipeline to prevent data leakage"""
         numeric_transformer = Pipeline(steps=[
@@ -2988,7 +3059,7 @@ class RealisticAnalysis:
         Uses Grouped CV (per participant) and scaling inside the CV pipeline.
         """
 
-        # --------------------- Helper closures (όπως τα έχεις) ---------------------
+        # --------------------- Helper closures ---------------------
         def _ensure_kg_builder_local():
             """Ensure KG builder exists and is properly connected"""
             if getattr(self, "kg_builder", None) is not None:
@@ -3030,21 +3101,6 @@ class RealisticAnalysis:
                 session.run("RETURN 1")
             print("   ✅ KG builder connected successfully")
 
-        def _ensure_ad_hoc_driver():
-            """Ensure Neo4j driver for queries"""
-            if getattr(self, "_ad_hoc_driver", None) is not None:
-                return
-            uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-            user = os.getenv("NEO4J_USER", "neo4j")
-            pwd = os.getenv("NEO4J_PASSWORD", "palatiou")
-            self._ad_hoc_driver = GraphDatabase.driver(uri, auth=(user, pwd))
-            self._ad_hoc_database = os.getenv("NEO4J_DATABASE", "neo4j")
-
-        def _get_neo4j_session():
-            """Get Neo4j session"""
-            _ensure_ad_hoc_driver()
-            return self._ad_hoc_driver.session(database=getattr(self, "_ad_hoc_database", "neo4j"))
-
         def validate_no_data_leakage_comprehensive(train_data, test_data, train_pids, test_pids):
             """Comprehensive validation to ensure no data leakage"""
             print("\n🔍 COMPREHENSIVE DATA LEAKAGE VALIDATION:")
@@ -3056,7 +3112,7 @@ class RealisticAnalysis:
             if pid_overlap:
                 errors.append(f"Participant overlap: {pid_overlap}")
 
-            # 2) Sample ID overlap
+            # 2) Sample ID overlap (αν υπάρχει)
             if 'sample_id' in train_data.columns and 'sample_id' in test_data.columns:
                 sid_overlap = set(train_data['sample_id']) & set(test_data['sample_id'])
                 print(f"   2. Sample ID overlap: {len(sid_overlap)}")
@@ -3091,16 +3147,23 @@ class RealisticAnalysis:
         df, best_features, best_set_name, train_indices, test_indices, train_pids, test_pids = self.load_and_prepare_data()
         train_data, test_data = self.proper_train_test_split(df, train_indices, test_indices)
 
-        # Safety: keep a reference for later
+        # Keep for downstream alignment
         self._df_source = df
 
         # --------------------- 1) Preprocess (fit on train ONLY) -------------------
         train_clean, test_clean, clean_features = self.preprocess_data(train_data, test_data, best_features)
 
-        # Labels από το σωστό column (π.χ. 'class' → 1/0)
+        # Label column (binary) από 'class' A/T
         diag_col = getattr(self, "diagnosis_col", "class")
-        y_train_raw = train_clean[diag_col].to_numpy().astype(int)
-        y_test_raw  = test_clean[diag_col].to_numpy().astype(int)
+        if diag_col not in train_clean.columns or diag_col not in test_clean.columns:
+            raise KeyError(f"Diagnosis column '{diag_col}' not present after preprocessing")
+        # Map A/T -> 1/0 αν χρειαστεί
+        def _to01(v):
+            if isinstance(v, str):
+                return 1 if v.strip().upper() == "A" else 0
+            return int(v)
+        y_train_raw = np.array([_to01(v) for v in train_clean[diag_col].to_numpy()])
+        y_test_raw  = np.array([_to01(v) for v in test_clean[diag_col].to_numpy()])
 
         # Συντηρητική επιλογή χαρακτηριστικών (TRAIN only)
         X_train_raw, X_test_raw, selected_features = self.optimized_feature_selection(
@@ -3113,7 +3176,7 @@ class RealisticAnalysis:
         print(f"   Participant overlap: {len(set(train_pids)&set(test_pids))}")
         print(f"🩺 Diagnosis column: '{diag_col}' (A/T → 1/0)")
 
-        # Leakage sanity check σε επίπεδο split
+        # Leakage sanity check
         validate_no_data_leakage_comprehensive(train_clean, test_clean, train_pids, test_pids)
 
         # --------------------- 2) TIER 1: RAW (Grouped CV) ------------------------
@@ -3130,6 +3193,7 @@ class RealisticAnalysis:
         )
 
         from sklearn.metrics import roc_auc_score, f1_score, accuracy_score
+        # Hold-out test για RAW
         if hasattr(best_est_raw.named_steps["clf"], "predict_proba"):
             y_prob_raw = best_est_raw.predict_proba(X_test_raw)[:, 1]
         else:
@@ -3143,7 +3207,9 @@ class RealisticAnalysis:
                 "f1":  float(f1_score(y_test_raw, y_pred_raw)),
                 "acc": float(accuracy_score(y_test_raw, y_pred_raw)),
                 "best_model": best_name_raw
-            }
+            },
+            "y_true": y_test_raw.tolist(),
+            "y_prob": y_prob_raw.tolist()
         }
 
         # --------------------- 3) TIER 2: KG (Neo4j) ------------------------------
@@ -3162,6 +3228,8 @@ class RealisticAnalysis:
             X_train_kg, y_train_kg, train_indices, df,
             approach_name=": NeuroGait KG (grouped by participant)"
         )
+
+        # Hold-out test για KG
         if hasattr(best_est_kg.named_steps["clf"], "predict_proba"):
             y_prob_kg = best_est_kg.predict_proba(X_test_kg)[:, 1]
         else:
@@ -3175,7 +3243,9 @@ class RealisticAnalysis:
                 "f1":  float(f1_score(y_test_kg, y_pred_kg)),
                 "acc": float(accuracy_score(y_test_kg, y_pred_kg)),
                 "best_model": best_name_kg
-            }
+            },
+            "y_true": y_test_kg.tolist(),
+            "y_prob": y_prob_kg.tolist()
         }
 
         # --------------------- 4) TIER 3: Enhanced Features -----------------------
@@ -3183,6 +3253,7 @@ class RealisticAnalysis:
         print("🔥 TIER 3: ENHANCED FEATURES (Grouped CV)")
         print(f"{'='*50}")
 
+        enhanced_results = None
         try:
             X_train_enh, X_test_enh = self.create_enhanced_features_embeddings(
                 train_data, test_data, selected_features
@@ -3194,6 +3265,8 @@ class RealisticAnalysis:
                 X_train_enh, y_train_enh, train_indices, df,
                 approach_name=": Enhanced Features (grouped by participant)"
             )
+
+            # Hold-out test για Enhanced
             if hasattr(best_est_enh.named_steps["clf"], "predict_proba"):
                 y_prob_enh = best_est_enh.predict_proba(X_test_enh)[:, 1]
             else:
@@ -3207,13 +3280,16 @@ class RealisticAnalysis:
                     "f1":  float(f1_score(y_test_enh, y_pred_enh)),
                     "acc": float(accuracy_score(y_test_enh, y_pred_enh)),
                     "best_model": best_name_enh
-                }
+                },
+                "y_true": y_test_enh.tolist(),
+                "y_prob": y_prob_enh.tolist()
             }
         except Exception as e:
             print(f"❌ Enhanced features creation failed: {e}")
             enhanced_results = None
 
         # --------------------- 5) Statistics & Reporting --------------------------
+        # Συγκεντρωτικά για στατιστική σύγκριση
         all_results = {
             "Raw Clinical Features": raw_results,
             "NeuroGait KG": kg_results
@@ -3221,13 +3297,14 @@ class RealisticAnalysis:
         if enhanced_results is not None:
             all_results["Enhanced Features"] = enhanced_results
 
-        # Ευθυγράμμιση και στατιστική σύγκριση (όπως ήδη κάνεις)
+        # Ευθυγράμμιση & στατιστική σύγκριση (χρησιμοποιεί y_true/y_prob)
         statistical_results = self.statistical_comparison_analysis(all_results)
 
+        # Εκτύπωση με την υπογραφή που ζήτησες (3 dicts + kwargs)
         self.print_kg_comparison_results(
-            cv_results_raw or {},
-            cv_results_kg or {},
-            cv_results_enh or {},
+            raw_results or {},
+            kg_results or {},
+            enhanced_results or {},
             clinical_set_name=best_set_name,
             train_participants=len(set(train_pids)),
             test_participants=len(set(test_pids)),
@@ -3237,147 +3314,6 @@ class RealisticAnalysis:
         )
 
         return all_results
-    
-
-        print("🎯 COMPREHENSIVE KG COMPARISON RESULTS")
-        print("="*80)
-
-        # CONTEXT
-        print("🏥 ANALYSIS CONTEXT:")
-        print(f"   Feature Set: {clinical_set_name.replace('_', ' ').title()}")
-        print(
-            f"   Train/Test: {data_summary['train_participants']} / {data_summary['test_participants']} participants")
-        print(
-            f"   Features: {data_summary['original_features']} → {data_summary['selected_features']} selected")
-
-        # PERFORMANCE SUMMARY BY APPROACH
-        print("\n📊 PERFORMANCE SUMMARY BY APPROACH:")
-        print("-" * 80)
-
-        approach_summaries = {}
-        best_overall_auc = 0
-        best_overall_approach = ""
-        best_overall_model = ""
-
-        for approach_name, results in all_results.items():
-            print(f"\n{approach_name}:")
-
-            approach_aucs = []
-            approach_best = {"model": "", "auc": 0}
-
-            for model_name, metrics in results.items():
-                auc = metrics['auc']
-                f1 = metrics['f1']
-                cv_mean = metrics['cv_mean']
-                cv_std = metrics['cv_std']
-
-                approach_aucs.append(auc)
-
-                # Performance assessment
-                if auc > 0.8:
-                    status = "🎉 Excellent"
-                elif auc > 0.7:
-                    status = "✅ Good"
-                elif auc > 0.6:
-                    status = "⚖️ Moderate"
-                else:
-                    status = "📋 Limited"
-
-                cv_info = f"CV={cv_mean:.3f}±{cv_std:.3f}" if metrics['cv_scores'] else "CV=N/A"
-                print(
-                    f"   {model_name:<20}: {status} AUC={auc:.3f}, F1={f1:.3f}, {cv_info}")
-
-                if auc > approach_best["auc"]:
-                    approach_best["model"] = model_name
-                    approach_best["auc"] = auc
-
-                if auc > best_overall_auc:
-                    best_overall_auc = auc
-                    best_overall_approach = approach_name
-                    best_overall_model = model_name
-
-            approach_summaries[approach_name] = {
-                "mean_auc": np.mean(approach_aucs),
-                "std_auc": np.std(approach_aucs),
-                "best_model": approach_best["model"],
-                "best_auc": approach_best["auc"]
-            }
-
-        # APPROACH COMPARISON
-        print("\n📈 APPROACH COMPARISON (Best Model per Approach):")
-        print("-" * 70)
-
-        sorted_approaches = sorted(approach_summaries.items(),
-                                   key=lambda x: x[1]["best_auc"],
-                                   reverse=True)
-
-        for rank, (approach, summary) in enumerate(sorted_approaches, 1):
-            emoji = "🏆" if rank == 1 else "🥈" if rank == 2 else "🥉" if rank == 3 else "  "
-            print(
-                f"{emoji} #{rank}: {approach:<25} AUC={summary['best_auc']:.3f} ({summary['best_model']})")
-
-        # STATISTICAL COMPARISON
-        print("\n📊 STATISTICAL COMPARISON:")
-        print("="*70)
-
-        if statistical_results:
-            print("Statistical comparison results:")
-            for comp, res in statistical_results.items():
-                ci = res['auc_ci']
-                corrected_p = res.get('corrected_p_value', 'N/A')
-                sig = "✅" if res.get(
-                    'significant_after_correction', False) else "📋"
-                print(
-                    f"{comp:<35}: ΔAUC={res['auc_diff']:+.3f} [{ci[0]:.3f},{ci[1]:.3f}], p={res['p_value']:.4f}, corrected_p={corrected_p:.4f} {sig}")
-        else:
-            print("No statistical results available")
-
-        print("="*70)
-
-        # WINNER DECLARATION
-        print(f"\n🏆 OVERALL WINNER:")
-        print(f"   Approach: {best_overall_approach}")
-        print(f"   Model: {best_overall_model}")
-        print(f"   AUC: {best_overall_auc:.3f}")
-
-        # CLINICAL INTERPRETATION
-        print(f"\n🏥 CLINICAL INTERPRETATION:")
-        if best_overall_auc > 0.8:
-            clinical_utility = "🎉 EXCELLENT - High clinical utility for ASD screening"
-            recommendation = "Suitable for clinical decision support with validation"
-        elif best_overall_auc > 0.7:
-            clinical_utility = "✅ GOOD - Meaningful clinical utility"
-            recommendation = "Promising for clinical applications"
-        elif best_overall_auc > 0.6:
-            clinical_utility = "⚖️ MODERATE - Limited clinical utility"
-            recommendation = "May be useful as supplementary tool"
-        else:
-            clinical_utility = "📋 LIMITED - Insufficient for clinical use"
-            recommendation = "Requires significant improvement"
-
-        print(f"   Assessment: {clinical_utility}")
-        print(f"   Recommendation: {recommendation}")
-
-        # METHOD INSIGHTS
-        print(f"\n💡 METHOD INSIGHTS:")
-        raw_auc = approach_summaries.get(
-            "Raw Clinical Features", {}).get("best_auc", 0)
-        kg_auc = approach_summaries.get("NeuroGait KG", {}).get("best_auc", 0)
-        enhanced_auc = approach_summaries.get(
-            "Enhanced Features", {}).get("best_auc", 0)
-
-        if kg_auc > raw_auc + 0.02:
-            print("   ✅ NeuroGait KG embeddings enhance clinical features")
-            print("   → Graph structure captures valuable relationships")
-        elif enhanced_auc > raw_auc + 0.02:
-            print("   ✅ Enhanced features improve upon raw clinical data")
-            print("   → Domain knowledge engineering provides benefits")
-        elif abs(kg_auc - raw_auc) < 0.02 and abs(enhanced_auc - raw_auc) < 0.02:
-            print("   ⚖️ All approaches perform similarly")
-            print("   → Clinical features already well-informative")
-        else:
-            print("   📋 Raw clinical features remain competitive")
-            print("   → Simple approaches may be sufficient")
 
 
     def print_kg_comparison_results(self, results_raw, results_kg, results_enh, **context):
@@ -3941,6 +3877,153 @@ class RealisticAnalysis:
         train_pids_aligned = [int(s.split("_")[1]) for s in train_sids]
 
         return X_train_kg, X_test_kg, y_train_aligned, y_test_aligned, train_pids_aligned
+
+    def finalize_kg_comparison(
+        self,
+        *,
+        # δεδομένα RAW
+        X_train_raw, X_test_raw,
+        # δεδομένα KG
+        X_train_kg=None, X_test_kg=None,
+        # δεδομένα ENH
+        X_train_enh=None, X_test_enh=None,
+        # labels & meta
+        y_train, y_test,
+        best_set_name: str,
+        train_pids, test_pids,
+        best_features, selected_features,
+        # CV αποτελέσματα για να πάρουμε το "best_by_cv_name"
+        cv_results_raw: dict | None = None,
+        cv_results_kg: dict | None = None,
+        cv_results_enh: dict | None = None,
+    ):
+        """
+        Μετά τα grouped-CV blocks:
+        - Εκπαιδεύει το καλύτερο μοντέλο (ανά προσέγγιση) στο full train.
+        - Αξιολογεί στο hold-out test.
+        - Φτιάχνει all_results και (αν γίνεται) τρέχει στατιστική σύγκριση.
+        - Καλεί print_kg_comparison_results(...) με την "νέα" signature:
+            print_kg_comparison_results(all_results, clinical_set_name=..., data_summary=..., statistical_results=...)
+        Επιστρέφει το all_results.
+        """
+
+        # --- Helper: αν λείπει best_by_cv_name, διάλεξε κάτι λογικό ---
+        def _pick_best_name(cv_dict: dict | None) -> str:
+            if not isinstance(cv_dict, dict):
+                return "Random Forest"
+            name = cv_dict.get("best_by_cv_name")
+            if isinstance(name, str) and len(name.strip()) > 0:
+                return name
+            # fallback με προτεραιότητα (συχνά ο RF είναι σταθερός)
+            return "Random Forest"
+
+        # --- Helper: fit & eval στο hold-out (όπως συμφωνήσαμε) ---
+        def _fit_best_and_eval(best_name, X_tr, y_tr, X_te, y_te):
+            from sklearn.metrics import roc_auc_score, f1_score, accuracy_score
+            from sklearn.linear_model import LogisticRegression
+            from sklearn.ensemble import RandomForestClassifier
+            from sklearn.svm import SVC
+            try:
+                from xgboost import XGBClassifier
+                _has_xgb = True
+            except Exception:
+                _has_xgb = False
+
+            bn = (best_name or "").lower()
+            if "logistic" in bn:
+                clf = LogisticRegression(max_iter=1000, class_weight="balanced")
+            elif "random" in bn or "forest" in bn:
+                clf = RandomForestClassifier(n_estimators=400, random_state=42, n_jobs=-1)
+            elif "xgb" in bn or "xgboost" in bn:
+                if _has_xgb:
+                    clf = XGBClassifier(
+                        n_estimators=400, max_depth=4, learning_rate=0.05,
+                        subsample=0.9, colsample_bytree=0.9, reg_lambda=1.0,
+                        random_state=42, n_jobs=-1, eval_metric="logloss"
+                    )
+                else:
+                    clf = RandomForestClassifier(n_estimators=400, random_state=42, n_jobs=-1)
+            else:
+                clf = SVC(kernel="rbf", probability=True, class_weight="balanced", random_state=42)
+
+            clf.fit(X_tr, y_tr)
+
+            if hasattr(clf, "predict_proba"):
+                y_prob = clf.predict_proba(X_te)[:, 1]
+            elif hasattr(clf, "decision_function"):
+                from sklearn.preprocessing import MinMaxScaler
+                y_dec = clf.decision_function(X_te)
+                y_prob = MinMaxScaler().fit_transform(y_dec.reshape(-1, 1)).ravel()
+            else:
+                y_prob = clf.predict(X_te).astype(float)
+
+            y_pred = (y_prob >= 0.5).astype(int)
+
+            return {
+                "auc": float(roc_auc_score(y_te, y_prob)),
+                "f1": float(f1_score(y_te, y_pred)),
+                "acc": float(accuracy_score(y_te, y_pred)),
+                "y_true": y_te.astype(int),
+                "y_prob": y_prob.astype(float),
+                "y_pred": y_pred.astype(int),
+                "best_model_name": best_name
+            }
+
+        # --- Χτίσε hold-out αποτελέσματα ανά προσέγγιση ---
+        results_raw = _fit_best_and_eval(
+            _pick_best_name(cv_results_raw), X_train_raw, y_train, X_test_raw, y_test
+        )
+
+        results_kg = None
+        if X_train_kg is not None and X_test_kg is not None:
+            results_kg = _fit_best_and_eval(
+                _pick_best_name(cv_results_kg), X_train_kg, y_train, X_test_kg, y_test
+            )
+
+        results_enh = None
+        if X_train_enh is not None and X_test_enh is not None:
+            results_enh = _fit_best_and_eval(
+                _pick_best_name(cv_results_enh), X_train_enh, y_train, X_test_enh, y_test
+            )
+
+        # --- Συγκεντρωτικό dict για print/analysis ---
+        all_results = {
+            "raw": results_raw,
+            "kg": results_kg,
+            "enhanced": results_enh
+        }
+
+        # --- Στατιστική σύγκριση ΜΟΝΟ αν έχουμε ≥ 2 valid approaches με y_true/y_prob ---
+        valid = {k: v for k, v in all_results.items() if isinstance(v, dict) and "y_true" in v and "y_prob" in v}
+        if len(valid) >= 2:
+            stat_input = {}
+            if results_raw is not None:    stat_input["Raw Clinical Features"] = results_raw
+            if results_kg is not None:     stat_input["NeuroGait KG"] = results_kg
+            if results_enh is not None:    stat_input["Enhanced Features"] = results_enh
+            statistical_results = self.statistical_comparison_analysis(stat_input)
+        else:
+            print("\n📊 DETAILED STATISTICAL ANALYSIS (sample-level, paired):")
+            print("="*70)
+            print("⚠️ Insufficient valid approaches for statistical comparison")
+            statistical_results = None
+
+        # --- Πίνακας/σύνοψη ---
+        self.print_kg_comparison_results(
+            all_results,
+            clinical_set_name=best_set_name,
+            data_summary={
+                "train_participants": len(set(train_pids)),
+                "test_participants": len(set(test_pids)),
+                "train_samples": int(X_train_raw.shape[0]),
+                "test_samples": int(X_test_raw.shape[0]),
+                "original_features": len(best_features),
+                "selected_features": len(selected_features)
+            },
+            statistical_results=statistical_results
+        )
+
+        return all_results
+
 
 
 def main():
