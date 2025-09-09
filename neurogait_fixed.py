@@ -3658,6 +3658,10 @@ class RealisticAnalysis:
                 "cv_scores": list(raw_cv_scores),
             }
         }
+        # aliases για συμβατότητα με printer που κοιτάει κεφαλαία:
+        results_raw_for_print[best_raw_name]["AUC"] = results_raw_for_print[best_raw_name]["auc"]
+        results_raw_for_print[best_raw_name]["F1"]  = results_raw_for_print[best_raw_name]["f1"]
+        results_raw_for_print[best_raw_name]["ACC"] = results_raw_for_print[best_raw_name]["acc"]
         results_kg_for_print = {
             best_kg_name: {
                 "auc": kg_results["test"]["auc"],
@@ -3667,6 +3671,12 @@ class RealisticAnalysis:
                 "cv_scores": list(kg_cv_scores),
             }
         }
+
+        results_kg_for_print[best_kg_name]["AUC"] = results_kg_for_print[best_kg_name]["auc"]
+        results_kg_for_print[best_kg_name]["F1"]  = results_kg_for_print[best_kg_name]["f1"]
+        results_kg_for_print[best_kg_name]["ACC"] = results_kg_for_print[best_kg_name]["acc"]
+
+
         results_enh_for_print = {}
         if enhanced_results is not None:
             results_enh_for_print = {
@@ -3678,6 +3688,9 @@ class RealisticAnalysis:
                     "cv_scores": list(enh_cv_scores),
                 }
             }
+            results_enh_for_print[best_enh_name]["AUC"] = results_enh_for_print[best_enh_name]["auc"]
+            results_enh_for_print[best_enh_name]["F1"]  = results_enh_for_print[best_enh_name]["f1"]
+            results_enh_for_print[best_enh_name]["ACC"] = results_enh_for_print[best_enh_name]["acc"]
 
         self.print_kg_comparison_results(
             results_raw_for_print or {},
