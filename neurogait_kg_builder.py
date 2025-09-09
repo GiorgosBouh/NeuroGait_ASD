@@ -333,6 +333,113 @@ class SynchronizedLeakageFreeKGBuilder:
                         self.logger.error(f"   Failed to create index: {e}")
                         raise
     
+    def _get_clinical_features_for_kg(self, all_features):
+        """Replicate the clinical feature selection logic from analysis script"""
+        clinical_sets = {}
+        
+        # Balance Stability features
+        balance_keywords = [
+            'spine', 'trunk', 'torso', 'midspain', 'spinebase', 'balance', 'stability', 
+            'sway', 'postural', 'leg', 'foot', 'knee', 'hip', 'ankle', 'SPKNL', 'SPKNR', 
+            'HIANL', 'HIANR', 'KNFOL', 'KNFOR', 'angle', 'rotation'
+        ]
+        
+        balance_features = []
+        for feature in all_features:
+            feature_lower = feature.lower()
+            if any(keyword in feature_lower for keyword in balance_keywords) or \
+            any(keyword in feature for keyword in ['Midspain', 'SpineBase', 'SPKNL', 'SPKNR', 'HIANL', 'HIANR']):
+                balance_features.append(feature)
+        
+        clinical_sets['balance_stability'] = balance_features[:30]
+        
+        # Gait Focused features
+        gait_keywords = [
+            'gact', 'stat', 'swit', 'time', 'duration', 'cycle', 'step', 'stride', 
+            'length', 'width', 'distance', 'leg', 'foot', 'knee', 'hip', 'velocity', 'speed'
+        ]
+        
+        gait_features = []
+        for feature in all_features:
+            feature_lower = feature.lower()
+            if any(keyword in feature_lower for keyword in gait_keywords) or \
+            any(keyword in feature for keyword in ['GaCT', 'StaT', 'SwiT']):
+                gait_features.append(feature)
+        
+        clinical_sets['gait_focused'] = gait_features[:20]
+        
+        # ASD Specific features
+        asd_keywords = [
+            'gait', 'stat', 'swit', 'heshl', 'heshr', 'spell', 'spelr', 'coordination', 'timing',
+            'shwrl', 'shwrr', 'elhal', 'elhar', 'thhal', 'thhar'
+        ]
+        
+        asd_features = []
+        for feature in all_features:
+            feature_lower = feature.lower()
+            if any(keyword in feature_lower for keyword in asd_keywords) or \
+            any(keyword in feature for keyword in ['GaCT', 'StaT', 'SwiT', 'HESHL', 'HESHR', 'SHWRL', 'SHWRR']):
+                asd_features.append(feature)
+        
+        clinical_sets['asd_specific'] = asd_features[:15]
+        
+        # Combined Best
+        combined_features = list(set(
+            clinical_sets['balance_stability'][:15] + 
+            clinical_sets['gait_focused'][:10] + 
+            clinical_sets['asd_specific'][:8]
+        ))
+        clinical_sets['combined_best'] = combined_features
+        
+        return clinical_sets
+
+    def _select_best_clinical_set_for_kg(self, df, clinical_sets):
+        """Replicate the best clinical set selection logic"""
+        best_set_name = "combined_best"  # Use the same set the analysis script typically selects
+        best_features = clinical_sets[best_set_name]
+        
+        # Filter to available features
+        available_features = [f for f in best_features if f in df.columns]
+        
+        logger.info(f"🎯 Selected clinical feature set: {best_set_name} ({len(available_features)} features)")
+        
+        return available_features, best_set_name
+
+    def _apply_analysis_preprocessing(self, df, features):
+        """Apply the same preprocessing steps as the analysis script"""
+        logger.info("🧹 Applying analysis script preprocessing...")
+        
+        # Handle missing values using the same thresholds
+        missing_threshold = 0.6
+        missing_per_feature = df[features].isna().sum() / len(df)
+        good_features = missing_per_feature[missing_per_feature <= missing_threshold].index.tolist()
+        
+        logger.info(f"   🗑️ Removed {len(features) - len(good_features)} features with >{missing_threshold*100}% missing")
+        
+        # Remove samples with too many missing values
+        missing_per_sample = df[good_features].isna().sum(axis=1) / len(good_features)
+        good_samples = missing_per_sample <= 0.5
+        df_clean = df[good_samples].copy()
+        
+        logger.info(f"   🗑️ Removed {(~good_samples).sum()} samples with >50% missing")
+        
+        # Remove constant features
+        constant_features = []
+        for col in good_features:
+            if df_clean[col].nunique() <= 1:
+                constant_features.append(col)
+        
+        final_features = [f for f in good_features if f not in constant_features]
+        
+        # Remove duplicates but PRESERVE original participant_id mapping
+        original_participant_mapping = df_clean['participant_id'].copy()
+        df_final = df_clean.drop_duplicates(subset=final_features)
+        
+        logger.info(f"   📊 Final preprocessing: {len(df)} → {len(df_final)} samples")
+        logger.info(f"   📊 Constant features removed: {len(constant_features)}")
+        
+        return df_final
+
     def load_and_split_data_leakage_free(self, filepath="Final dataset.csv"):
         """Load data and perform IDENTICAL split as analysis script with matching preprocessing"""
         logger.info(f"📊 Loading and splitting data (LEAKAGE-FREE) from {filepath}...")
