@@ -395,46 +395,131 @@ class RealisticAnalysis:
 
         return best_feats, best_name
 
+
+    def _detect_diagnosis_column(self, df):
+        """
+        Εντοπίζει τη στήλη διάγνωσης στο df.
+        Προτεραιότητα σε κοινές ονομασίες: Class_ASD_Traits, diagnosis, Diagnosis,
+        class, Class, label, Label, ASD, is_asd, asd_label.
+        Αν δεν βρεθεί, ψάχνει στήλες με 2 μοναδικές τιμές και όνομα που θυμίζει διάγνωση.
+        Επιστρέφει το όνομα της στήλης ή ρίχνει ValueError.
+        """
+        preferred = [
+            "Class_ASD_Traits", "diagnosis", "Diagnosis",
+            "class", "Class", "label", "Label",
+            "ASD", "is_asd", "asd_label"
+        ]
+        for c in preferred:
+            if c in df.columns:
+                return c
+
+        # Heuristic: two-level columns with name hint
+        candidates = []
+        for c in df.columns:
+            if df[c].dropna().nunique() in (2,):  # δυαδικό
+                lc = c.lower()
+                if any(k in lc for k in ["class", "diag", "asd", "label"]):
+                    candidates.append(c)
+
+        if len(candidates) == 1:
+            return candidates[0]
+
+        # Αν πολλά, προτίμησε όσα περιέχουν asd ή class
+        if len(candidates) > 1:
+            ranked = sorted(
+                candidates,
+                key=lambda x: (
+                    ("asd" not in x.lower()),
+                    ("class" not in x.lower()),
+                    x  # αλφαβητικά τελευταίο κριτήριο
+                )
+            )
+            return ranked[0]
+
+        raise ValueError(
+            "Could not auto-detect diagnosis column. "
+            "Please provide diagnosis_col explicitly."
+        )
+    def _coerce_diagnosis_binary(self, series):
+        """
+        Μετατρέπει diagnosis σε δυαδική: 1=ASD, 0=Typical.
+        Δέχεται τιμές όπως: 1/0, True/False, 'ASD'/'TD', 'A'/'T', 'Autism'/'Typical', κ.λπ.
+        """
+        import numpy as np
+        s = series.copy()
+
+        if np.issubdtype(s.dtype, np.number):
+            # Οτιδήποτε >0 -> 1, αλλιώς 0
+            return (s.astype(float) > 0).astype(int)
+
+        # String-like mapping
+        def _map_val(v):
+            if v is None:
+                return np.nan
+            t = str(v).strip().lower()
+            if t in {"1", "true", "yes", "asd", "a", "autism", "case_asd"}:
+                return 1
+            if t in {"0", "false", "no", "td", "t", "typical", "control"}:
+                return 0
+            # Αν δεν αναγνωρίζεται, προσπάθησε numeric
+            try:
+                return 1 if float(t) > 0 else 0
+            except Exception:
+                return np.nan
+
+        mapped = s.map(_map_val)
+        # Αν υπάρχουν NaN (π.χ. κενοί), συμπλήρωσε με τον πιο συχνό κωδικό (mode)
+        if mapped.isna().any():
+            mode_val = mapped.mode(dropna=True)
+            fillv = int(mode_val.iloc[0]) if len(mode_val) else 0
+            mapped = mapped.fillna(fillv).astype(int)
+
+        return mapped.astype(int)
+
+
     def load_and_prepare_data(self):
         """
-        Φορτώνει το CSV, φτιάχνει/ελέγχει participant_id, κάνει participant-level split
-        με σταθερό random_state, και επιστρέφει ΟΜΟΡΦΟΠΟΙΗΜΕΝΑ:
+        Φορτώνει το CSV, εντοπίζει/μετατρέπει στήλη διάγνωσης σε δυαδική (1=ASD, 0=Typical),
+        κάνει participant-level split (μηδενικό overlap), και επιστρέφει:
         - df (reset_index(drop=True))
-        - best_features, best_set_name (επιλογή μόνο από TRAIN)
-        - train_indices, test_indices (ΑΚΕΡΑΙΕΣ ΘΕΣΕΙΣ για iloc)
-        - train_sample_pids (λίστα participant_id των train δειγμάτων, με επαναλήψεις)
-        - test_pids (σύνολο/λίστα participant_id του TEST)
-        Όλες οι αποφάσεις που μπορεί να προκαλέσουν leakage (scalers, επιλογές κ.λπ.)
-        γίνονται ΜΟΝΟ στο train downstream.
+        - best_features, best_set_name (από TRAIN μόνο)
+        - train_indices, test_indices (ΘΕΣΕΙΣ για iloc)
+        - train_sample_pids (participant_id ανά train sample)
+        - test_pids (λίστα μοναδικών participants στο TEST)
+        Χωρίς καμία διαρροή (ό,τι πρέπει fit γίνεται downstream μόνο στο train).
         """
         import numpy as np
         import pandas as pd
         from sklearn.model_selection import train_test_split
 
-        # --- 1) Φόρτωση δεδομένων ---
+        # --- 1) Load ---
         df = pd.read_csv(self.input_csv)
-        # Εξασφάλιση ότι η στήλη διάγνωσης υπάρχει
-        diagnosis_col = self.diagnosis_col if hasattr(self, "diagnosis_col") else "Class_ASD_Traits"
-        if diagnosis_col not in df.columns:
-            raise ValueError(f"Diagnosis column '{diagnosis_col}' not found in CSV.")
 
-        # --- 2) Δημιουργία participant_id αν λείπει (ίδια λογική με KG builder) ---
-        samples_per_participant = getattr(self, "samples_per_participant", 8)
+        # --- 2) Ensure participant_id exists (ίδιο με KG builder logic) ---
+        spp = getattr(self, "samples_per_participant", 8)
         if "participant_id" not in df.columns:
-            # Στα 800 δείγματα με 8 δείγματα / συμμετέχοντα -> 100 participants
-            # Το κάνουμε deterministic όπως στο KG builder
             df = df.copy()
-            df["participant_id"] = (np.arange(len(df)) // samples_per_participant).astype(int)
+            df["participant_id"] = (np.arange(len(df)) // spp).astype(int)
 
-        # --- 3) Reset index ώστε ΟΛΕΣ οι επόμενες λίστες indices να είναι θέσεις (0..N-1) ---
+        # --- 3) Reset index ώστε οι λίστες indices να είναι θέσεις 0..N-1 ---
         df = df.reset_index(drop=True)
 
-        # --- 4) Participant-level split (χωρίς overlap) ---
-        # Παίρνουμε μοναδικούς participants και (προαιρετικά) stratify στο επίπεδο participant
+        # --- 4) Detect & coerce diagnosis column to binary 0/1 ---
+        # Αν δεν έχει οριστεί ρητά ή δεν υπάρχει στο df, κάνε αυτόματη ανίχνευση
+        diag_col = getattr(self, "diagnosis_col", None)
+        if (diag_col is None) or (diag_col not in df.columns):
+            diag_col = self._detect_diagnosis_column(df)
+            self.diagnosis_col = diag_col  # ενημέρωση state
+
+        # Μετατροπή σε 0/1 (1=ASD)
+        df[self.diagnosis_col] = self._coerce_diagnosis_binary(df[self.diagnosis_col])
+
+        # --- 5) Participant-level split (stratify by participant-level label) ---
         participants = df["participant_id"].unique()
-        # Για πιθανό stratify, υπολογίζουμε label ανά participant από το πλειοψηφικό label στα samples του
+
+        # Label ανά participant (πλειοψηφικό στο participant)
         pid_labels = (
-            df.groupby("participant_id")[diagnosis_col]
+            df.groupby("participant_id")[self.diagnosis_col]
             .mean()
             .round()
             .astype(int)
@@ -449,36 +534,28 @@ class RealisticAnalysis:
             stratify=pid_labels
         )
 
-        # --- 5) Φτιάχνουμε boolean masks σε επίπεδο δειγμάτων ---
+        # --- 6) Masks & integer positions for iloc ---
         train_mask = df["participant_id"].isin(train_pids).values
         test_mask  = df["participant_id"].isin(test_pids).values
-
-        # --- 6) Μετατρέπουμε σε ΑΚΕΡΑΙΕΣ ΘΕΣΕΙΣ για χρήση με iloc ΠΑΝΤΟΥ ---
         train_indices = np.where(train_mask)[0].tolist()
         test_indices  = np.where(test_mask)[0].tolist()
 
-        # Προαιρετικό logging
         if hasattr(self, "_log"):
-            n_part = len(participants)
-            n_train_p = len(train_pids)
-            n_test_p = len(test_pids)
-            self._log("info", f"📦 Participants total: {n_part} | train: {n_train_p} | test: {n_test_p}")
+            self._log("info", f"📦 Participants total: {len(participants)} | train: {len(train_pids)} | test: {len(test_pids)}")
             self._log("info", f"   Samples -> train: {len(train_indices)}  test: {len(test_indices)}")
             self._log("info", f"   Participant overlap: {len(set(train_pids) & set(test_pids))}")
+            self._log("info", f"🩺 Diagnosis column detected: '{self.diagnosis_col}' (converted to 0/1)")
 
-        # --- 7) Ορισμός των clinical candidate sets (όπως ήδη κάνεις upstream) ---
+        # --- 7) Clinical sets & selection ONLY on TRAIN ---
         candidate_sets = self.build_clinical_feature_sets(df)
-
-        # --- 8) Επιλογή ΚΑΛΥΤΕΡΟΥ clinical set ΜΟΝΟ από TRAIN (χωρίς leakage) ---
         best_features, best_set_name = self.select_best_clinical_set(
             df=df,
             candidate_sets=candidate_sets,
-            diagnosis_col=diagnosis_col,
-            train_indices=train_indices  # ΘΕΣΕΙΣ: ασφαλές για iloc
+            diagnosis_col=self.diagnosis_col,
+            train_indices=train_indices
         )
 
-        # --- 9) Επιστροφές για downstream pipelines ---
-        # train_sample_pids: participant_ids των train δειγμάτων (με επαναλήψεις κατά δείγμα)
+        # --- 8) Return payload ---
         train_sample_pids = df.loc[train_indices, "participant_id"].tolist()
 
         return (
@@ -490,6 +567,7 @@ class RealisticAnalysis:
             train_sample_pids,
             list(test_pids)
         )
+        
 
 
     def create_preprocessing_pipeline(self, features):
