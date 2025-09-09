@@ -3239,9 +3239,7 @@ class RealisticAnalysis:
         )
 
         return all_results
-
-    def print_kg_comparison_results(self, all_results, clinical_set_name, data_summary, statistical_results):
-        """Print comprehensive KG comparison results"""
+    
 
         print("🎯 COMPREHENSIVE KG COMPARISON RESULTS")
         print("="*80)
@@ -3382,6 +3380,144 @@ class RealisticAnalysis:
         else:
             print("   📋 Raw clinical features remain competitive")
             print("   → Simple approaches may be sufficient")
+
+
+    def print_kg_comparison_results(self, results_raw, results_kg, results_enh, context):
+        """
+        Safe printer για τα tier αποτελέσματα χωρίς παραδοχές για τα κλειδιά.
+        Δέχεται dicts από τις train_* συναρτήσεις και προσπαθεί να εξάγει:
+        - best AUC, best F1, περιγραφή CV
+        Πηγή τιμών (σειρά προτεραιότητας):
+        'auc' → 'test_auc' → 'cv_mean_auc' → max over 'by_model'['cv_mean_auc']
+        Αν δεν βρεθεί τίποτα, το tier παραλείπεται.
+        Επιστρέφει ένα consolidated dict με ό,τι βρέθηκε.
+        """
+        import numpy as np
+
+        def _extract_best(metrics):
+            """Επιστρέφει (auc, f1, label, details_dict) ή None αν δεν υπάρχουν χρήσιμες τιμές."""
+            if metrics is None:
+                return None
+
+            # Άμεσες τιμές
+            auc = metrics.get('auc', None)
+            f1  = metrics.get('f1',  None)
+
+            # Εναλλακτικά πεδία
+            if auc is None:
+                auc = metrics.get('test_auc', None)
+            if auc is None:
+                auc = metrics.get('cv_mean_auc', None)
+
+            # Αν δεν υπάρχουν, δοκίμασε ανά μοντέλο (by_model)
+            if auc is None and isinstance(metrics.get('by_model', None), dict):
+                bm = metrics['by_model']
+                # Βρες το καλύτερο μοντέλο με βάση cv_mean_auc ➜ έπειτα test_auc
+                best_name, best_val, best_f1 = None, None, None
+                for mname, md in bm.items():
+                    cand = md.get('cv_mean_auc', None)
+                    if cand is None:
+                        cand = md.get('test_auc', None)
+                    if cand is None:
+                        continue
+                    if best_val is None or cand > best_val:
+                        best_val = cand
+                        best_name = mname
+                        best_f1 = md.get('f1', md.get('test_f1', md.get('cv_mean_f1', None)))
+                if best_val is not None:
+                    auc = best_val
+                    if f1 is None:
+                        f1 = best_f1
+                    # Αν υπάρχει block "best", ενημέρωσε από εκεί
+                    if isinstance(metrics.get('best', None), dict):
+                        best_block = metrics['best']
+                        f1 = best_block.get('f1', f1)
+                    label = f"{best_name}"
+                    return (float(auc), float(f1) if f1 is not None else None, label, metrics)
+
+            # Αν βρέθηκε auc από πάνω, όρισε label
+            if auc is not None:
+                label = metrics.get('best_model', None)
+                if label is None and isinstance(metrics.get('best', None), dict):
+                    label = metrics['best'].get('model', None)
+                if label is None:
+                    label = "Best"
+                try:
+                    auc = float(auc)
+                except Exception:
+                    auc = None
+                if f1 is not None:
+                    try:
+                        f1 = float(f1)
+                    except Exception:
+                        f1 = None
+                return (auc, f1, label, metrics)
+
+            # Τίποτα χρήσιμο
+            return None
+
+        tiers = [
+            ("Raw Clinical Features", results_raw),
+            ("NeuroGait KG",         results_kg),
+            ("Enhanced Features",     results_enh),
+        ]
+
+        consolidated = {}
+        print("\n📊 PERFORMANCE SUMMARY BY APPROACH:")
+        print("-" * 80)
+
+        for name, res in tiers:
+            info = _extract_best(res)
+            if info is None:
+                print(f"{name}: (no valid metrics)")
+                continue
+            auc, f1, label, raw = info
+
+            # formatted γραμμή
+            auc_txt = f"{auc:.3f}" if auc is not None else "—"
+            f1_txt  = f"{(f1 if f1 is not None else float('nan')):.3f}" if f1 is not None else "—"
+            cv_txt  = None
+
+            # Προσπάθησε να βρεις περίληψη CV (αν έχει)
+            if isinstance(raw.get('by_model', None), dict) and label in raw['by_model']:
+                md = raw['by_model'][label]
+                if 'cv_mean_auc' in md and 'cv_std_auc' in md:
+                    cv_txt = f"{md['cv_mean_auc']:.3f}±{md['cv_std_auc']:.3f}"
+            if cv_txt is None and 'cv_mean_auc' in raw and 'cv_std_auc' in raw:
+                cv_txt = f"{raw['cv_mean_auc']:.3f}±{raw['cv_std_auc']:.3f}"
+
+            if cv_txt:
+                print(f"{name}: {label:>18s} : AUC={auc_txt}, F1={f1_txt}, CV={cv_txt}")
+            else:
+                print(f"{name}: {label:>18s} : AUC={auc_txt}, F1={f1_txt}")
+
+            consolidated[name] = {
+                "label": label,
+                "auc": auc,
+                "f1": f1,
+                "cv": cv_txt,
+                "raw": res,
+            }
+
+        # Προαιρετικό overall winner (αν τουλάχιστον ένα tier έχει AUC)
+        valid = [(k, v["auc"]) for k, v in consolidated.items() if v.get("auc") is not None]
+        if valid:
+            winner_name, winner_auc = max(valid, key=lambda kv: kv[1])
+            print("\n🏆 OVERALL WINNER:")
+            print(f"   Approach: {winner_name}")
+            print(f"   AUC: {winner_auc:.3f}")
+
+        # Εκτύπωσε context αν δίνεται
+        if isinstance(context, dict):
+            feat = context.get('original_features', len(context.get('selected_features', []) or []))
+            print("\n🏥 ANALYSIS CONTEXT:")
+            print(f"   Feature Set: {context.get('best_set_name','N/A')}")
+            print(f"   Train/Test: {context.get('train_participants','?')} / {context.get('test_participants','?')} participants")
+            print(f"   Features: {feat} → {context.get('selected_features', feat)} selected")
+
+        return consolidated
+
+
 
     def _create_placeholder_gnn_results(self):
         """Create realistic placeholder GNN results"""
