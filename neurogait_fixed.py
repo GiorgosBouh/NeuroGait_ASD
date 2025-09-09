@@ -425,6 +425,158 @@ class RealisticAnalysis:
 
         return clinical_sets
 
+    def _get_grouped_cv(self, y_train, train_indices, df, n_splits=5, random_state=42):
+        """
+        Επιστρέφει CV splitter που κρατά samples του ίδιου participant ΜΟΝΟ στο ίδιο fold.
+        Προτιμά StratifiedGroupKFold (αν υπάρχει), αλλιώς GroupKFold.
+        groups: participant_id ευθυγραμμισμένο με X_train (σειρά train_indices).
+        """
+        import numpy as np
+        from sklearn.model_selection import GroupKFold
+
+        groups = df.loc[train_indices, "participant_id"].to_numpy()
+
+        # Προσπάθησε StratifiedGroupKFold (sklearn ≥ 1.3)
+        try:
+            from sklearn.model_selection import StratifiedGroupKFold
+            cv = StratifiedGroupKFold(
+                n_splits=n_splits, shuffle=True, random_state=random_state
+            )
+            splitter = cv.split(X=np.zeros_like(y_train), y=y_train, groups=groups)
+            return splitter, groups, "StratifiedGroupKFold"
+        except Exception:
+            # Fallback σε GroupKFold (χωρίς stratification, αλλά ΟΚ για leakage safety)
+            cv = GroupKFold(n_splits=n_splits)
+            splitter = cv.split(X=np.zeros_like(y_train), y=y_train, groups=groups)
+            return splitter, groups, "GroupKFold"
+
+    def train_and_evaluate_models_grouped(self, X_train, y_train, train_indices, df, approach_name=""):
+        """
+        Εκπαίδευση με Group-aware CV (ανά participant) και StandardScaler ΜΕΣΑ στο fold (Pipeline).
+        Επιστρέφει: (results_dict, best_model_name, best_estimator_fitted_on_full_train)
+        """
+
+        # XGBoost αν υπάρχει
+        have_xgb = True
+        try:
+            from xgboost import XGBClassifier
+        except Exception:
+            have_xgb = False
+
+        splitter, groups, splitter_name = self._get_grouped_cv(
+            y_train=y_train, train_indices=train_indices, df=df,
+            n_splits=getattr(self, "cv_splits", 5),
+            random_state=getattr(self, "random_state", 42)
+        )
+
+        models = {
+            "Logistic Regression": LogisticRegression(max_iter=1000, random_state=42),
+            "Random Forest":       RandomForestClassifier(n_estimators=300, random_state=42, n_jobs=-1),
+            "SVM":                 SVC(kernel="rbf", probability=True, random_state=42),
+        }
+        if have_xgb:
+            models["XGBoost"] = XGBClassifier(
+                n_estimators=400, max_depth=4, learning_rate=0.05,
+                subsample=0.8, colsample_bytree=0.8, reg_lambda=1.0,
+                random_state=42, eval_metric="logloss", tree_method="hist"
+            )
+
+        print(f"\n🚀 TRAINING OPTIMIZED MODELS{': ' + approach_name if approach_name else ''}")
+        print(f"   📊 Data shape: {X_train.shape}, CV={splitter_name}")
+
+        results = {}
+        best_model_name, best_auc_mean, best_f1_mean, best_estimator = None, -1.0, -1.0, None
+
+        for name, clf in models.items():
+            pipe = Pipeline([
+                ("scaler", StandardScaler()),
+                ("clf", clf),
+            ])
+
+            aucs, f1s = [], []
+
+            # fresh splitter για κάθε μοντέλο
+            split_gen, _, _ = self._get_grouped_cv(
+                y_train=y_train, train_indices=train_indices, df=df,
+                n_splits=getattr(self, "cv_splits", 5),
+                random_state=getattr(self, "random_state", 42)
+            )
+
+            fold_id = 0
+            for tr_idx, vl_idx in split_gen:
+                fold_id += 1
+                pipe.fit(X_train[tr_idx], y_train[tr_idx])
+
+                if hasattr(pipe.named_steps["clf"], "predict_proba"):
+                    y_prob = pipe.predict_proba(X_train[vl_idx])[:, 1]
+                else:
+                    if hasattr(pipe.named_steps["clf"], "decision_function"):
+                        scores = pipe.named_steps["clf"].decision_function(X_train[vl_idx])
+                        y_prob = (scores - scores.min()) / (scores.max() - scores.min() + 1e-12)
+                    else:
+                        y_prob = pipe.predict(X_train[vl_idx])
+
+                y_pred = (y_prob >= 0.5).astype(int)
+                auc = roc_auc_score(y_train[vl_idx], y_prob)
+                f1 = f1_score(y_train[vl_idx], y_pred)
+
+                aucs.append(auc); f1s.append(f1)
+                print(f"   {name} | Fold {fold_id}: AUC={auc:.3f}")
+
+            auc_mean, auc_std = float(np.mean(aucs)), float(np.std(aucs))
+            f1_mean = float(np.mean(f1s))
+            print(f"      ➜ {name}: AUC={auc_mean:.3f}, F1={f1_mean:.3f}, CV={auc_mean:.3f}±{auc_std:.3f}")
+
+            results[name] = {"auc": auc_mean, "f1": f1_mean, "cv_std": auc_std}
+
+            if auc_mean > best_auc_mean:
+                best_auc_mean, best_f1_mean = auc_mean, f1_mean
+                best_estimator = Pipeline([("scaler", StandardScaler()), ("clf", clf)])
+                best_estimator.fit(X_train, y_train)
+                best_model_name = name
+
+        print(f"      🎯 Best by CV: {best_model_name} (AUC={best_auc_mean:.3f}, F1={best_f1_mean:.3f})")
+        return results, best_model_name, best_estimator
+
+    def permutation_sanity_check(self, X_train, y_train, train_indices, df, n_shuffles=2):
+        """
+        Γρήγορο leakage test: κάνουμε shuffle τα labels στο TRAIN.
+        Αναμένουμε AUC ≈ 0.5 σε grouped fold. Αν είναι ψηλά, υπάρχει leakage.
+        """
+        import numpy as np
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.pipeline import Pipeline
+        from sklearn.preprocessing import StandardScaler
+        from sklearn.metrics import roc_auc_score
+
+        print("\n🧪 Permutation sanity-check (labels shuffled):")
+        rng = np.random.default_rng(123)
+
+        for s in range(n_shuffles):
+            y_perm = y_train.copy()
+            rng.shuffle(y_perm)
+
+            # ένα fold για ταχύτητα
+            split_gen, _, _ = self._get_grouped_cv(
+                y_train=y_perm, train_indices=train_indices, df=df,
+                n_splits=5, random_state=42
+            )
+            tr_idx, vl_idx = next(split_gen)
+
+            pipe = Pipeline([("scaler", StandardScaler()),
+                            ("clf", LogisticRegression(max_iter=1000, random_state=42))])
+            pipe.fit(X_train[tr_idx], y_perm[tr_idx])
+
+            if hasattr(pipe.named_steps["clf"], "predict_proba"):
+                y_prob = pipe.predict_proba(X_train[vl_idx])[:, 1]
+            else:
+                scores = pipe.decision_function(X_train[vl_idx])
+                y_prob = (scores - scores.min()) / (scores.max() - scores.min() + 1e-12)
+
+            auc = roc_auc_score(y_perm[vl_idx], y_prob)
+            print(f"   Shuffle {s+1}/{n_shuffles} → AUC={auc:.3f}  (αναμένουμε ≈0.5)")
+
+
     def select_best_clinical_set(self, df, candidate_sets, diagnosis_col, train_indices):
         """
         Επιλογή του καλύτερου clinical feature set ΜΟΝΟ από τα train samples (χωρίς leakage).
@@ -649,9 +801,6 @@ class RealisticAnalysis:
         Επιστρέφει:
         df, best_features, best_set_name, train_indices, test_indices, train_sample_pids, test_pids
         """
-        import numpy as np
-        import pandas as pd
-        from sklearn.model_selection import train_test_split
 
         # --- 1) Load ---
         df = pd.read_csv(self.input_csv, sep=";", decimal=",")
@@ -1927,76 +2076,112 @@ class RealisticAnalysis:
         return best_config, results
 
     def run_enhanced_analysis_with_tuning(self):
-        """Run enhanced analysis with hyperparameter tuning"""
+        """Run enhanced analysis with hyperparameter tuning (LEAKAGE-FREE, GROUPED CV)"""
+
+        import numpy as np
+        from sklearn.metrics import roc_auc_score, f1_score, accuracy_score
 
         print("🚀 ENHANCED NEUROGAIT ANALYSIS με Hyperparameter Tuning")
         print("="*70)
         print("🎯 Raw vs KG comparison με optimized clinical features και tuning")
-        print("🔒 Leakage-free αλλά less conservative για better metrics")
+        print("🔒 Leakage-free με Grouped CV (ανά participant) & scaling μέσα στο fold")
         print("📊 Transparent reporting with comprehensive statistical analysis")
         print("🎛️ Hyperparameter tuning για optimal KG processing")
         print()
 
-        # Enhanced preprocessing with clinical features
+        # ---------- Load & split (participant-level, leakage-free) ----------
         df, best_features, best_set_name, train_indices, test_indices, train_pids, test_pids = self.load_and_prepare_data()
-        train_data, test_data = self.proper_train_test_split(
-            df, train_indices, test_indices)
+        train_data, test_data = self.proper_train_test_split(df, train_indices, test_indices)
 
-        # Preprocess data without leakage
-        train_clean, test_clean, clean_features = self.preprocess_data(
-            train_data, test_data, best_features)
+        # ---------- Preprocess (fit ΜΟΝΟ στο train) ----------
+        # ΣΗΜΕΙΩΣΗ: Η train_clean/test_clean πρέπει να μην έχουν γίνει "global" scaled.
+        # Αν η preprocess_data ήδη καθαρίζει/caps κ.λπ. είναι ΟΚ. Το τελικό standardization γίνεται μέσα στο CV pipeline.
+        train_clean, test_clean, clean_features = self.preprocess_data(train_data, test_data, best_features)
 
-        # Feature selection
-        X_train, X_test, selected_features = self.optimized_feature_selection(
+        # ---------- Conservative feature selection (TRAIN ONLY) ----------
+        X_train_raw, X_test_raw, selected_features = self.optimized_feature_selection(
             train_clean, test_clean, clean_features
         )
 
-        y_train = train_clean['diagnosis']
-        y_test = test_clean['diagnosis']
-        X_train_scaled, X_test_scaled = self.prepare_data_properly(
-            X_train, X_test)
+        # Labels από το σωστό column (π.χ. 'class' A/T → 1/0)
+        diag_col = getattr(self, "diagnosis_col", "class")
+        y_train = train_clean[diag_col].to_numpy().astype(int)
+        y_test  = test_clean[diag_col].to_numpy().astype(int)
 
-        # === TIER 1A: RAW CLINICAL FEATURES ===
+        # ========== TIER 1A: RAW CLINICAL FEATURES ==========
         print(f"\n{'='*50}")
-        print("📊 TIER 1A: RAW CLINICAL FEATURES")
+        print("📊 TIER 1A: RAW CLINICAL FEATURES (Grouped CV)")
         print(f"{'='*50}")
 
-        raw_results = self.train_optimized_models(
-            X_train_scaled, X_test_scaled, y_train, y_test, train_pids,
-            f"Raw Clinical Features ({best_set_name})"
+        # Γρήγορο sanity-check για leakage (αναμένουμε AUC≈0.5)
+        self.permutation_sanity_check(X_train_raw, y_train, train_indices, df)
+
+        cv_results_raw, best_name_raw, best_est_raw = self.train_and_evaluate_models_grouped(
+            X_train_raw, y_train, train_indices, df,
+            approach_name=f": Raw Clinical Features ({best_set_name})"
         )
 
-        # === TIER 1B: SIMPLE KG FEATURES ===
+        # Αξιολόγηση στο TEST με τον καλύτερο estimator
+        y_prob_raw = (best_est_raw.predict_proba(X_test_raw)[:, 1]
+                    if hasattr(best_est_raw.named_steps["clf"], "predict_proba")
+                    else best_est_raw.decision_function(X_test_raw))
+        # normalize if decision_function
+        if y_prob_raw.ndim == 1 and y_prob_raw.min() < 0 or y_prob_raw.max() > 1:
+            y_prob_raw = (y_prob_raw - y_prob_raw.min()) / (y_prob_raw.max() - y_prob_raw.min() + 1e-12)
+        y_pred_raw = (y_prob_raw >= 0.5).astype(int)
+        raw_results = {
+            "cv": cv_results_raw,
+            "test": {
+                "auc": float(roc_auc_score(y_test, y_prob_raw)),
+                "f1":  float(f1_score(y_test, y_pred_raw)),
+                "acc": float(accuracy_score(y_test, y_pred_raw)),
+                "best_model": best_name_raw
+            }
+        }
+
+        # ========== TIER 1B: SIMPLE KG FEATURES (Baseline) ==========
         print(f"\n{'='*50}")
-        print("🧠 TIER 1B: SIMPLE KG FEATURES (Baseline)")
+        print("🧠 TIER 1B: SIMPLE KG FEATURES (Baseline, Grouped CV)")
         print(f"{'='*50}")
 
         X_train_kg_simple, X_test_kg_simple = self.create_conservative_kg_embeddings(
-            X_train_scaled, X_test_scaled
+            X_train_raw, X_test_raw
         )
-        simple_kg_results = self.train_optimized_models(
-            X_train_kg_simple, X_test_kg_simple, y_train, y_test, train_pids, "Simple KG"
+        cv_results_simplekg, best_name_simplekg, best_est_simplekg = self.train_and_evaluate_models_grouped(
+            X_train_kg_simple, y_train, train_indices, df,
+            approach_name=": Simple KG (grouped by participant)"
         )
+        y_prob_simplekg = (best_est_simplekg.predict_proba(X_test_kg_simple)[:, 1]
+                        if hasattr(best_est_simplekg.named_steps["clf"], "predict_proba")
+                        else best_est_simplekg.decision_function(X_test_kg_simple))
+        if y_prob_simplekg.ndim == 1 and (y_prob_simplekg.min() < 0 or y_prob_simplekg.max() > 1):
+            y_prob_simplekg = (y_prob_simplekg - y_prob_simplekg.min()) / (y_prob_simplekg.max() - y_prob_simplekg.min() + 1e-12)
+        y_pred_simplekg = (y_prob_simplekg >= 0.5).astype(int)
+        simple_kg_results = {
+            "cv": cv_results_simplekg,
+            "test": {
+                "auc": float(roc_auc_score(y_test, y_prob_simplekg)),
+                "f1":  float(f1_score(y_test, y_pred_simplekg)),
+                "acc": float(accuracy_score(y_test, y_pred_simplekg)),
+                "best_model": best_name_simplekg
+            }
+        }
 
-        # === HYPERPARAMETER SEARCH ===
+        # ========== HYPERPARAMETER SEARCH (για KG επεξεργασία) ==========
         print(f"\n{'='*50}")
         print("🎛️ KG HYPERPARAMETER OPTIMIZATION")
         print(f"{'='*50}")
-
         best_config, tuning_results = self.hyperparameter_search(
-            X_train_scaled, X_test_scaled, y_train, y_test, train_pids
+            X_train_raw, X_test_raw, y_train, y_test, train_pids
         )
 
-        # === TIER 1C: ENHANCED KG WITH ORIGINAL PARAMETERS ===
+        # ========== TIER 1C: ENHANCED KG FEATURES (Original) ==========
         enhanced_kg_results = None
-        enhanced_builder = None
         feature_names = []
-
         if ENHANCED_FEATURES_AVAILABLE:
             print(f"\n{'='*50}")
-            print("💡 TIER 1C: ENHANCED KG FEATURES (Original)")
+            print("💡 TIER 1C: ENHANCED KG FEATURES (Original, Grouped CV)")
             print(f"{'='*50}")
-
             try:
                 enhanced_builder = EnhancedKGFeatureBuilder()
 
@@ -2007,65 +2192,81 @@ class RealisticAnalysis:
                     test_data, selected_features
                 )
 
-                scaler_enhanced = StandardScaler()
-                X_train_enhanced_scaled = scaler_enhanced.fit_transform(
-                    X_train_enhanced)
-                X_test_enhanced_scaled = scaler_enhanced.transform(
-                    X_test_enhanced)
-
-                enhanced_kg_results = self.train_optimized_models(
-                    X_train_enhanced_scaled, X_test_enhanced_scaled, y_train, y_test,
-                    train_pids, "Enhanced KG"
+                cv_results_enh, best_name_enh, best_est_enh = self.train_and_evaluate_models_grouped(
+                    X_train_enhanced, y_train, train_indices, df,
+                    approach_name=": Enhanced KG (grouped by participant)"
                 )
+                y_prob_enh = (best_est_enh.predict_proba(X_test_enhanced)[:, 1]
+                            if hasattr(best_est_enh.named_steps["clf"], "predict_proba")
+                            else best_est_enh.decision_function(X_test_enhanced))
+                if y_prob_enh.ndim == 1 and (y_prob_enh.min() < 0 or y_prob_enh.max() > 1):
+                    y_prob_enh = (y_prob_enh - y_prob_enh.min()) / (y_prob_enh.max() - y_prob_enh.min() + 1e-12)
+                y_pred_enh = (y_prob_enh >= 0.5).astype(int)
 
+                enhanced_kg_results = {
+                    "cv": cv_results_enh,
+                    "test": {
+                        "auc": float(roc_auc_score(y_test, y_prob_enh)),
+                        "f1":  float(f1_score(y_test, y_pred_enh)),
+                        "acc": float(accuracy_score(y_test, y_pred_enh)),
+                        "best_model": best_name_enh
+                    }
+                }
             except Exception as e:
                 print(f"❌ Enhanced KG features failed: {e}")
                 enhanced_kg_results = None
 
-        # === TIER 1D: OPTIMIZED KG WITH TUNED PARAMETERS ===
+        # ========== TIER 1D: TUNED KG EMBEDDINGS (Best Config) ==========
         print(f"\n{'='*50}")
-        print("🎯 TIER 1D: TUNED KG EMBEDDINGS (Best Config)")
+        print("🎯 TIER 1D: TUNED KG EMBEDDINGS (Best Config, Grouped CV)")
         print(f"{'='*50}")
 
         if best_config:
             X_train_kg_tuned, X_test_kg_tuned = self.create_tuned_kg_embeddings(
-                X_train_scaled, X_test_scaled,
-                best_config['interaction'],
-                best_config['smoothing'],
-                best_config['nonlinearity']
+                X_train_raw, X_test_raw,
+                best_config['interaction'], best_config['smoothing'], best_config['nonlinearity']
             )
-            tuned_kg_results = self.train_optimized_models(
-                X_train_kg_tuned, X_test_kg_tuned, y_train, y_test, train_pids,
-                f"Tuned KG ({best_config['name']})"
+            cv_results_tuned, best_name_tuned, best_est_tuned = self.train_and_evaluate_models_grouped(
+                X_train_kg_tuned, y_train, train_indices, df,
+                approach_name=f": Tuned KG ({best_config['name']})"
             )
+            y_prob_tuned = (best_est_tuned.predict_proba(X_test_kg_tuned)[:, 1]
+                            if hasattr(best_est_tuned.named_steps["clf"], "predict_proba")
+                            else best_est_tuned.decision_function(X_test_kg_tuned))
+            if y_prob_tuned.ndim == 1 and (y_prob_tuned.min() < 0 or y_prob_tuned.max() > 1):
+                y_prob_tuned = (y_prob_tuned - y_prob_tuned.min()) / (y_prob_tuned.max() - y_prob_tuned.min() + 1e-12)
+            y_pred_tuned = (y_prob_tuned >= 0.5).astype(int)
+            tuned_kg_results = {
+                "cv": cv_results_tuned,
+                "test": {
+                    "auc": float(roc_auc_score(y_test, y_prob_tuned)),
+                    "f1":  float(f1_score(y_test, y_pred_tuned)),
+                    "acc": float(accuracy_score(y_test, y_pred_tuned)),
+                    "best_model": best_name_tuned
+                }
+            }
         else:
-            # Fallback to enhanced if no best config
-            X_train_kg_tuned, X_test_kg_tuned = self.create_enhanced_kg_embeddings(
-                X_train_scaled, X_test_scaled)
-            tuned_kg_results = self.train_optimized_models(
-                X_train_kg_tuned, X_test_kg_tuned, y_train, y_test, train_pids, "Tuned KG (Fallback)"
-            )
+            # Αν δεν βρέθηκε config, χρησιμοποίησε Enhanced (αν υπάρχει) ή Simple KG ως fallback για reporting
+            tuned_kg_results = enhanced_kg_results if enhanced_kg_results is not None else simple_kg_results
 
-        # === COMPREHENSIVE COMPARISON ===
+        # ========== COMPREHENSIVE COMPARISON & STATISTICS ==========
         print(f"\n{'='*70}")
         print("📊 COMPREHENSIVE COMPARISON - TUNED KG ANALYSIS με STATISTICS")
         print(f"{'='*70}")
 
-        # Collect all results
+        # Συγκέντρωση αποτελεσμάτων
         tier1_results = {
             'Raw Clinical Features': raw_results,
             'Simple KG': simple_kg_results,
             'Tuned KG': tuned_kg_results
         }
-
         if enhanced_kg_results:
             tier1_results['Enhanced KG (Original)'] = enhanced_kg_results
 
-        # Statistical comparison
-        statistical_results = self.statistical_comparison_analysis(
-            tier1_results)
+        # Στατιστική σύγκριση (χρησιμοποιεί τα TEST predictions/metrics)
+        statistical_results = self.statistical_comparison_analysis(tier1_results)
 
-        # Print enhanced results WITH statistical analysis
+        # Εκτύπωση τελικών αποτελεσμάτων
         self.print_tuned_comprehensive_results_with_statistics(
             tier1_results, tuning_results, best_config, best_set_name,
             {
@@ -2086,8 +2287,8 @@ class RealisticAnalysis:
             'data_summary': {
                 'train_participants': len(set(train_pids)),
                 'test_participants': len(set(test_pids)),
-                'train_samples': len(X_train),
-                'test_samples': len(X_test)
+                'train_samples': int(X_train_raw.shape[0]),
+                'test_samples': int(X_test_raw.shape[0])
             },
             'feature_info': {
                 'clinical_set': best_set_name,
@@ -2638,9 +2839,6 @@ class RealisticAnalysis:
         Run KG comparison analysis with proper alignment and leakage validation
         Addresses: 1) Sample alignment 2) Data leakage detection 3) Realistic performance validation
         """
-        import os
-        import numpy as np
-        from neo4j import GraphDatabase
 
         # Helper functions (inner scope)
         def _ensure_kg_builder_local():
