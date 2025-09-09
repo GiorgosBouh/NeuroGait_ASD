@@ -3225,16 +3225,14 @@ class RealisticAnalysis:
         statistical_results = self.statistical_comparison_analysis(all_results)
 
         self.print_kg_comparison_results(
-            all_results,
+            results_raw or {},
+            results_kg or {},
+            results_enh or {},
             clinical_set_name=best_set_name,
-            data_summary={
-                "train_participants": len(set(train_pids)),
-                "test_participants": len(set(test_pids)),
-                "train_samples": int(X_train_raw.shape[0]),
-                "test_samples": int(X_test_raw.shape[0]),
-                "original_features": len(best_features),
-                "selected_features": len(selected_features)
-            },
+            train_participants=len(set(train_pids)),
+            test_participants=len(set(test_pids)),
+            original_features=len(best_features),
+            selected_features=len(selected_features)
             statistical_results=statistical_results
         )
 
