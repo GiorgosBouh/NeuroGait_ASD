@@ -453,7 +453,7 @@ class SynchronizedLeakageFreeKGBuilder:
             
             logger.info(f"📋 Loaded CSV with {len(df)} rows and {len(df.columns)} columns")
             
-            # Convert numeric columns (SAME AS ANALYSIS SCRIPT)
+            # Convert numeric columns
             numeric_cols = [col for col in df.columns if col != 'class']
             converted_features = []
             
@@ -472,45 +472,13 @@ class SynchronizedLeakageFreeKGBuilder:
             
             logger.info(f"📊 Converted {len(converted_features)} numeric features")
             
-            # Create participant structure (IDENTICAL to analysis script)
+            # Create participant structure
             df['participant_id'] = (df.index // self.samples_per_participant) + 1
             df['diagnosis_binary'] = df['class'].map({'A': 1, 'T': 0})
             df['diagnosis'] = df['class'].map({'A': 'ASD', 'T': 'Typical'})
             
-            # CRITICAL: Apply SAME preprocessing as analysis script BEFORE split
-            logger.info("🔄 Applying analysis script preprocessing before split...")
-            
-            # Get clinical features (simulate the same feature selection)
-            clinical_sets = self._get_clinical_features_for_kg(converted_features)
-            best_features, best_set_name = self._select_best_clinical_set_for_kg(df, clinical_sets)
-            
-            # Apply the same preprocessing pipeline as analysis script
-            # ΠΡΩΤΑ κάνε split
+            # FIRST do participant-level split on RAW data
             participant_info = df.groupby('participant_id')['diagnosis_binary'].first().reset_index()
-            train_pids, test_pids = train_test_split(
-                participant_info['participant_id'].values,
-                test_size=self.config['test_size'],
-                stratify=participant_info['diagnosis_binary'].values,
-                random_state=self.config['random_state']
-            )
-
-            # ΜΕΤΑ split το data
-            train_mask = df['participant_id'].isin(train_pids)
-            test_mask = df['participant_id'].isin(test_pids)
-
-            train_df = df[train_mask].copy()
-            test_df = df[test_mask].copy()
-
-            # ΤΩΡΑ κάνε preprocessing ΞΕΧΩΡΙΣΤΑ
-            train_processed = self._apply_preprocessing_train_only(train_df)
-            test_processed = self._apply_preprocessing_using_train_stats(test_df)
-
-            # Συνδύασε τα αποτελέσματα
-            df_preprocessed = pd.concat([train_processed, test_processed])            
-            # NOW create participant-level split on preprocessed data
-            participant_info = df_preprocessed.groupby('participant_id')['diagnosis_binary'].first().reset_index()
-            
-            # Stratified split by diagnosis with SAME random state
             train_pids, test_pids = train_test_split(
                 participant_info['participant_id'].values,
                 test_size=self.config['test_size'],
@@ -522,7 +490,27 @@ class SynchronizedLeakageFreeKGBuilder:
             self.train_pids = set(train_pids)
             self.test_pids = set(test_pids)
             
-            # Mark splits on preprocessed data
+            # Split the data
+            train_mask = df['participant_id'].isin(train_pids)
+            test_mask = df['participant_id'].isin(test_pids)
+            
+            train_df = df[train_mask].copy()
+            test_df = df[test_mask].copy()
+            
+            logger.info(f"   Split: {len(train_df)} train, {len(test_df)} test samples")
+            
+            # Get clinical features
+            clinical_sets = self._get_clinical_features_for_kg(converted_features)
+            best_features, best_set_name = self._select_best_clinical_set_for_kg(df, clinical_sets)
+            
+            # NOW apply preprocessing SEPARATELY
+            train_processed = self._apply_preprocessing_train_only(train_df)
+            test_processed = self._apply_preprocessing_using_train_stats(test_df)  # Only 1 argument!
+            
+            # Combine results
+            df_preprocessed = pd.concat([train_processed, test_processed])
+            
+            # Mark splits
             df_preprocessed['data_split'] = 'test'
             df_preprocessed.loc[df_preprocessed['participant_id'].isin(train_pids), 'data_split'] = 'train'
             
@@ -531,11 +519,15 @@ class SynchronizedLeakageFreeKGBuilder:
             if overlap:
                 raise ValueError(f"CRITICAL ERROR: Participant overlap detected: {overlap}")
             
-            # Verify split matches expectations
+            # Verify preprocessing was done correctly
+            if not hasattr(self, 'train_feature_means'):
+                raise ValueError("CRITICAL ERROR: Train statistics not stored")
+            
+            # Get split statistics
             train_diagnosis = df_preprocessed[df_preprocessed['data_split']=='train']['diagnosis'].value_counts()
             test_diagnosis = df_preprocessed[df_preprocessed['data_split']=='test']['diagnosis'].value_counts()
             
-            logger.info("\n📊 LEAKAGE-FREE Data Split Summary (After Preprocessing):")
+            logger.info("\n📊 LEAKAGE-FREE Data Split Summary:")
             logger.info(f"   Total participants: {len(participant_info)}")
             logger.info(f"   Train participants: {len(train_pids)}")
             logger.info(f"   Test participants: {len(test_pids)}")
@@ -547,19 +539,6 @@ class SynchronizedLeakageFreeKGBuilder:
             logger.info(f"      ASD: {test_diagnosis.get('ASD', 0)}")
             logger.info(f"      Typical: {test_diagnosis.get('Typical', 0)}")
             
-            if len(overlap) > 0:
-                raise ValueError("❌ LEAKAGE DETECTED: Participants in both train and test sets!")
-            
-            logger.info("✅ LEAKAGE-FREE split validation passed")
-            # CRITICAL VALIDATION: No participant overlap
-            overlap = self.train_pids & self.test_pids
-            if overlap:
-                raise ValueError(f"CRITICAL ERROR: Participant overlap detected: {overlap}")
-
-            # Verify preprocessing was done correctly
-            if not hasattr(self, 'train_feature_means'):
-                raise ValueError("CRITICAL ERROR: Train statistics not stored")
-
             logger.info("✅ LEAKAGE-FREE preprocessing completed successfully")
             
             return df_preprocessed, train_pids, test_pids
@@ -609,12 +588,16 @@ class SynchronizedLeakageFreeKGBuilder:
         test_clean = test_df.copy()
         
         # Use SAME features as train
+        if not hasattr(self, 'train_good_features'):
+            raise ValueError("Train preprocessing not done yet!")
+        
+        # Apply train statistics for imputation
         for feature in self.train_good_features:
             if feature in test_clean.columns:
                 # Fill missing with TRAIN mean (not test mean!)
                 test_clean[feature].fillna(self.train_feature_means[feature], inplace=True)
         
-        logger.info(f"   Applied train statistics to {len(test_clean)} test samples")
+        logger.info(f"   ✅ Test preprocessing complete: {len(test_clean)} samples")
         
         return test_clean
 
@@ -1334,7 +1317,7 @@ class SynchronizedLeakageFreeKGBuilder:
         
         return train_clean
 
-    def _apply_preprocessing_using_train_stats(self, test_df, train_df):
+
         """Apply preprocessing to test using ONLY train statistics"""
         logger.info("🔒 Preprocessing TEST data (transform only)...")
         
