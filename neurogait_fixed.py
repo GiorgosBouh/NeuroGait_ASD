@@ -644,7 +644,7 @@ class RealisticAnalysis:
     def load_and_prepare_data(self):
         """
         Φορτώνει το CSV (sep=';', decimal=','), χαρτογραφεί class A/T -> 1/0,
-        παράγει participant_id **1-based** (ΣΥΜΦΩΝΑ με τον KG builder),
+        παράγει participant_id **1-based** (όπως ο KG builder),
         κάνει participant-level stratified split, και επιλέγει clinical set ΜΟΝΟ στο TRAIN.
         Επιστρέφει:
         df, best_features, best_set_name, train_indices, test_indices, train_sample_pids, test_pids
@@ -672,9 +672,9 @@ class RealisticAnalysis:
         if len(df) % spp != 0:
             raise ValueError(f"Dataset length {len(df)} is not a multiple of samples_per_participant={spp}.")
         df = df.reset_index(drop=True)
-        df["participant_id"] = (np.arange(len(df)) // spp).astype(int) + 1  # <-- 1-based
+        df["participant_id"] = (np.arange(len(df)) // spp).astype(int) + 1  # 1-based
 
-        # συνέπεια label μέσα σε participant
+        # Συνέπεια label ανά participant
         by_pid = df.groupby("participant_id")["class"].nunique()
         if int(by_pid.max()) != 1:
             bad = by_pid[by_pid != 1].index.tolist()[:5]
@@ -688,6 +688,7 @@ class RealisticAnalysis:
             .reindex(participants).values
         )
 
+        from sklearn.model_selection import train_test_split
         train_pids, test_pids = train_test_split(
             participants,
             test_size=getattr(self, "test_size", 0.25),
@@ -716,7 +717,10 @@ class RealisticAnalysis:
             train_indices=train_indices
         )
 
-        # --- 7) Επιστροφές ---
+        # --- 7) ΚΡΑΤΑΜΕ το πηγαίο df για τα KG labels (ΠΟΛΥ ΣΗΜΑΝΤΙΚΟ) ---
+        self._df_source = df  # <-- αυτό έλειπε
+
+        # --- 8) Επιστροφές ---
         train_sample_pids = df.loc[train_indices, "participant_id"].tolist()
 
         return (
@@ -3699,118 +3703,19 @@ def main():
     return results
 
 
-def run_demo_analysis():
-    """Run a demonstration analysis with synthetic data if no dataset is available"""
-    print("🔬 DEMO MODE - Synthetic NeuroGait Analysis")
-    print("="*60)
-    print("📋 This demonstrates the analysis pipeline with synthetic data")
-    print("🎯 Replace with 'Final dataset.csv' for real analysis")
-    print()
 
-    # Generate synthetic data that mimics the structure
-    np.random.seed(42)
-    n_participants = 20
-    samples_per_participant = 8
-    n_samples = n_participants * samples_per_participant
-    n_features = 25
-
-    # Create synthetic features with realistic names
-    feature_names = [
-        'SpineBase_X', 'SpineBase_Y', 'SpineBase_Z',
-        'SPKNL_angle', 'SPKNR_angle', 'HIANL_angle', 'HIANR_angle',
-        'GaCT_duration', 'StaT_duration', 'SwiT_duration',
-        'HESHL_velocity', 'HESHR_velocity', 'SHWRL_position', 'SHWRR_position',
-        'balance_score', 'stability_metric', 'gait_rhythm',
-        'step_length', 'stride_width', 'walking_speed',
-        'coordination_index', 'symmetry_measure', 'timing_variability',
-        'postural_sway', 'movement_smoothness'
-    ]
-
-    # Generate synthetic data
-    X = np.random.randn(n_samples, n_features)
-
-    # Add some structure to make it more realistic
-    for i in range(n_features):
-        X[:, i] = X[:, i] * (i + 1) / 5  # Different scales
-
-    # Create participant IDs and diagnosis
-    participant_ids = np.repeat(
-        np.arange(n_participants), samples_per_participant)
-
-    # Create somewhat realistic diagnosis pattern (40% ASD)
-    asd_participants = np.random.choice(
-        n_participants, size=int(n_participants * 0.4), replace=False)
-    diagnosis = np.array(
-        [1 if pid in asd_participants else 0 for pid in participant_ids])
-
-    # Add slight correlation between features and diagnosis
-    asd_mask = diagnosis == 1
-    X[asd_mask, :5] += 0.3  # ASD participants have slightly different values
-    X[~asd_mask, 5:10] += 0.3  # Control participants have different pattern
-
-    # Create DataFrame
-    df = pd.DataFrame(X, columns=feature_names)
-    df['participant_id'] = participant_ids
-    df['diagnosis'] = diagnosis
-    df['class'] = ['A' if d == 1 else 'T' for d in diagnosis]
-
-    print(f"📊 Generated synthetic dataset:")
-    print(f"   Participants: {n_participants}")
-    print(f"   Samples: {n_samples}")
-    print(f"   Features: {n_features}")
-    print(f"   ASD cases: {np.sum(diagnosis)} ({np.mean(diagnosis)*100:.1f}%)")
-
-    # Save synthetic data
-    df.to_csv('synthetic_neurogait_data.csv', index=False, sep=';')
-    print("💾 Saved as 'synthetic_neurogait_data.csv'")
-
-    # Run basic analysis on synthetic data
-    analyzer = RealisticAnalysis()
-
-    # Mock the load_and_prepare_data method for demo
-    def demo_load_and_prepare_data():
-        feature_names_only = [col for col in df.columns if col not in [
-            'participant_id', 'diagnosis', 'class']]
-        return df, feature_names_only, "synthetic_demo", np.arange(len(df)), np.arange(len(df)), participant_ids, participant_ids
-
-    # Replace method temporarily
-    original_method = analyzer.load_and_prepare_data
-    analyzer.load_and_prepare_data = demo_load_and_prepare_data
-
-    try:
-        print("\n🚀 Running demo analysis...")
-        results = analyzer.run_realistic_analysis()
-
-        print("\n🎯 DEMO COMPLETED!")
-        print("📋 This was a demonstration with synthetic data")
-        print("🔄 Use real 'Final dataset.csv' for actual analysis")
-
-        return results
-
-    except Exception as e:
-        print(f"❌ Demo failed: {str(e)}")
-        return None
-    finally:
-        # Restore original method
-        analyzer.load_and_prepare_data = original_method
 
 
 if __name__ == "__main__":
-    import os
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    default_csv = os.path.join(script_dir, "Final dataset.csv")
-    csv_path = os.environ.get("NEUROGAIT_CSV", default_csv)
-
     print("🏥 NEUROGAIT ANALYSIS SYSTEM")
     print("="*50)
 
-    if os.path.isfile(csv_path):
-        print("✅ Real dataset found - running full analysis")
-        results = main()
-    else:
-        print(f"⚠️ Dataset not found at: {csv_path}")
-        print("🔬 Running demonstration with synthetic data\n")
-        results = run_demo_analysis()
+    import os
+    if not os.path.exists("Final dataset.csv"):
+        raise FileNotFoundError("❌ 'Final dataset.csv' not found. Please provide the real dataset.")
+
+    print("✅ Real dataset found - running full analysis")
+    results = main()
 
     if results:
         print("\n✅ Analysis pipeline completed successfully!")
