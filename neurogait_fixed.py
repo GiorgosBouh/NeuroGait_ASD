@@ -1880,7 +1880,7 @@ class RealisticAnalysis:
             print(f"❌ Error creating enhanced features: {e}")
             raise
 
-    def statistical_comparison_analysis(self, tier1_results):
+    
         """Statistical comparison with proper validation - CLEAN VERSION"""
         print("\n📊 DETAILED STATISTICAL ANALYSIS (sample-level, paired):")
         print("="*70)
@@ -2029,6 +2029,172 @@ class RealisticAnalysis:
             print("\n⚠️ No valid statistical comparisons could be completed.")
 
         return statistical_results
+
+    def statistical_comparison_analysis(self, approaches):
+        """
+        Robust paired statistical comparison across approaches (Raw/KG/Enhanced).
+        Expects: approaches = { name: {"y_true": ..., "y_prob": ..., "ids": optional} }
+        - Aligns samples on common IDs (or index if no IDs provided)
+        - Computes AUC per approach
+        - Paired bootstrap for ΔAUC (two-sided p-value + 95% CI)
+        - Wilcoxon signed-rank on per-sample log-loss differences
+        Returns: dict with per-approach AUCs and per-pair tests.
+        """
+        import numpy as np
+        import pandas as pd
+        from functools import reduce
+        from sklearn.metrics import roc_auc_score, log_loss
+        from scipy.stats import wilcoxon
+
+        print("\n📊 DETAILED STATISTICAL ANALYSIS (sample-level, paired):")
+        print("="*70)
+
+        # --------- 1) Normalize inputs to DataFrames & align on IDs ----------
+        dfs = []
+        name_order = []
+        for name, payload in (approaches or {}).items():
+            if payload is None: 
+                continue
+            y_true = np.asarray(payload.get("y_true", []), dtype=float)
+            y_prob = np.asarray(payload.get("y_prob", []), dtype=float)
+            ids    = payload.get("ids", None)
+
+            if y_true.size == 0 or y_prob.size == 0 or y_true.size != y_prob.size:
+                continue
+
+            if ids is not None:
+                ids = np.asarray(ids)
+                if ids.size != y_true.size:
+                    # ignore provided ids if wrong length
+                    ids = None
+
+            idx = ids if ids is not None else np.arange(y_true.size)
+            df_ = pd.DataFrame({
+                "y": y_true,
+                f"{name}_prob": y_prob
+            }, index=idx)
+            dfs.append(df_)
+            name_order.append(name)
+
+        # Need at least 2 approaches
+        if len(dfs) < 2:
+            print("⚠️ Not enough approaches supplied (need ≥2).")
+            return {"status": "insufficient", "reason": "less_than_two_approaches"}
+
+        # Inner-join on index (IDs)
+        aligned = reduce(lambda L, R: L.join(R, how="inner"), dfs)
+        # Drop any rows with NaNs (safety)
+        aligned = aligned.dropna(axis=0, how="any")
+
+        # Verify consistent labels
+        if "y" not in aligned.columns or aligned.shape[0] == 0:
+            print("⚠️ No common samples across approaches after alignment.")
+            return {"status": "insufficient", "reason": "no_common_samples"}
+
+        y = aligned["y"].to_numpy()
+        prob_cols = [c for c in aligned.columns if c.endswith("_prob")]
+        if len(prob_cols) < 2:
+            print("⚠️ Less than two probability series remain after alignment.")
+            return {"status": "insufficient", "reason": "less_than_two_probs"}
+
+        # --------- 2) Compute per-approach AUCs ----------
+        aucs = {}
+        for c in prob_cols:
+            name = c.replace("_prob", "")
+            try:
+                aucs[name] = float(roc_auc_score(y, aligned[c].to_numpy()))
+            except Exception:
+                aucs[name] = float("nan")
+
+        # --------- 3) Paired tests (ΔAUC bootstrap + Wilcoxon on log-loss) ----------
+        def paired_bootstrap_auc(y_true, p1, p2, B=2000, random_state=1337):
+            rng = np.random.default_rng(random_state)
+            n = y_true.shape[0]
+            # collect bootstrap differences
+            diffs = []
+            for _ in range(B):
+                idx = rng.integers(0, n, size=n)
+                try:
+                    auc1 = roc_auc_score(y_true[idx], p1[idx])
+                    auc2 = roc_auc_score(y_true[idx], p2[idx])
+                    diffs.append(auc2 - auc1)
+                except Exception:
+                    # in edge cases with all-1 or all-0 in a resample, skip
+                    continue
+            diffs = np.array(diffs, dtype=float)
+            if diffs.size == 0:
+                return {"diff": np.nan, "p": np.nan, "ci_low": np.nan, "ci_high": np.nan}
+            diff_hat = float(np.mean(diffs))
+            # two-sided p-value: fraction of bootstrap diffs <=0 or >=0 (whichever smaller) ×2
+            p_two = 2.0 * min(np.mean(diffs <= 0), np.mean(diffs >= 0))
+            ci_low, ci_high = np.percentile(diffs, [2.5, 97.5]).tolist()
+            return {"diff": diff_hat, "p": float(p_two), "ci_low": float(ci_low), "ci_high": float(ci_high)}
+
+        def safe_logloss(y_true, p):
+            # clamp probabilities to avoid inf log-loss
+            p = np.clip(p, 1e-12, 1-1e-12)
+            return log_loss(y_true, np.vstack([1-p, p]).T, labels=[0,1])
+
+        pairwise = {}
+        names = [c.replace("_prob", "") for c in prob_cols]
+
+        # All pair combinations
+        for i in range(len(names)):
+            for j in range(i+1, len(names)):
+                n1, n2 = names[i], names[j]
+                p1 = aligned[f"{n1}_prob"].to_numpy()
+                p2 = aligned[f"{n2}_prob"].to_numpy()
+
+                # ΔAUC via paired bootstrap
+                auc_boot = paired_bootstrap_auc(y, p1, p2)
+
+                # Wilcoxon on per-sample log-loss difference (n2 - n1)
+                try:
+                    # per-sample log-loss (pointwise) -> χρησιμοποιοὔμε per-sample cross-entropy
+                    # Σαν proxy, κάνουμε το κλασσικό per-sample CE: - y*log(p) - (1-y)*log(1-p)
+                    ce1 = -(y*np.log(np.clip(p1,1e-12,1-1e-12)) + (1-y)*np.log(np.clip(1-p1,1e-12,1-1e-12)))
+                    ce2 = -(y*np.log(np.clip(p2,1e-12,1-1e-12)) + (1-y)*np.log(np.clip(1-p2,1e-12,1-1e-12)))
+                    d_ce = ce2 - ce1
+                    # Αν όλα τα d_ce είναι ~0, ο wilcoxon μπορεί να γκρινιάξει – το πιάνουμε.
+                    stat, p_w = wilcoxon(d_ce, zero_method="wilcox", alternative="two-sided", method="approx")
+                    p_w = float(p_w)
+                except Exception:
+                    p_w = float("nan")
+
+                pairwise[f"{n1}_vs_{n2}"] = {
+                    "auc1": aucs.get(n1, np.nan),
+                    "auc2": aucs.get(n2, np.nan),
+                    "delta_auc": auc_boot["diff"],
+                    "delta_auc_ci95": [auc_boot["ci_low"], auc_boot["ci_high"]],
+                    "p_bootstrap_auc": auc_boot["p"],
+                    "p_wilcoxon_logloss": p_w,
+                    "n_common": int(aligned.shape[0]),
+                }
+
+        # --------- 4) Pretty print ----------
+        if len(pairwise) == 0:
+            print("⚠️ Insufficient valid pairs after alignment.")
+            return {"status": "insufficient", "reason": "no_pairs_after_alignment"}
+
+        print("✅ Paired comparisons on common samples:", list(aligned.index)[:3], "...")
+        print("-"*70)
+        for k, v in pairwise.items():
+            a, b = k.split("_vs_")
+            print(f"{a} vs {b}:")
+            print(f"  AUC({a})={v['auc1']:.3f} | AUC({b})={v['auc2']:.3f} | ΔAUC={v['delta_auc']:.3f} "
+                f"[95% CI {v['delta_auc_ci95'][0]:.3f}, {v['delta_auc_ci95'][1]:.3f}]")
+            print(f"  p_bootstrap_auc={v['p_bootstrap_auc']:.4f} | p_wilcoxon_logloss={v['p_wilcoxon_logloss']:.4f} | n={v['n_common']}")
+            print("-"*70)
+
+        # --------- 5) Return payload ----------
+        return {
+            "status": "ok",
+            "n_common": int(aligned.shape[0]),
+            "aucs": aucs,
+            "pairwise": pairwise,
+            "names": names,
+        }
+
 
     def print_basic_comparison_results_with_stats(self, raw_results, kg_results, statistical_results,
                                                   selected_count, original_count, clinical_set):
