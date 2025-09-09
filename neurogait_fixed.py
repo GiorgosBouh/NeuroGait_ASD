@@ -218,6 +218,67 @@ except Exception as e:
     print(f"❌ CRITICAL ERROR: Enhanced features validation failed - {str(e)}")
     ENHANCED_FEATURES_AVAILABLE = False
 
+def validate_no_data_leakage(
+    df,
+    train_indices,
+    test_indices,
+    pid_col: str = "participant_id",
+    label_col: str = "class"
+):
+    """
+    Αυστηρός έλεγχος μη-διαρροής δεδομένων σε επίπεδο δειγμάτων & συμμετεχόντων.
+
+    Απαιτεί:
+      - train_indices / test_indices: ΘΕΣΕΙΣ (iloc-safe) χωρίς overlap
+      - df[pid_col]: integer participant ids
+      - df[label_col]: δυαδική ετικέτα 0/1 (1=ASD, 0=Typical)
+
+    Σηκώνει AssertionError με σαφές μήνυμα αν βρεθεί παραβίαση.
+    """
+    import numpy as np
+    import pandas as pd
+
+    # 0) Βασικοί έλεγχοι ύπαρξης/τύπων
+    assert isinstance(df, pd.DataFrame), "df must be a pandas DataFrame"
+    assert pid_col in df.columns, f"Column '{pid_col}' not found in df"
+    assert label_col in df.columns, f"Column '{label_col}' not found in df"
+
+    n = len(df)
+    ti = np.asarray(train_indices)
+    vi = np.asarray(test_indices)
+    assert ti.ndim == 1 and vi.ndim == 1, "Indices must be 1-D arrays/lists of positions"
+    assert ti.size > 0 and vi.size > 0, "Empty train/test indices"
+    assert ti.min() >= 0 and ti.max() < n, "Train indices out of bounds"
+    assert vi.min() >= 0 and vi.max() < n, "Test indices out of bounds"
+
+    # 1) Καμία επικάλυψη δειγμάτων
+    overlap_idx = np.intersect1d(ti, vi)
+    assert overlap_idx.size == 0, f"Sample overlap between train/test indices: {overlap_idx[:10]}..."
+
+    # 2) Συμμετέχοντες train/test (πρέπει να είναι ασυμβίβαστοι)
+    train_pids = set(df.iloc[ti][pid_col].tolist())
+    test_pids  = set(df.iloc[vi][pid_col].tolist())
+    pid_overlap = train_pids & test_pids
+    assert len(pid_overlap) == 0, f"Participant overlap between train/test: {sorted(list(pid_overlap))[:10]}..."
+
+    # 3) Συνέπεια ετικετών ανά participant (train)
+    g_train = df.iloc[ti].groupby(pid_col)[label_col].nunique()
+    bad_train = g_train[g_train > 1]
+    assert bad_train.empty, (
+        "Inconsistent labels within participants in TRAIN. Examples: "
+        f"{bad_train.index.tolist()[:10]}"
+    )
+
+    # 4) Συνέπεια ετικετών ανά participant (test)
+    g_test = df.iloc[vi].groupby(pid_col)[label_col].nunique()
+    bad_test = g_test[g_test > 1]
+    assert bad_test.empty, (
+        "Inconsistent labels within participants in TEST. Examples: "
+        f"{bad_test.index.tolist()[:10]}"
+    )
+
+    # 5) (Προαιρετικά) Ενημερωτικό summary
+    # Δεν επιστρέφουμε τίποτα — αν όλα καλά, συνεχίζει αθόρυβα.
 
 class RealisticAnalysis:
     def __init__(
