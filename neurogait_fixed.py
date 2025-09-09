@@ -3533,14 +3533,16 @@ class RealisticAnalysis:
     
     def create_neurogait_kg_embeddings_adaptive(self, train_participants, test_participants, train_clean, test_clean):
         """
-        Φορτώνει τα διαθέσιμα KG embeddings από Neo4j και επιστρέφει:
+        Φορτώνει τα KG embeddings από Neo4j και επιστρέφει:
         X_train_kg, X_test_kg, y_train_aligned, y_test_aligned, train_pids_aligned
 
-        ΣΗΜΕΙΑ-ΚΛΕΙΔΙΑ:
-        - Τα labels (y) ΔΕΝ διαβάζονται από train_clean/test_clean (δεν έχουν 'class').
-        Αντίθετα, αντλούνται από το self._df_source (το πλήρες df) με στοίχιση στα sample_ids.
-        - Τα sample_id έχουν μορφή "S_{pid}_{idx}" με pid **1-based** (όπως στον KG builder).
-        - Η σειρά των y είναι 100% ευθυγραμμισμένη με τη σειρά των διαθέσιμων embeddings (train/test).
+        Κρίσιμες επιλογές:
+        - Αγνοούμε τα train_participants/test_participants που έρχονται ως ορίσματα
+        (μπορεί να είναι διαφορετικού τύπου). Χρησιμοποιούμε ΜΟΝΟ τα indices
+        από train_clean/test_clean για να ορίσουμε ποια δείγματα ζητάμε.
+        - Τα labels (y) αντλούνται από self._df_source (το πλήρες df) με βάση τους
+        original indices (idx) που χαρτογραφούνται σε sample_id "S_{pid}_{idx}".
+        - Το participant_id είναι 1-based (όπως στον KG builder).
         """
         import numpy as np
 
@@ -3552,7 +3554,7 @@ class RealisticAnalysis:
         if label_col not in df_src.columns:
             raise KeyError(f"Label column '{label_col}' not found in source df.")
 
-        # --- 1) Πάρε διαθέσιμα embeddings από Neo4j, χωριστά για train/test ---
+        # --- 1) Διαθέσιμα embeddings από Neo4j ---
         cypher = """
         MATCH (s:Sample)-[:HAS_EMBEDDING]->(e:Embedding)
         WHERE e.data_split = $split
@@ -3570,55 +3572,32 @@ class RealisticAnalysis:
 
         print(f"   📊 Available embeddings: Train={len(available_train)}, Test={len(available_test)}")
 
-        # --- 2) Φτιάξε τα sample_id ακριβώς όπως στον KG builder: S_{pid}_{idx} με pid 1-based ---
-        # Προϋπόθεση: στο df_src το 'participant_id' είναι 1-based (το εξασφαλίσαμε στο load_and_prepare_data)
-        # Ο 'idx' είναι ο index της γραμμής στο df_src.
-        def build_idx_to_sid(df_like):
-            # Χρησιμοποιούμε το index του df_src, ΟΧΙ των clean DataFrames
-            # (train_clean/test_clean δίνονται μόνο για συμβατότητα υπογραφής)
-            idx_to_sid = {}
-            for idx in df_src.index:
-                pid_val = int(df_src.loc[idx, "participant_id"])
-                sid = f"S_{pid_val}_{idx}"
-                idx_to_sid[idx] = sid
-            return idx_to_sid
+        # --- 2) Χαρτογράφηση original idx -> sample_id (S_{pid}_{idx}) με pid 1-based ---
+        # Προϋπόθεση: df_src['participant_id'] είναι 1-based (το φροντίσαμε στο load_and_prepare_data)
+        def idx_to_sid(idx: int) -> str:
+            pid_val = int(df_src.loc[idx, "participant_id"])
+            return f"S_{pid_val}_{idx}"
 
-        idx_to_sid = build_idx_to_sid(df_src)  # mapping για ΟΛΟ το dataset
+        # --- 3) Χτίζουμε τις λίστες SID που ζητάμε από τα indices των train_clean/test_clean ---
+        # Χρησιμοποιούμε ΑΠΕΥΘΕΙΑΣ τα indices των DataFrames train_clean/test_clean
+        train_requested_sids = [idx_to_sid(int(i)) for i in train_clean.index]
+        test_requested_sids  = [idx_to_sid(int(i)) for i in test_clean.index]
 
-        # --- 3) Φτιάξε λίστες με sample_id που ανήκουν στο TRAIN/TEST subset (με τη ΣΕΙΡΑ των διαθέσιμων embeddings) ---
-        # Παίρνουμε μόνο όσα υπάρχουν πράγματι στη Neo4j (available_* dicts)
-        def subset_sids_available(split_available_dict, participant_ids_set=None):
-            # Αν δοθούν participant_ids_set, μπορούμε να φιλτράρουμε κι από εκεί,
-            # αλλά βασικά το κριτήριο είναι "να υπάρχει το sid στη Neo4j".
-            return [sid for sid in split_available_dict.keys()]
-
-        # Θέλουμε όμως να κρατήσουμε μόνο τα sids που αντιστοιχούν στα indices των train/test
-        train_idx_set = set(np.where(df_src["participant_id"].isin(train_participants))[0])
-        test_idx_set  = set(np.where(df_src["participant_id"].isin(test_participants))[0])
-
-        # Φιλτράρουμε τα διαθέσιμα sids ώστε να προέρχονται από τα σωστά indices
-        def filter_available_for_indices(available_dict, wanted_idx_set):
-            sids = []
-            for idx, sid in idx_to_sid.items():
-                if idx in wanted_idx_set and sid in available_dict:
-                    sids.append(sid)
-            return sids
-
-        train_sids = filter_available_for_indices(available_train, train_idx_set)
-        test_sids  = filter_available_for_indices(available_test,  test_idx_set)
+        # Κρατάμε μόνο όσα SIDs υπάρχουν στη Neo4j (διαθέσιμα)
+        train_sids = [sid for sid in train_requested_sids if sid in available_train]
+        test_sids  = [sid for sid in test_requested_sids  if sid in available_test]
 
         print("   🔍 Sample matching:")
-        print(f"      Train: {len(train_sids)}/{len(train_idx_set)} available")
-        print(f"      Test: {len(test_sids)}/{len(test_idx_set)} available")
+        print(f"      Train: {len(train_sids)}/{len(train_requested_sids)} available")
+        print(f"      Test: {len(test_sids)}/{len(test_requested_sids)} available")
 
         if len(train_sids) < 50:
             raise ValueError(f"Insufficient training embeddings: {len(train_sids)}")
         if len(test_sids) < 10:
             raise ValueError(f"Insufficient test embeddings: {len(test_sids)}")
 
-        # --- 4) Συνέλευση X (με τη ΣΕΙΡΑ των sids) ---
+        # --- 4) Συναρμολόγηση X στη σειρά των SIDs ---
         def stack_vectors(available_dict, sids):
-            # Προσοχή: κάποιοι οδηγοί Neo4j δίνουν lists of floats, άλλοι np arrays—φέρ’ τα σε np.array
             mats = []
             for sid in sids:
                 vec = available_dict[sid]
@@ -3628,24 +3607,18 @@ class RealisticAnalysis:
         X_train_kg = stack_vectors(available_train, train_sids)
         X_test_kg  = stack_vectors(available_test,  test_sids)
 
-        # --- 5) Συνέλευση y (label) από το ΑΡΧΙΚΟ df με ΣΤΟΙΧΙΣΗ στα sids ---
-        # Φτιάχνουμε αντίστροφο mapping sid -> original idx και παίρνουμε label από df_src[label_col]
-        sid_to_idx = {sid: idx for idx, sid in idx_to_sid.items()}
+        # --- 5) Συναρμολόγηση y (labels) από το df_src με βάση τον original idx μέσα στο SID ---
+        def sid_to_idx(sid: str) -> int:
+            # "S_{pid}_{idx}" -> παίρνουμε το 3ο τμήμα ως idx
+            return int(sid.split("_")[2])
 
-        y_train_aligned = np.array(
-            [int(df_src.loc[sid_to_idx[sid], label_col]) for sid in train_sids],
-            dtype=int
-        )
-        y_test_aligned = np.array(
-            [int(df_src.loc[sid_to_idx[sid], label_col]) for sid in test_sids],
-            dtype=int
-        )
+        y_train_aligned = np.array([int(df_src.loc[sid_to_idx(s), label_col]) for s in train_sids], dtype=int)
+        y_test_aligned  = np.array([int(df_src.loc[sid_to_idx(s), label_col]) for s in test_sids],  dtype=int)
 
-        # --- 6) Επιστρέφουμε και τα pids στη σειρά των sids (χρήσιμο για group-aware αξιολογήσεις) ---
+        # --- 6) Επιστρέφουμε και τα pids στη σειρά των train_sids (χρήσιμα για group-aware metrics) ---
         train_pids_aligned = [int(s.split("_")[1]) for s in train_sids]
 
         return X_train_kg, X_test_kg, y_train_aligned, y_test_aligned, train_pids_aligned
-
 
 
 def main():
