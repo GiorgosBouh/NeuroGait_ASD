@@ -4040,7 +4040,55 @@ class RealisticAnalysis:
         if enhanced_results is not None:
             all_results["Enhanced Features"] = enhanced_results
 
+        # === SHAP REPORT (terminal) ===
+        def _print_shap_top(results, label, top_k=10):
+            shap_obj = results.get("shap") if isinstance(results, dict) else None
+            if not shap_obj:
+                print(f"⚠️ No SHAP stored for {label}")
+                return
+
+            import numpy as _np
+            vals = shap_obj.get("values", None)
+            if vals is None:
+                print(f"⚠️ Empty SHAP values for {label}")
+                return
+
+            vals = _np.abs(_np.asarray(vals))
+            if vals.ndim != 2 or vals.shape[1] == 0:
+                print(f"⚠️ Invalid SHAP shape {vals.shape} for {label}")
+                return
+
+            mean_abs = vals.mean(axis=0)
+
+            names = shap_obj.get("feature_names")
+            if not names:
+                names = [f"feat_{i}" for i in range(mean_abs.shape[0])]
+            else:
+                names = list(names)
+
+            m = min(int(top_k), mean_abs.shape[0], len(names))
+            order = _np.argsort(-mean_abs)[:m]
+
+            print(f"\n🔎 SHAP Top-{m} features — {label}")
+            for rank, j in enumerate(order, 1):
+                idx = int(j)  # cast για indexing σε list
+                print(f"  {rank:2d}. {names[idx]}  | mean|SHAP|={float(mean_abs[idx]):.5f}")
+             # --- SHAP summaries (console) ---
+        _print_shap_top(raw_results, "RAW")
+        _print_shap_top(kg_results, "KG")
+        if enhanced_results is not None:
+            _print_shap_top(enhanced_results, "ENHANCED")
+
+        # Τελική επιστροφή για downstream χρήσεις
+        all_results = {
+            "Raw Clinical Features": raw_results,
+            "NeuroGait KG": kg_results,
+        }
+        if enhanced_results is not None:
+            all_results["Enhanced Features"] = enhanced_results
+
         return all_results
+
 
 
     def print_kg_comparison_results(self, results_raw, results_kg, results_enh, **context):
