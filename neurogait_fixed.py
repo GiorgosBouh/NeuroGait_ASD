@@ -3966,6 +3966,26 @@ class RealisticAnalysis:
             all_results["Enhanced Features"] = enhanced_results
 
         return all_results
+    
+    def _print_shap_top(results, label):
+        shap_obj = results.get("shap")
+        if not shap_obj:
+            print(f"⚠️ No SHAP stored for {label}")
+            return
+        import numpy as np
+        vals = np.abs(np.asarray(shap_obj["values"]))
+        mean_abs = vals.mean(axis=0)
+        names = shap_obj.get("feature_names", [f"feat_{i}" for i in range(mean_abs.shape[0])])
+        order = np.argsort(-mean_abs)[:10]
+        print(f"\n🔎 SHAP Top-10 features — {label}")
+        for rank, j in enumerate(order, 1):
+            print(f"  {rank:2d}. {names[j]}  | mean|SHAP|={mean_abs[j]:.5f}")
+
+    _print_shap_top(raw_results, "RAW")
+    _print_shap_top(kg_results, "KG")
+    if enhanced_results is not None:
+        _print_shap_top(enhanced_results, "ENHANCED")
+
 
     def print_kg_comparison_results(self, results_raw, results_kg, results_enh, **context):
         """
