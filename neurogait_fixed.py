@@ -3575,6 +3575,7 @@ class RealisticAnalysis:
 
             # 4) (προσεγγιστικό) identical rows
             if len(train_data.columns) == len(test_data.columns):
+                import pandas as pd
                 train_hash = pd.util.hash_pandas_object(train_data)
                 test_hash = pd.util.hash_pandas_object(test_data)
                 hash_overlap = set(train_hash) & set(test_hash)
@@ -3602,6 +3603,7 @@ class RealisticAnalysis:
         train_clean, test_clean, clean_features = self.preprocess_data(train_data, test_data, best_features)
 
         # Label column (binary) από 'class' A/T
+        import numpy as np
         diag_col = getattr(self, "diagnosis_col", "class")
         if diag_col not in train_clean.columns or diag_col not in test_clean.columns:
             raise KeyError(f"Diagnosis column '{diag_col}' not present after preprocessing")
@@ -3691,14 +3693,28 @@ class RealisticAnalysis:
             else:
                 # KernelExplainer (slow) – μικρό background
                 bg = shap.sample(Xtr_arr, min(100, Xtr_arr.shape[0]))
-                explainer_raw = shap.KernelExplainer(best_model_raw.predict_proba, bg)
+                # wrap proba for binary
+                def _proba_fn(xx):
+                    try:
+                        return best_model_raw.predict_proba(xx)[:, 1]
+                    except Exception:
+                        # fallback for models without predict_proba
+                        s = best_model_raw.decision_function(xx)
+                        s = (s - s.min()) / (s.max() - s.min() + 1e-12)
+                        return s
+                explainer_raw = shap.KernelExplainer(_proba_fn, bg)
                 shap_vals = explainer_raw.shap_values(Xte_arr)
+                # KernelExplainer returns array for binary
                 if isinstance(shap_vals, list):
                     shap_vals = shap_vals[1] if len(shap_vals) > 1 else shap_vals[0]
 
             raw_results["shap"] = {
                 "values": _as_ndarray(shap_vals).tolist(),
-                "expected_value": (explainer_raw.expected_value[1] if isinstance(explainer_raw.expected_value, (list, tuple)) and len(explainer_raw.expected_value) > 1 else explainer_raw.expected_value),
+                "expected_value": (
+                    explainer_raw.expected_value[1]
+                    if isinstance(explainer_raw.expected_value, (list, tuple)) and len(explainer_raw.expected_value) > 1
+                    else explainer_raw.expected_value
+                ),
                 "feature_names": feat_names_raw
             }
             print("✅ SHAP analysis completed for RAW")
@@ -3760,14 +3776,25 @@ class RealisticAnalysis:
                     shap_vals_kg = shap_values_kg
             else:
                 bg_kg = shap.sample(Xtr_arr_kg, min(100, Xtr_arr_kg.shape[0]))
-                explainer_kg = shap.KernelExplainer(best_model_kg.predict_proba, bg_kg)
+                def _proba_fn_kg(xx):
+                    try:
+                        return best_model_kg.predict_proba(xx)[:, 1]
+                    except Exception:
+                        s = best_model_kg.decision_function(xx)
+                        s = (s - s.min()) / (s.max() - s.min() + 1e-12)
+                        return s
+                explainer_kg = shap.KernelExplainer(_proba_fn_kg, bg_kg)
                 shap_vals_kg = explainer_kg.shap_values(Xte_arr_kg)
                 if isinstance(shap_vals_kg, list):
                     shap_vals_kg = shap_vals_kg[1] if len(shap_vals_kg) > 1 else shap_vals_kg[0]
 
             kg_results["shap"] = {
                 "values": _as_ndarray(shap_vals_kg).tolist(),
-                "expected_value": (explainer_kg.expected_value[1] if isinstance(explainer_kg.expected_value, (list, tuple)) and len(explainer_kg.expected_value) > 1 else explainer_kg.expected_value),
+                "expected_value": (
+                    explainer_kg.expected_value[1]
+                    if isinstance(explainer_kg.expected_value, (list, tuple)) and len(explainer_kg.expected_value) > 1
+                    else explainer_kg.expected_value
+                ),
                 "feature_names": feat_names_kg
             }
             print("✅ SHAP analysis completed for KG")
@@ -3830,14 +3857,25 @@ class RealisticAnalysis:
                         shap_vals_enh = shap_values_enh
                 else:
                     bg_enh = shap.sample(Xtr_arr_enh, min(100, Xtr_arr_enh.shape[0]))
-                    explainer_enh = shap.KernelExplainer(best_model_enh.predict_proba, bg_enh)
+                    def _proba_fn_enh(xx):
+                        try:
+                            return best_model_enh.predict_proba(xx)[:, 1]
+                        except Exception:
+                            s = best_model_enh.decision_function(xx)
+                            s = (s - s.min()) / (s.max() - s.min() + 1e-12)
+                            return s
+                    explainer_enh = shap.KernelExplainer(_proba_fn_enh, bg_enh)
                     shap_vals_enh = explainer_enh.shap_values(Xte_arr_enh)
                     if isinstance(shap_vals_enh, list):
                         shap_vals_enh = shap_vals_enh[1] if len(shap_vals_enh) > 1 else shap_vals_enh[0]
 
                 enhanced_results["shap"] = {
                     "values": _as_ndarray(shap_vals_enh).tolist(),
-                    "expected_value": (explainer_enh.expected_value[1] if isinstance(explainer_enh.expected_value, (list, tuple)) and len(explainer_enh.expected_value) > 1 else explainer_enh.expected_value),
+                    "expected_value": (
+                        explainer_enh.expected_value[1]
+                        if isinstance(explainer_enh.expected_value, (list, tuple)) and len(explainer_enh.expected_value) > 1
+                        else explainer_enh.expected_value
+                    ),
                     "feature_names": feat_names_enh
                 }
                 print("✅ SHAP analysis completed for Enhanced")
@@ -3944,6 +3982,26 @@ class RealisticAnalysis:
             results_enh_for_print[best_enh_name]["F1"]  = results_enh_for_print[best_enh_name]["f1"]
             results_enh_for_print[best_enh_name]["ACC"] = results_enh_for_print[best_enh_name]["acc"]
 
+        # === SHAP REPORT (terminal) ===
+        def _print_shap_top(results, label):
+            shap_obj = results.get("shap") if isinstance(results, dict) else None
+            if not shap_obj:
+                print(f"⚠️ No SHAP stored for {label}")
+                return
+            import numpy as _np
+            vals = _np.abs(_np.asarray(shap_obj["values"]))
+            mean_abs = vals.mean(axis=0)
+            names = shap_obj.get("feature_names", [f"feat_{i}" for i in range(mean_abs.shape[0])])
+            order = _np.argsort(-mean_abs)[:10]
+            print(f"\n🔎 SHAP Top-10 features — {label}")
+            for rank, j in enumerate(order, 1):
+                print(f"  {rank:2d}. {names[j]}  | mean|SHAP|={mean_abs[j]:.5f}")
+
+        _print_shap_top(raw_results, "RAW")
+        _print_shap_top(kg_results, "KG")
+        if enhanced_results is not None:
+            _print_shap_top(enhanced_results, "ENHANCED")
+
         # Εκτύπωση συνοπτικών με τα σωστά dicts
         self.print_kg_comparison_results(
             results_raw_for_print or {},
@@ -3966,25 +4024,6 @@ class RealisticAnalysis:
             all_results["Enhanced Features"] = enhanced_results
 
         return all_results
-    
-    def _print_shap_top(results, label):
-        shap_obj = results.get("shap")
-        if not shap_obj:
-            print(f"⚠️ No SHAP stored for {label}")
-            return
-        import numpy as np
-        vals = np.abs(np.asarray(shap_obj["values"]))
-        mean_abs = vals.mean(axis=0)
-        names = shap_obj.get("feature_names", [f"feat_{i}" for i in range(mean_abs.shape[0])])
-        order = np.argsort(-mean_abs)[:10]
-        print(f"\n🔎 SHAP Top-10 features — {label}")
-        for rank, j in enumerate(order, 1):
-            print(f"  {rank:2d}. {names[j]}  | mean|SHAP|={mean_abs[j]:.5f}")
-
-    _print_shap_top(raw_results, "RAW")
-    _print_shap_top(kg_results, "KG")
-    if enhanced_results is not None:
-        _print_shap_top(enhanced_results, "ENHANCED")
 
 
     def print_kg_comparison_results(self, results_raw, results_kg, results_enh, **context):
