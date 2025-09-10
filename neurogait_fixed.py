@@ -3517,11 +3517,7 @@ class RealisticAnalysis:
             """
             import numpy as _np
             if isinstance(vals, list):
-                # pick positive class if possible
-                if len(vals) > positive_index:
-                    vals = vals[positive_index]
-                else:
-                    vals = vals[0]
+                vals = vals[positive_index] if len(vals) > positive_index else vals[0]
             vals = _np.asarray(vals)
             if vals.ndim == 3 and vals.shape[2] >= 2:
                 vals = vals[:, :, positive_index]
@@ -3744,6 +3740,36 @@ class RealisticAnalysis:
             train_pids, test_pids, train_clean, test_clean
         )
 
+        # ----- Resolve KG feature names (real names if available) -----
+        feat_names_kg = None
+        if getattr(self, "kg_builder", None) is not None:
+            for attr in ["embedding_feature_names_", "feature_names_", "selected_features_"]:
+                if hasattr(self.kg_builder, attr):
+                    cand = getattr(self.kg_builder, attr)
+                    try:
+                        cand = list(cand)
+                        d = _as_ndarray(X_test_kg).shape[1]
+                        if len(cand) == d:
+                            feat_names_kg = cand
+                            break
+                        else:
+                            feat_names_kg = [f"KG({c})" for c in cand][:d]
+                            break
+                    except Exception:
+                        pass
+        if feat_names_kg is None:
+            try:
+                base = list(selected_features)
+            except Exception:
+                base = []
+            d = _as_ndarray(X_test_kg).shape[1]
+            if len(base) >= d:
+                feat_names_kg = [f"KG({n})" for n in base[:d]]
+            else:
+                extra = [f"KG_emb_{i+1}" for i in range(d - len(base))]
+                feat_names_kg = [f"KG({n})" for n in base] + extra
+        feat_names_kg = _get_feature_names(X_test_kg, fallback_names=feat_names_kg, prefix="kg_emb")
+
         cv_results_kg, best_name_kg, best_est_kg = self.train_and_evaluate_models_grouped(
             X_train_kg, y_train_kg, train_indices, df,
             approach_name=": NeuroGait KG (grouped by participant)"
@@ -3774,7 +3800,6 @@ class RealisticAnalysis:
             import shap
             Xtr_arr_kg = _as_ndarray(X_train_kg)
             Xte_arr_kg = _as_ndarray(X_test_kg)
-            feat_names_kg = _get_feature_names(X_test_kg, prefix="kg_feat")
 
             best_model_kg = best_est_kg.named_steps["clf"]
             is_tree_like = hasattr(best_model_kg, "estimators_") or best_model_kg.__class__.__name__.lower().startswith(("xgb", "lgb", "cat"))
@@ -3802,7 +3827,7 @@ class RealisticAnalysis:
                     if isinstance(explainer_kg.expected_value, (list, tuple)) and len(explainer_kg.expected_value) > 1
                     else explainer_kg.expected_value
                 ),
-                "feature_names": feat_names_kg
+                "feature_names": list(feat_names_kg)
             }
             print("✅ SHAP analysis completed for KG")
         except Exception as e:
@@ -3820,6 +3845,16 @@ class RealisticAnalysis:
             )
             # labels ίδιοι με raw
             y_train_enh, y_test_enh = y_train_raw, y_test_raw
+
+            # ---- Enhanced feature names (ENH(<clinical>) + ENH_extra_k) ----
+            d_enh = _as_ndarray(X_test_enh).shape[1]
+            base_names = list(selected_features) if selected_features is not None else []
+            if len(base_names) >= d_enh:
+                feat_names_enh = [f"ENH({n})" for n in base_names[:d_enh]]
+            else:
+                extras = [f"ENH_extra_{i+1}" for i in range(d_enh - len(base_names))]
+                feat_names_enh = [f"ENH({n})" for n in base_names] + extras
+            feat_names_enh = _get_feature_names(X_test_enh, fallback_names=feat_names_enh, prefix="enh_feat")
 
             cv_results_enh, best_name_enh, best_est_enh = self.train_and_evaluate_models_grouped(
                 X_train_enh, y_train_enh, train_indices, df,
@@ -3851,7 +3886,6 @@ class RealisticAnalysis:
                 import shap
                 Xtr_arr_enh = _as_ndarray(X_train_enh)
                 Xte_arr_enh = _as_ndarray(X_test_enh)
-                feat_names_enh = _get_feature_names(X_test_enh, prefix="enh_feat")
 
                 best_model_enh = best_est_enh.named_steps["clf"]
                 is_tree_like = hasattr(best_model_enh, "estimators_") or best_model_enh.__class__.__name__.lower().startswith(("xgb", "lgb", "cat"))
@@ -3879,7 +3913,7 @@ class RealisticAnalysis:
                         if isinstance(explainer_enh.expected_value, (list, tuple)) and len(explainer_enh.expected_value) > 1
                         else explainer_enh.expected_value
                     ),
-                    "feature_names": feat_names_enh
+                    "feature_names": list(feat_names_enh)
                 }
                 print("✅ SHAP analysis completed for Enhanced")
             except Exception as e:
@@ -3926,7 +3960,8 @@ class RealisticAnalysis:
 
         def _acc_from_probs(y_true, y_prob, thr=0.5):
             y_pred = (np.asarray(y_prob) >= thr).astype(int)
-            return float(accuracy_score(np.asarray(y_true), y_pred))
+            from sklearn.metrics import accuracy_score as _acc
+            return float(_acc(np.asarray(y_true), y_pred))
 
         # --- RAW (best μοντέλο) ---
         best_raw_name = raw_results["test"]["best_model"]
@@ -3942,6 +3977,7 @@ class RealisticAnalysis:
                 "cv_scores": raw_cv_scores,
             }
         }
+        # aliases για τον printer
         results_raw_for_print[best_raw_name]["AUC"] = results_raw_for_print[best_raw_name]["auc"]
         results_raw_for_print[best_raw_name]["F1"]  = results_raw_for_print[best_raw_name]["f1"]
         results_raw_for_print[best_raw_name]["ACC"] = results_raw_for_print[best_raw_name]["acc"]
@@ -4040,7 +4076,6 @@ class RealisticAnalysis:
             all_results["Enhanced Features"] = enhanced_results
 
         return all_results
-
 
      
 
