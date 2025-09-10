@@ -3481,16 +3481,14 @@ class RealisticAnalysis:
 
 
 
-
-
-
     def run_kg_comparison_analysis(self):
         """
         Run KG comparison analysis with proper alignment and leakage validation.
         Uses Grouped CV (per participant) and scaling inside the CV pipeline.
         Includes SHAP explanations for hold-out test (RAW / KG / Enhanced).
         """
-        # --------------------- Small SHAP helpers (local, no imports leak) ----------
+
+        # --------------------- Small SHAP helpers ---------------------
         def _as_ndarray(x):
             try:
                 import numpy as _np
@@ -3506,9 +3504,28 @@ class RealisticAnalysis:
             X_arr = _as_ndarray(X)
             if fallback_names is not None and len(fallback_names) == X_arr.shape[1]:
                 return list(fallback_names)
-            # generic names
             n = X_arr.shape[1]
             return [f"{prefix}_{i}" for i in range(n)]
+
+        def _squeeze_shap_values(vals, positive_index=1):
+            """
+            Return SHAP values as (n_samples, n_features).
+            Accepts:
+            - array (n, d)
+            - array (n, d, 2) -> take [:, :, positive_index]
+            - list of length C -> choose positive_index if available, else first
+            """
+            import numpy as _np
+            if isinstance(vals, list):
+                # pick positive class if possible
+                if len(vals) > positive_index:
+                    vals = vals[positive_index]
+                else:
+                    vals = vals[0]
+            vals = _np.asarray(vals)
+            if vals.ndim == 3 and vals.shape[2] >= 2:
+                vals = vals[:, :, positive_index]
+            return vals
 
         # --------------------- Helper closures ---------------------
         def _ensure_kg_builder_local():
@@ -3688,13 +3705,8 @@ class RealisticAnalysis:
             if is_tree_like:
                 explainer_raw = shap.TreeExplainer(best_model_raw)
                 shap_values_raw = explainer_raw.shap_values(Xte_arr)
-                # unify to (n_samples, n_features)
-                if isinstance(shap_values_raw, list):
-                    shap_vals = shap_values_raw[1] if len(shap_values_raw) > 1 else shap_values_raw[0]
-                else:
-                    shap_vals = shap_values_raw
+                shap_vals = _squeeze_shap_values(shap_values_raw, positive_index=1)
             else:
-                # KernelExplainer (binary proba wrapper)
                 bg = shap.sample(Xtr_arr, min(100, Xtr_arr.shape[0]))
                 def _proba_fn(xx):
                     try:
@@ -3705,8 +3717,7 @@ class RealisticAnalysis:
                         return s
                 explainer_raw = shap.KernelExplainer(_proba_fn, bg)
                 shap_vals = explainer_raw.shap_values(Xte_arr)
-                if isinstance(shap_vals, list):
-                    shap_vals = shap_vals[1] if len(shap_vals) > 1 else shap_vals[0]
+                shap_vals = _squeeze_shap_values(shap_vals, positive_index=1)
 
             raw_results["shap"] = {
                 "values": _as_ndarray(shap_vals).tolist(),
@@ -3770,10 +3781,7 @@ class RealisticAnalysis:
             if is_tree_like:
                 explainer_kg = shap.TreeExplainer(best_model_kg)
                 shap_values_kg = explainer_kg.shap_values(Xte_arr_kg)
-                if isinstance(shap_values_kg, list):
-                    shap_vals_kg = shap_values_kg[1] if len(shap_values_kg) > 1 else shap_values_kg[0]
-                else:
-                    shap_vals_kg = shap_values_kg
+                shap_vals_kg = _squeeze_shap_values(shap_values_kg, positive_index=1)
             else:
                 bg_kg = shap.sample(Xtr_arr_kg, min(100, Xtr_arr_kg.shape[0]))
                 def _proba_fn_kg(xx):
@@ -3785,8 +3793,7 @@ class RealisticAnalysis:
                         return s
                 explainer_kg = shap.KernelExplainer(_proba_fn_kg, bg_kg)
                 shap_vals_kg = explainer_kg.shap_values(Xte_arr_kg)
-                if isinstance(shap_vals_kg, list):
-                    shap_vals_kg = shap_vals_kg[1] if len(shap_vals_kg) > 1 else shap_vals_kg[0]
+                shap_vals_kg = _squeeze_shap_values(shap_vals_kg, positive_index=1)
 
             kg_results["shap"] = {
                 "values": _as_ndarray(shap_vals_kg).tolist(),
@@ -3851,10 +3858,7 @@ class RealisticAnalysis:
                 if is_tree_like:
                     explainer_enh = shap.TreeExplainer(best_model_enh)
                     shap_values_enh = explainer_enh.shap_values(Xte_arr_enh)
-                    if isinstance(shap_values_enh, list):
-                        shap_vals_enh = shap_values_enh[1] if len(shap_values_enh) > 1 else shap_values_enh[0]
-                    else:
-                        shap_vals_enh = shap_values_enh
+                    shap_vals_enh = _squeeze_shap_values(shap_values_enh, positive_index=1)
                 else:
                     bg_enh = shap.sample(Xtr_arr_enh, min(100, Xtr_arr_enh.shape[0]))
                     def _proba_fn_enh(xx):
@@ -3866,8 +3870,7 @@ class RealisticAnalysis:
                             return s
                     explainer_enh = shap.KernelExplainer(_proba_fn_enh, bg_enh)
                     shap_vals_enh = explainer_enh.shap_values(Xte_arr_enh)
-                    if isinstance(shap_vals_enh, list):
-                        shap_vals_enh = shap_vals_enh[1] if len(shap_vals_enh) > 1 else shap_vals_enh[0]
+                    shap_vals_enh = _squeeze_shap_values(shap_vals_enh, positive_index=1)
 
                 enhanced_results["shap"] = {
                     "values": _as_ndarray(shap_vals_enh).tolist(),
@@ -4036,7 +4039,10 @@ class RealisticAnalysis:
         if enhanced_results is not None:
             all_results["Enhanced Features"] = enhanced_results
 
-        return all_results    
+        return all_results
+
+
+     
 
 
     def print_kg_comparison_results(self, results_raw, results_kg, results_enh, **context):
