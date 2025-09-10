@@ -33,6 +33,26 @@ import importlib
 import inspect
 import neurogait_kg_builder as kgmod
 warnings.filterwarnings('ignore')
+import shap
+from shap.maskers import Independent
+
+def _as_ndarray(x):
+    try:
+        import numpy as _np
+        if hasattr(x, "to_numpy"):
+            return x.to_numpy()
+        return _np.asarray(x)
+    except Exception:
+        return x
+
+def _get_feature_names(X, fallback_names=None, prefix="feat"):
+    if hasattr(X, "columns"):
+        return list(X.columns)
+    if fallback_names is not None and len(fallback_names) == _as_ndarray(X).shape[1]:
+        return list(fallback_names)
+    # generic names
+    n = _as_ndarray(X).shape[1]
+    return [f"{prefix}_{i}" for i in range(n)]
 
 # =====================
 # Statistical utilities
@@ -2649,6 +2669,36 @@ class RealisticAnalysis:
             }
         }
 
+
+        # === SHAP για RAW (hold-out test) ===
+        try:
+            import shap
+            feature_names = _get_feature_names(X_test_raw, fallback_names=selected_features)
+
+            # Πάρε το estimator από το pipeline
+            best_model = best_est_raw.named_steps["clf"]
+
+            # Χρησιμοποιούμε TreeExplainer αν είναι tree-based (RF, XGB), αλλιώς KernelExplainer
+            if hasattr(best_model, "estimators_") or best_model.__class__.__name__.lower().startswith("xgb"):
+                explainer = shap.TreeExplainer(best_model)
+            else:
+                explainer = shap.KernelExplainer(best_model.predict_proba, shap.sample(X_train_raw, 100))
+
+            shap_values = explainer(X_test_raw)
+
+            # Αποθήκευση στο raw_results για downstream χρήση
+            raw_results["shap_values"] = shap_values.values.tolist()
+            raw_results["shap_expected_value"] = (
+                explainer.expected_value.tolist() if hasattr(explainer, "expected_value") else None
+            )
+            raw_results["shap_feature_names"] = feature_names
+
+            print("✅ SHAP analysis completed for RAW features")
+
+        except Exception as e:
+            print(f"❌ SHAP analysis failed: {e}")
+
+
         # ========== TIER 1B: SIMPLE KG FEATURES (Baseline) ==========
         print(f"\n{'='*50}")
         print("🧠 TIER 1B: SIMPLE KG FEATURES (Baseline, Grouped CV)")
@@ -3344,11 +3394,118 @@ class RealisticAnalysis:
 
         self.kg_builder = kg_instance
 
+    def compute_shap_on_test(pipeline, X_train, X_test, feature_names=None, out_prefix="raw"):
+        """
+        Υπολογίζει SHAP πάνω στο hold-out test για binary classification pipeline.
+        Λειτουργεί για οποιοδήποτε sklearn Pipeline (με scaler/χωρίς), με predict_proba ή decision_function.
+        Επιστρέφει dict με mean|SHAP| ανά feature και αποθηκεύει 2 plots:
+        - f"{out_prefix}_shap_beeswarm.png"
+        - f"{out_prefix}_shap_bar.png"
+        """
+        import numpy as np
+        import matplotlib.pyplot as plt
+
+        # 1) Ετοιμάζουμε X (περνάει ΜΟΝΟ από τυχόν scaler του pipeline για σταθερή κλίμακα)
+        Xtr = _as_ndarray(X_train)
+        Xte = _as_ndarray(X_test)
+
+        if hasattr(pipeline, "named_steps") and "scaler" in pipeline.named_steps:
+            try:
+                Xtr = pipeline.named_steps["scaler"].transform(Xtr)
+                Xte = pipeline.named_steps["scaler"].transform(Xte)
+            except Exception:
+                pass
+
+        # 2) Feature names
+        feat_names = _get_feature_names(X_train, fallback_names=feature_names, prefix=out_prefix.upper())
+
+        # 3) Ορίζουμε function f για SHAP (predict_proba ή decision_function)
+        if hasattr(pipeline, "predict_proba"):
+            f = lambda data: pipeline.predict_proba(data)[:, 1]
+        elif hasattr(pipeline, "decision_function"):
+            f = lambda data: pipeline.decision_function(data)
+        else:
+            # fallback: χρησιμοποίησε predict (0/1). SHAP θα δουλέψει agnostically, αλλά λιγότερο “smooth”.
+            f = lambda data: pipeline.predict(data)
+
+        # 4) Explainer (model-agnostic με ανεξάρτητο masker) – γρήγορο & σταθερό
+        #    Χρησιμοποιούμε μικρό background για ταχύτητα
+        bg_n = min(200, Xtr.shape[0])
+        background = Xtr[:bg_n]
+        explainer = shap.Explainer(f, Independent(background))
+        shap_values = explainer(Xte)
+
+        # 5) mean|SHAP| & ταξινόμηση
+        vals = shap_values.values
+        if vals.ndim == 1:
+            vals = vals.reshape(-1, 1)  # edge case
+        mean_abs = np.abs(vals).mean(axis=0)
+        order = np.argsort(mean_abs)[::-1]
+        top_idx = order[:20]
+
+        shap_summary = {
+            "feature_names": feat_names,
+            "mean_abs_shap": {feat_names[i]: float(mean_abs[i]) for i in range(len(feat_names))},
+            "top_features": [(feat_names[i], float(mean_abs[i])) for i in top_idx],
+            "plot_files": []
+        }
+
+        # 6) Αποθήκευση plots (beeswarm & bar) χωρίς να σπάει αν λείπουν GUI backends
+        try:
+            # beeswarm
+            plt.figure()
+            shap.plots.beeswarm(shap_values, show=False, max_display=20)
+            plt.title(f"SHAP Beeswarm – {out_prefix}")
+            beeswarm_path = f"{out_prefix}_shap_beeswarm.png"
+            plt.tight_layout()
+            plt.savefig(beeswarm_path, dpi=180)
+            plt.close()
+            shap_summary["plot_files"].append(beeswarm_path)
+        except Exception:
+            pass
+
+        try:
+            # bar
+            plt.figure()
+            shap.plots.bar(shap_values, show=False, max_display=20)
+            plt.title(f"SHAP Feature Importance (mean|SHAP|) – {out_prefix}")
+            bar_path = f"{out_prefix}_shap_bar.png"
+            plt.tight_layout()
+            plt.savefig(bar_path, dpi=180)
+            plt.close()
+            shap_summary["plot_files"].append(bar_path)
+        except Exception:
+            pass
+
+        return shap_summary
+
+
     def run_kg_comparison_analysis(self):
         """
         Run KG comparison analysis with proper alignment and leakage validation.
         Uses Grouped CV (per participant) and scaling inside the CV pipeline.
+        Includes SHAP explanations for hold-out test (RAW / KG / Enhanced).
         """
+
+        # --------------------- Small SHAP helpers (local, no imports leak) ----------
+        def _as_ndarray(x):
+            try:
+                import numpy as _np
+                if hasattr(x, "to_numpy"):
+                    return x.to_numpy()
+                return _np.asarray(x)
+            except Exception:
+                return x
+
+        def _get_feature_names(X, fallback_names=None, prefix="feat"):
+            if hasattr(X, "columns"):
+                return list(X.columns)
+            X_arr = _as_ndarray(X)
+            if fallback_names is not None and len(fallback_names) == X_arr.shape[1]:
+                return list(fallback_names)
+            # generic names
+            n = X_arr.shape[1]
+            return [f"{prefix}_{i}" for i in range(n)]
 
         # --------------------- Helper closures ---------------------
         def _ensure_kg_builder_local():
@@ -3514,6 +3671,40 @@ class RealisticAnalysis:
             }
         }
 
+        # === SHAP για RAW (hold-out test) ===
+        try:
+            import shap
+            Xtr_arr = _as_ndarray(X_train_raw)
+            Xte_arr = _as_ndarray(X_test_raw)
+            feat_names_raw = _get_feature_names(X_test_raw, fallback_names=selected_features, prefix="raw_feat")
+
+            best_model_raw = best_est_raw.named_steps["clf"]
+            is_tree_like = hasattr(best_model_raw, "estimators_") or best_model_raw.__class__.__name__.lower().startswith(("xgb", "lgb", "cat"))
+            if is_tree_like:
+                explainer_raw = shap.TreeExplainer(best_model_raw)
+                shap_values_raw = explainer_raw.shap_values(Xte_arr)
+                # unify: pick positive-class if list
+                if isinstance(shap_values_raw, list):
+                    shap_vals = shap_values_raw[1] if len(shap_values_raw) > 1 else shap_values_raw[0]
+                else:
+                    shap_vals = shap_values_raw
+            else:
+                # KernelExplainer (slow) – μικρό background
+                bg = shap.sample(Xtr_arr, min(100, Xtr_arr.shape[0]))
+                explainer_raw = shap.KernelExplainer(best_model_raw.predict_proba, bg)
+                shap_vals = explainer_raw.shap_values(Xte_arr)
+                if isinstance(shap_vals, list):
+                    shap_vals = shap_vals[1] if len(shap_vals) > 1 else shap_vals[0]
+
+            raw_results["shap"] = {
+                "values": _as_ndarray(shap_vals).tolist(),
+                "expected_value": (explainer_raw.expected_value[1] if isinstance(explainer_raw.expected_value, (list, tuple)) and len(explainer_raw.expected_value) > 1 else explainer_raw.expected_value),
+                "feature_names": feat_names_raw
+            }
+            print("✅ SHAP analysis completed for RAW")
+        except Exception as e:
+            print(f"❌ SHAP analysis failed for RAW: {e}")
+
         # --------------------- 3) TIER 2: KG (Neo4j) ------------------------------
         print(f"\n{'='*50}")
         print("🧠 TIER 2: NEUROGAIT KG EMBEDDINGS (VALIDATED, Grouped CV)")
@@ -3550,6 +3741,38 @@ class RealisticAnalysis:
                 "ids":    test_ids
             }
         }
+
+        # === SHAP για KG (hold-out test) ===
+        try:
+            import shap
+            Xtr_arr_kg = _as_ndarray(X_train_kg)
+            Xte_arr_kg = _as_ndarray(X_test_kg)
+            feat_names_kg = _get_feature_names(X_test_kg, prefix="kg_feat")
+
+            best_model_kg = best_est_kg.named_steps["clf"]
+            is_tree_like = hasattr(best_model_kg, "estimators_") or best_model_kg.__class__.__name__.lower().startswith(("xgb", "lgb", "cat"))
+            if is_tree_like:
+                explainer_kg = shap.TreeExplainer(best_model_kg)
+                shap_values_kg = explainer_kg.shap_values(Xte_arr_kg)
+                if isinstance(shap_values_kg, list):
+                    shap_vals_kg = shap_values_kg[1] if len(shap_values_kg) > 1 else shap_values_kg[0]
+                else:
+                    shap_vals_kg = shap_values_kg
+            else:
+                bg_kg = shap.sample(Xtr_arr_kg, min(100, Xtr_arr_kg.shape[0]))
+                explainer_kg = shap.KernelExplainer(best_model_kg.predict_proba, bg_kg)
+                shap_vals_kg = explainer_kg.shap_values(Xte_arr_kg)
+                if isinstance(shap_vals_kg, list):
+                    shap_vals_kg = shap_vals_kg[1] if len(shap_vals_kg) > 1 else shap_vals_kg[0]
+
+            kg_results["shap"] = {
+                "values": _as_ndarray(shap_vals_kg).tolist(),
+                "expected_value": (explainer_kg.expected_value[1] if isinstance(explainer_kg.expected_value, (list, tuple)) and len(explainer_kg.expected_value) > 1 else explainer_kg.expected_value),
+                "feature_names": feat_names_kg
+            }
+            print("✅ SHAP analysis completed for KG")
+        except Exception as e:
+            print(f"❌ SHAP analysis failed for KG: {e}")
 
         # --------------------- 4) TIER 3: Enhanced Features -----------------------
         print(f"\n{'='*50}")
@@ -3588,28 +3811,61 @@ class RealisticAnalysis:
                     "ids":    test_ids
                 }
             }
+
+            # === SHAP για Enhanced (hold-out test) ===
+            try:
+                import shap
+                Xtr_arr_enh = _as_ndarray(X_train_enh)
+                Xte_arr_enh = _as_ndarray(X_test_enh)
+                feat_names_enh = _get_feature_names(X_test_enh, prefix="enh_feat")
+
+                best_model_enh = best_est_enh.named_steps["clf"]
+                is_tree_like = hasattr(best_model_enh, "estimators_") or best_model_enh.__class__.__name__.lower().startswith(("xgb", "lgb", "cat"))
+                if is_tree_like:
+                    explainer_enh = shap.TreeExplainer(best_model_enh)
+                    shap_values_enh = explainer_enh.shap_values(Xte_arr_enh)
+                    if isinstance(shap_values_enh, list):
+                        shap_vals_enh = shap_values_enh[1] if len(shap_values_enh) > 1 else shap_values_enh[0]
+                    else:
+                        shap_vals_enh = shap_values_enh
+                else:
+                    bg_enh = shap.sample(Xtr_arr_enh, min(100, Xtr_arr_enh.shape[0]))
+                    explainer_enh = shap.KernelExplainer(best_model_enh.predict_proba, bg_enh)
+                    shap_vals_enh = explainer_enh.shap_values(Xte_arr_enh)
+                    if isinstance(shap_vals_enh, list):
+                        shap_vals_enh = shap_vals_enh[1] if len(shap_vals_enh) > 1 else shap_vals_enh[0]
+
+                enhanced_results["shap"] = {
+                    "values": _as_ndarray(shap_vals_enh).tolist(),
+                    "expected_value": (explainer_enh.expected_value[1] if isinstance(explainer_enh.expected_value, (list, tuple)) and len(explainer_enh.expected_value) > 1 else explainer_enh.expected_value),
+                    "feature_names": feat_names_enh
+                }
+                print("✅ SHAP analysis completed for Enhanced")
+            except Exception as e:
+                print(f"❌ SHAP analysis failed for Enhanced: {e}")
+
         except Exception as e:
             print(f"❌ Enhanced features creation failed: {e}")
             enhanced_results = None
 
         # --------------------- 5) Statistics & Reporting --------------------------
-        # (A) Inputs για statistical_comparison_analysis – παίρνουμε κατευθείαν από τα test blocks
+        # Inputs για statistical_comparison_analysis – κατευθείαν από τα test blocks
         stat_inputs = {
             "Raw": {
-                "y_true": raw_results["test"]["labels"].tolist(),
-                "y_prob": raw_results["test"]["probs"].tolist(),
+                "y_true": np.asarray(raw_results["test"]["labels"]).tolist(),
+                "y_prob": np.asarray(raw_results["test"]["probs"]).tolist(),
                 "ids":    np.asarray(raw_results["test"]["ids"]).tolist(),
             },
             "KG": {
-                "y_true": kg_results["test"]["labels"].tolist(),
-                "y_prob": kg_results["test"]["probs"].tolist(),
+                "y_true": np.asarray(kg_results["test"]["labels"]).tolist(),
+                "y_prob": np.asarray(kg_results["test"]["probs"]).tolist(),
                 "ids":    np.asarray(kg_results["test"]["ids"]).tolist(),
             },
         }
         if enhanced_results is not None:
             stat_inputs["Enhanced"] = {
-                "y_true": enhanced_results["test"]["labels"].tolist(),
-                "y_prob": enhanced_results["test"]["probs"].tolist(),
+                "y_true": np.asarray(enhanced_results["test"]["labels"]).tolist(),
+                "y_prob": np.asarray(enhanced_results["test"]["probs"]).tolist(),
                 "ids":    np.asarray(enhanced_results["test"]["ids"]).tolist(),
             }
 
