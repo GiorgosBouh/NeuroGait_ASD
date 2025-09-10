@@ -3485,7 +3485,8 @@ class RealisticAnalysis:
         """
         Run KG comparison analysis with proper alignment and leakage validation.
         Uses Grouped CV (per participant) and scaling inside the CV pipeline.
-        Includes SHAP explanations for hold-out test (RAW / KG / Enhanced).
+        Includes SHAP explanations for hold-out test (RAW / KG / Enhanced),
+        plus aggregation ανά κλινική οικογένεια (RAW/KG/ENH).
         """
 
         # --------------------- Small SHAP helpers ---------------------
@@ -3509,11 +3510,11 @@ class RealisticAnalysis:
 
         def _squeeze_shap_values(vals, positive_index=1):
             """
-            Return SHAP values as (n_samples, n_features).
-            Accepts:
+            Επιστρέφει SHAP (n_samples, n_features).
+            Δέχεται:
             - array (n, d)
-            - array (n, d, 2) -> take [:, :, positive_index]
-            - list of length C -> choose positive_index if available, else first
+            - array (n, d, C) -> παίρνει το κανάλι της θετικής κλάσης
+            - list length C   -> επιλέγει positive_index αν υπάρχει, αλλιώς το πρώτο
             """
             import numpy as _np
             if isinstance(vals, list):
@@ -3522,6 +3523,50 @@ class RealisticAnalysis:
             if vals.ndim == 3 and vals.shape[2] >= 2:
                 vals = vals[:, :, positive_index]
             return vals
+
+        def _aggregate_shap_by_family(shap_obj, family_from_name):
+            """
+            Συγκεντρώνει mean(|SHAP|) ανά 'κλινική οικογένεια' feature.
+            shap_obj: dict με "values", "feature_names"
+            family_from_name: func(name)->family string
+            Return: ταξινομημένο dict desc.
+            """
+            import numpy as _np
+            if not shap_obj:
+                return {}
+            vals = _np.asarray(shap_obj.get("values"))
+            if vals.ndim == 3 and vals.shape[2] >= 2:
+                vals = vals[:, :, 1]
+            if vals.ndim != 2:
+                return {}
+            names = list(shap_obj.get("feature_names", [f"feat_{i}" for i in range(vals.shape[1])]))
+            mean_abs = _np.abs(vals).mean(axis=0)
+
+            agg = {}
+            for j, name in enumerate(names):
+                fam = family_from_name(name)
+                agg.setdefault(fam, 0.0)
+                agg[fam] += float(mean_abs[j])
+            return dict(sorted(agg.items(), key=lambda kv: -kv[1]))
+
+        # --- family mappers (RAW/KG/ENH) ---
+        def _fam_raw(name):
+            # RAW: η οικογένεια είναι το ίδιο το όνομα
+            return name
+
+        def _fam_kg(name):
+            # KG: "KG(<raw_name>)" -> "<raw_name>"
+            if isinstance(name, str) and name.startswith("KG(") and name.endswith(")"):
+                return name[3:-1]
+            return name
+
+        def _fam_enh(name):
+            # ENH: "ENH(<raw_name>)" -> "<raw_name>", ENH_extra_* -> "ENH_extra"
+            if isinstance(name, str) and name.startswith("ENH(") and name.endswith(")"):
+                return name[4:-1]
+            if isinstance(name, str) and name.startswith("ENH_extra_"):
+                return "ENH_extra"
+            return name
 
         # --------------------- Helper closures ---------------------
         def _ensure_kg_builder_local():
@@ -3722,7 +3767,7 @@ class RealisticAnalysis:
                     if isinstance(explainer_raw.expected_value, (list, tuple)) and len(explainer_raw.expected_value) > 1
                     else explainer_raw.expected_value
                 ),
-                "feature_names": feat_names_raw
+                "feature_names": list(feat_names_raw)
             }
             print("✅ SHAP analysis completed for RAW")
         except Exception as e:
@@ -4020,7 +4065,7 @@ class RealisticAnalysis:
             results_enh_for_print[best_enh_name]["F1"]  = results_enh_for_print[best_enh_name]["f1"]
             results_enh_for_print[best_enh_name]["ACC"] = results_enh_for_print[best_enh_name]["acc"]
 
-        # === SHAP REPORT (terminal) ===
+        # === SHAP REPORTS (terminal) ===
         def _print_shap_top(results, label, top_k=10):
             shap_obj = results.get("shap") if isinstance(results, dict) else None
             if not shap_obj:
@@ -4032,6 +4077,8 @@ class RealisticAnalysis:
                 print(f"⚠️ Empty SHAP values for {label}")
                 return
             vals = _np.abs(_np.asarray(vals))
+            if vals.ndim == 3 and vals.shape[2] >= 2:
+                vals = vals[:, :, 1]
             if vals.ndim != 2 or vals.shape[1] == 0:
                 print(f"⚠️ Invalid SHAP shape {vals.shape} for {label}")
                 return
@@ -4048,11 +4095,30 @@ class RealisticAnalysis:
                 idx = int(j)
                 print(f"  {rank:2d}. {names[idx]}  | mean|SHAP|={float(mean_abs[idx]):.5f}")
 
-        # Τύπωσε SHAP tops (αν υπάρχουν)
+        def _print_family_importance(results, label, fam_fn, top_k=10):
+            shap_obj = results.get("shap") if isinstance(results, dict) else None
+            if not shap_obj:
+                print(f"⚠️ No SHAP stored for {label} (family view)")
+                return
+            agg = _aggregate_shap_by_family(shap_obj, fam_fn)
+            if not agg:
+                print(f"⚠️ Empty/invalid SHAP for {label} (family view)")
+                return
+            items = list(agg.items())[:top_k]
+            print(f"\n🏷️ Aggregated SHAP by clinical family — {label}")
+            for i, (fam, score) in enumerate(items, 1):
+                print(f"  {i:2d}. {fam}  | sum mean|SHAP|={score:.5f}")
+
+        # Τύπωσε SHAP tops & family aggregation (αν υπάρχουν)
         _print_shap_top(raw_results, "RAW")
         _print_shap_top(kg_results, "KG")
         if enhanced_results is not None:
             _print_shap_top(enhanced_results, "ENHANCED")
+
+        _print_family_importance(raw_results, "RAW", _fam_raw)
+        _print_family_importance(kg_results, "KG", _fam_kg)
+        if enhanced_results is not None:
+            _print_family_importance(enhanced_results, "ENHANCED", _fam_enh)
 
         # Εκτύπωση συνοπτικών με τα σωστά dicts
         self.print_kg_comparison_results(
