@@ -3487,7 +3487,7 @@ class RealisticAnalysis:
         Includes SHAP explanations for hold-out test (RAW / KG / Enhanced).
         """
 
-        # --------------------- Small SHAP helpers (local, no imports leak) ----------
+        # --------------------- Small SHAP helpers ---------------------
         def _as_ndarray(x):
             try:
                 import numpy as _np
@@ -3498,14 +3498,66 @@ class RealisticAnalysis:
                 return x
 
         def _get_feature_names(X, fallback_names=None, prefix="feat"):
+            X_arr = _as_ndarray(X)
             if hasattr(X, "columns"):
                 return list(X.columns)
-            X_arr = _as_ndarray(X)
             if fallback_names is not None and len(fallback_names) == X_arr.shape[1]:
                 return list(fallback_names)
-            # generic names
             n = X_arr.shape[1]
             return [f"{prefix}_{i}" for i in range(n)]
+
+        def _normalize_shap(shap_values, expected_value, positive_class_index=1):
+            """
+            Επιστρέφει (values_2D, expected_value_scalar)
+            values_2D: shape (n_samples, n_features)
+            """
+            import numpy as np
+            # shap_values μπορεί να είναι list (per class) ή array 3D
+            if isinstance(shap_values, list):
+                if len(shap_values) > positive_class_index:
+                    values = np.asarray(shap_values[positive_class_index])
+                else:
+                    values = np.asarray(shap_values[0])
+            else:
+                values = np.asarray(shap_values)
+                if values.ndim == 3 and values.shape[-1] > 1:
+                    # (n_samples, n_features, n_classes) -> positive class
+                    values = values[..., positive_class_index]
+                elif values.ndim == 3 and values.shape[-1] == 1:
+                    values = values[..., 0]
+
+            values = np.squeeze(values)
+            if values.ndim != 2:
+                raise ValueError(f"Normalized SHAP has invalid ndim={values.ndim}, shape={values.shape}")
+
+            # expected_value επίσης μπορεί να είναι list
+            if isinstance(expected_value, (list, tuple, np.ndarray)):
+                if len(expected_value) > positive_class_index:
+                    expv = expected_value[positive_class_index]
+                else:
+                    expv = expected_value[0]
+            else:
+                expv = expected_value
+
+            return values, float(np.asarray(expv))
+
+        def _print_shap_top(results, label, top_k=10):
+            shap_obj = results.get("shap") if isinstance(results, dict) else None
+            if not shap_obj:
+                print(f"⚠️ No SHAP stored for {label}")
+                return
+            import numpy as np
+            vals = np.asarray(shap_obj.get("values", []))
+            if vals.ndim != 2 or vals.shape[1] == 0:
+                print(f"⚠️ Invalid SHAP shape {vals.shape} for {label}")
+                return
+            mean_abs = np.abs(vals).mean(axis=0)
+            names = shap_obj.get("feature_names") or [f"feat_{i}" for i in range(mean_abs.shape[0])]
+            order = np.argsort(-mean_abs)[:min(top_k, len(names))]
+            print(f"\n🔎 SHAP Top-{len(order)} features — {label}")
+            for rank, j in enumerate(order, 1):
+                j = int(j)
+                print(f"  {rank:2d}. {names[j]}  | mean|SHAP|={float(mean_abs[j]):.5f}")
 
         # --------------------- Helper closures ---------------------
         def _ensure_kg_builder_local():
@@ -3675,7 +3727,6 @@ class RealisticAnalysis:
 
         # === SHAP για RAW (hold-out test) ===
         try:
-            import shap
             Xtr_arr = _as_ndarray(X_train_raw)
             Xte_arr = _as_ndarray(X_test_raw)
             feat_names_raw = _get_feature_names(X_test_raw, fallback_names=selected_features, prefix="raw_feat")
@@ -3685,36 +3736,22 @@ class RealisticAnalysis:
             if is_tree_like:
                 explainer_raw = shap.TreeExplainer(best_model_raw)
                 shap_values_raw = explainer_raw.shap_values(Xte_arr)
-                # unify: pick positive-class if list
-                if isinstance(shap_values_raw, list):
-                    shap_vals = shap_values_raw[1] if len(shap_values_raw) > 1 else shap_values_raw[0]
-                else:
-                    shap_vals = shap_values_raw
             else:
-                # KernelExplainer (slow) – μικρό background
                 bg = shap.sample(Xtr_arr, min(100, Xtr_arr.shape[0]))
-                # wrap proba for binary
                 def _proba_fn(xx):
                     try:
                         return best_model_raw.predict_proba(xx)[:, 1]
                     except Exception:
-                        # fallback for models without predict_proba
                         s = best_model_raw.decision_function(xx)
                         s = (s - s.min()) / (s.max() - s.min() + 1e-12)
                         return s
                 explainer_raw = shap.KernelExplainer(_proba_fn, bg)
-                shap_vals = explainer_raw.shap_values(Xte_arr)
-                # KernelExplainer returns array for binary
-                if isinstance(shap_vals, list):
-                    shap_vals = shap_vals[1] if len(shap_vals) > 1 else shap_vals[0]
+                shap_values_raw = explainer_raw.shap_values(Xte_arr)
 
+            shap_vals_raw, expv_raw = _normalize_shap(shap_values_raw, explainer_raw.expected_value)
             raw_results["shap"] = {
-                "values": _as_ndarray(shap_vals).tolist(),
-                "expected_value": (
-                    explainer_raw.expected_value[1]
-                    if isinstance(explainer_raw.expected_value, (list, tuple)) and len(explainer_raw.expected_value) > 1
-                    else explainer_raw.expected_value
-                ),
+                "values": shap_vals_raw.tolist(),
+                "expected_value": expv_raw,
                 "feature_names": feat_names_raw
             }
             print("✅ SHAP analysis completed for RAW")
@@ -3770,10 +3807,6 @@ class RealisticAnalysis:
             if is_tree_like:
                 explainer_kg = shap.TreeExplainer(best_model_kg)
                 shap_values_kg = explainer_kg.shap_values(Xte_arr_kg)
-                if isinstance(shap_values_kg, list):
-                    shap_vals_kg = shap_values_kg[1] if len(shap_values_kg) > 1 else shap_values_kg[0]
-                else:
-                    shap_vals_kg = shap_values_kg
             else:
                 bg_kg = shap.sample(Xtr_arr_kg, min(100, Xtr_arr_kg.shape[0]))
                 def _proba_fn_kg(xx):
@@ -3784,17 +3817,12 @@ class RealisticAnalysis:
                         s = (s - s.min()) / (s.max() - s.min() + 1e-12)
                         return s
                 explainer_kg = shap.KernelExplainer(_proba_fn_kg, bg_kg)
-                shap_vals_kg = explainer_kg.shap_values(Xte_arr_kg)
-                if isinstance(shap_vals_kg, list):
-                    shap_vals_kg = shap_vals_kg[1] if len(shap_vals_kg) > 1 else shap_vals_kg[0]
+                shap_values_kg = explainer_kg.shap_values(Xte_arr_kg)
 
+            shap_vals_kg, expv_kg = _normalize_shap(shap_values_kg, explainer_kg.expected_value)
             kg_results["shap"] = {
-                "values": _as_ndarray(shap_vals_kg).tolist(),
-                "expected_value": (
-                    explainer_kg.expected_value[1]
-                    if isinstance(explainer_kg.expected_value, (list, tuple)) and len(explainer_kg.expected_value) > 1
-                    else explainer_kg.expected_value
-                ),
+                "values": shap_vals_kg.tolist(),
+                "expected_value": expv_kg,
                 "feature_names": feat_names_kg
             }
             print("✅ SHAP analysis completed for KG")
@@ -3851,10 +3879,6 @@ class RealisticAnalysis:
                 if is_tree_like:
                     explainer_enh = shap.TreeExplainer(best_model_enh)
                     shap_values_enh = explainer_enh.shap_values(Xte_arr_enh)
-                    if isinstance(shap_values_enh, list):
-                        shap_vals_enh = shap_values_enh[1] if len(shap_values_enh) > 1 else shap_values_enh[0]
-                    else:
-                        shap_vals_enh = shap_values_enh
                 else:
                     bg_enh = shap.sample(Xtr_arr_enh, min(100, Xtr_arr_enh.shape[0]))
                     def _proba_fn_enh(xx):
@@ -3865,17 +3889,12 @@ class RealisticAnalysis:
                             s = (s - s.min()) / (s.max() - s.min() + 1e-12)
                             return s
                     explainer_enh = shap.KernelExplainer(_proba_fn_enh, bg_enh)
-                    shap_vals_enh = explainer_enh.shap_values(Xte_arr_enh)
-                    if isinstance(shap_vals_enh, list):
-                        shap_vals_enh = shap_vals_enh[1] if len(shap_vals_enh) > 1 else shap_vals_enh[0]
+                    shap_values_enh = explainer_enh.shap_values(Xte_arr_enh)
 
+                shap_vals_enh, expv_enh = _normalize_shap(shap_values_enh, explainer_enh.expected_value)
                 enhanced_results["shap"] = {
-                    "values": _as_ndarray(shap_vals_enh).tolist(),
-                    "expected_value": (
-                        explainer_enh.expected_value[1]
-                        if isinstance(explainer_enh.expected_value, (list, tuple)) and len(explainer_enh.expected_value) > 1
-                        else explainer_enh.expected_value
-                    ),
+                    "values": shap_vals_enh.tolist(),
+                    "expected_value": expv_enh,
                     "feature_names": feat_names_enh
                 }
                 print("✅ SHAP analysis completed for Enhanced")
@@ -3982,43 +4001,6 @@ class RealisticAnalysis:
             results_enh_for_print[best_enh_name]["F1"]  = results_enh_for_print[best_enh_name]["f1"]
             results_enh_for_print[best_enh_name]["ACC"] = results_enh_for_print[best_enh_name]["acc"]
 
-        # === SHAP REPORT (terminal) ===
-        # === SHAP REPORT (terminal) ===
-        def _print_shap_top(results, label, top_k=10):
-            shap_obj = results.get("shap") if isinstance(results, dict) else None
-            if not shap_obj:
-                print(f"⚠️ No SHAP stored for {label}")
-                return
-
-            import numpy as _np
-
-            vals = shap_obj.get("values", None)
-            if vals is None:
-                print(f"⚠️ Empty SHAP values for {label}")
-                return
-
-            vals = _np.abs(_np.asarray(vals))
-            if vals.ndim != 2 or vals.shape[1] == 0:
-                print(f"⚠️ Invalid SHAP shape {vals.shape} for {label}")
-                return
-
-            mean_abs = vals.mean(axis=0)
-
-            # feature names as list
-            names = shap_obj.get("feature_names")
-            if not names:
-                names = [f"feat_{i}" for i in range(mean_abs.shape[0])]
-            else:
-                names = list(names)
-
-            m = min(top_k, mean_abs.shape[0], len(names))
-            order = _np.argsort(-mean_abs)[:m]
-
-            print(f"\n🔎 SHAP Top-{m} features — {label}")
-            for rank, j in enumerate(order, 1):
-                idx = int(j)  # <<< cast για ασφαλές indexing σε list
-                print(f"  {rank:2d}. {names[idx]}  | mean|SHAP|={float(mean_abs[idx]):.5f}")
-
         # Εκτύπωση συνοπτικών με τα σωστά dicts
         self.print_kg_comparison_results(
             results_raw_for_print or {},
@@ -4032,48 +4014,7 @@ class RealisticAnalysis:
             statistical_results=statistical_results
         )
 
-        # Τελική επιστροφή για downstream χρήσεις
-        all_results = {
-            "Raw Clinical Features": raw_results,
-            "NeuroGait KG": kg_results,
-        }
-        if enhanced_results is not None:
-            all_results["Enhanced Features"] = enhanced_results
-
-        # === SHAP REPORT (terminal) ===
-        def _print_shap_top(results, label, top_k=10):
-            shap_obj = results.get("shap") if isinstance(results, dict) else None
-            if not shap_obj:
-                print(f"⚠️ No SHAP stored for {label}")
-                return
-
-            import numpy as _np
-            vals = shap_obj.get("values", None)
-            if vals is None:
-                print(f"⚠️ Empty SHAP values for {label}")
-                return
-
-            vals = _np.abs(_np.asarray(vals))
-            if vals.ndim != 2 or vals.shape[1] == 0:
-                print(f"⚠️ Invalid SHAP shape {vals.shape} for {label}")
-                return
-
-            mean_abs = vals.mean(axis=0)
-
-            names = shap_obj.get("feature_names")
-            if not names:
-                names = [f"feat_{i}" for i in range(mean_abs.shape[0])]
-            else:
-                names = list(names)
-
-            m = min(int(top_k), mean_abs.shape[0], len(names))
-            order = _np.argsort(-mean_abs)[:m]
-
-            print(f"\n🔎 SHAP Top-{m} features — {label}")
-            for rank, j in enumerate(order, 1):
-                idx = int(j)  # cast για indexing σε list
-                print(f"  {rank:2d}. {names[idx]}  | mean|SHAP|={float(mean_abs[idx]):.5f}")
-             # --- SHAP summaries (console) ---
+        # === SHAP summaries (console) ===
         _print_shap_top(raw_results, "RAW")
         _print_shap_top(kg_results, "KG")
         if enhanced_results is not None:
