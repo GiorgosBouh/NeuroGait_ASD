@@ -2,7 +2,8 @@
 """
 True GNN Analysis Module for NeuroGait - REAL IMPLEMENTATION
 """
-
+from dotenv import load_dotenv
+load_dotenv()
 import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_auc_score, f1_score, accuracy_score, precision_score, recall_score
